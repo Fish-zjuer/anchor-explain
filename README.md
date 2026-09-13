@@ -37,7 +37,7 @@
 
 **线2**：`packages/extension-anchor-pdf/` 是 [`mathematic-inc/vscode-pdf`](https://github.com/mathematic-inc/vscode-pdf)
 的 fork。**不劫持**（`customEditors` 是 `priority: "option"`，你的默认 PDF 打开方式不变），
-想看它就用 `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures`
+想看它就用 `pnpm devhost:pdf`
 再跑 `Anchor: 用 Anchor 打开 PDF`。改动逐条见该包的 `MODIFICATIONS.md`。
 
 ## 仓库结构
@@ -72,7 +72,8 @@ pnpm check        # 上面最后六件事串起来：typecheck → test → buil
 
 > `pnpm build` 打**两个**扩展（`esbuild.mjs` 的 `TARGETS` 里两条）：线1 与线2。
 > **线2 不劫持**：它的 `customEditors` 是 `priority: "option"`，你的默认 PDF 打开方式不变；
-> 想看线2 就用 `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures`
+> 想看线2 就用 `pnpm devhost:pdf`（**不要手敲 `code --extensionDevelopmentPath=相对路径`**：
+> CLI 不把 CWD 传给已在运行的实例，那条路会静默少一个扩展，见 D59）
 > 然后跑命令面板的 `Anchor: 用 Anchor 打开 PDF`。
 >
 > 两个冒烟脚本都只对 `vscode` 模块打桩，但**都不替代 F5**：配色好不好看、流转顺不顺只有肉眼算数。
@@ -83,7 +84,10 @@ pnpm check        # 上面最后六件事串起来：typecheck → test → buil
 先确认「讲解这段 / 整个文件」，侧边栏就出逐步讲解，`Alt+]` / `Alt+[` / `Esc` 操作它。
 `Anchor: 显示状态` 可看选区、上次捕获的区间与**当前模型配置**。
 
-**F5 不灵、或者你根本没在用 VS Code**：`pnpm devhost` 是一条等价命令（不用 F5、不用调试器）。
+**F5 不灵、或者你根本没在用 VS Code**：`pnpm devhost`（线1）/ `pnpm devhost:pdf`（线2）
+是等价命令（不用 F5、不用调试器；会先构建，并打印实际执行的命令）。
+**别手敲 `code --extensionDevelopmentPath=相对路径`** —— CLI 不把 CWD 传给已在运行的实例，
+那条路会**静默地少一个扩展**（窗口照开、没有图标、也没有报错），见 D59。
 **改侧边栏排版**用 `pnpm preview:sidebar`：把真实生成的侧边栏 HTML 起在本地服务上，
 浏览器打开就能看，不用起 VS Code（D50）。
 **第一次上手请照 [`packages/extension-anchor/README.md`](packages/extension-anchor/README.md)

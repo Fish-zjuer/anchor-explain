@@ -184,13 +184,19 @@ code C:\Users\29927\Desktop\anchor-explain
 **方式 B：一条命令，完全不用 F5**
 
 ```bash
-pnpm devhost
-# 等价于：code --extensionDevelopmentPath=packages/extension-anchor test/fixtures
+pnpm devhost          # 线1
+pnpm devhost:pdf      # 线2（PDF 视图）
 ```
 
-它做的事情和方式 A 一样（载入扩展 + 把 `test/fixtures` 当工作区打开），只是不挂断点。
-**F5 被别的键占了、笔记本 Fn 键别扭、或者懒得配，就用这条。**
-（若按键被别的扩展抢走，可再加 `--disable-extensions` 来一个"只有本扩展"的干净环境。）
+它做的事情和方式 A 一样（先构建、载入扩展、把 `test/fixtures` 当工作区打开），只是不挂断点。
+**F5 被别的键占了、笔记本 Fn 键别扭、或者懒得配，就用这条。** 它会把实际执行的命令打出来。
+
+> **不要手敲 `code --extensionDevelopmentPath=packages/extension-anchor ...`（相对路径）。**
+> `code` CLI 只是把参数转交给**已经在跑的那个 VS Code 实例**，而**它不传 CWD** ——
+> 相对路径会在对面被解析成 `/packages/extension-anchor`，结果是
+> **窗口照开、一切正常、就是没有这个扩展**（没有图标、命令搜不到，且不弹任何错）。
+> 这条已经坑过一次（D59）：`pnpm devhost` 因此改成算绝对路径，并且起之前先查产物在不在。
+> 想自己敲就敲绝对路径。
 
 ### 3. 在**新开的那个窗口**里操作
 
@@ -250,7 +256,7 @@ pnpm devhost
 | 症状 | 原因 | 怎么办 |
 |---|---|---|
 | 按 F5 **什么都没发生**（连报错框都没有） | 有三种可能，**先按下面「F5 完全没反应的查法」走一遍** | 见下方小节 |
-| F5 之后**新窗口里没有 Anchor 图标、命令也搜不到** | 宿主读到的是**上一版产物**（构建竞态，已在 D58 修掉），或那个新窗口才是宿主而你还在看老窗口 | `pnpm build` 后重试；确认你看的是**新开的那个**窗口（标题栏带「扩展开发宿主」）。已在 D58 修掉这个竞态 |
+| **新窗口起来了、也稳定，但左侧没有 Anchor 图标、命令面板搜不到 `Anchor:`** | **开发路径没解析对**（相对路径的经典坑，D59）——VS Code 只在日志里写一行，不弹错 | 用 `pnpm devhost`（它算绝对路径）。想确认是不是这个原因：`%APPDATA%\Code\logs\<最新>\window*/renderer.log` 里搜 `Error scanning extensions` |
 | 按 F5 没反应，或弹出一个"选择环境"下拉 | 当前窗口不是仓库根目录 / 这个窗口里没有 launch 配置 | 用 `code C:\Users\29927\Desktop\anchor-explain` 重开；或直接用方式 B |
 | F5 报「preLaunchTask "anchor: watch" 已终止，退出代码 1」 | 没跑 `pnpm install`（找不到 esbuild），或 `node` 不在 PATH | 在仓库根跑 `pnpm install`；看底部"终端"面板里 `anchor: watch` 的输出 |
 | 新窗口里命令面板搜不到 `Anchor:` | 扩展没被载入：产物缺失/损坏 | 在那个新窗口执行 `Developer: Show Running Extensions`，看 `anchor.anchor-explain` 在不在；不在就回仓库根重跑 `pnpm build` 再起一次 |
@@ -280,11 +286,23 @@ pnpm devhost
 
 ### F5 完全没反应的查法（按顺序做，三步就够）
 
+**第零步：先看 VS Code 自己的日志。它是唯一会说出真相的地方**（窗口和通知都不会说）：
+
+```
+%APPDATA%\Code\logs\<最新时间戳>\window*\renderer.log      ← 搜 "Error scanning extensions"
+%APPDATA%\Code\logs\<最新时间戳>\window*\exthost\exthost.log ← 搜 "anchor"
+```
+
+- 看到 `Error scanning extensions at /packages/extension-anchor: 无法解析不存在的文件`：
+  **开发路径没传对**（相对路径的坑，D59）→ 用 `pnpm devhost`，别手敲相对路径
+- 什么都没有：往下走
+
 **第一步：换一条不依赖"后台任务就绪信号"的启动方式。**
 命令面板（`Ctrl+Shift+P`）→ 输入 `调试: 选择并启动调试`（英文 `Debug: Select and Start Debugging`）
 → 选 **「Anchor：扩展开发宿主（改完先构建一次，不监视）」**。
 这条配置的 `preLaunchTask` 是普通构建任务，**不经过 watch 的就绪信号** ——
 它能把"F5 的键或后台任务有问题"与"扩展本身有问题"分开。
+（它用的是 `${workspaceFolder}` 展开出的**绝对路径**，不会踩上面那个坑。）
 另外它绕开了键位：**F5 被别的扩展抢了、或焦点在某个 webview 里，按 F5 也可能完全没反应。**
 
 **第二步：看新窗口，不是老窗口。**
@@ -293,9 +311,9 @@ pnpm devhost
 
 **第三步：区分"没启动"和"启动了但没载入扩展"。**
 在新窗口里按 `Ctrl+Shift+P` 搜 `Anchor`：
-- **搜得到 `Anchor:` 命令** → 扩展载入了。此时没有活动栏图标 = 去看第五步的图标那一行
-- **搜不到** → 扩展没载入。在新窗口执行 `Developer: Show Running Extensions`，
-  看 `anchor.anchor-explain` 在不在；不在就回仓库根 `pnpm build`，再用第一步的方式起一次
+- **搜得到 `Anchor:` 命令** → 扩展载入了。此时没有活动栏图标 = 看上一张表的图标那一行
+- **搜不到** → 扩展没载入（**先去第零步看日志**）；也可以在新窗口执行
+  `Developer: Show Running Extensions`，看 `anchor.anchor-explain` 在不在
 
 > **还有两个常见原因**：① 已经有一个调试会话"卡"着（比如别的扩展起的）——
 > 命令面板执行 `调试: 停止调试` 再试；② 在**仓库根**这个窗口操作，

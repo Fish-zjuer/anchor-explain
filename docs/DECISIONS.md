@@ -855,6 +855,40 @@ S7 的测试分两层：**逻辑层**喂手搓的 `PDFSource`（页码区间、�
 
 ---
 
+## D59 起宿主必须用**绝对路径**（CLI 不把你的 CWD 传过去）
+
+**症状**：新窗口**起来了、也很稳定**，但**没有活动栏图标、命令面板搜不到 `Anchor:`**，
+而且**不弹任何错**。看起来像"扩展没做出来"，实际是**它根本没被载入**。
+
+**根因**：`code --extensionDevelopmentPath=packages/extension-anchor test/fixtures`（相对路径）。
+`code` CLI 只是把参数**转交给已经在跑的那个 VS Code 实例**（IPC），而**它不传 CWD** ——
+相对路径在对面按对方的工作目录解析。VS Code 的 `renderer.log` 里留下的就是这一行：
+
+```
+Error scanning extensions at /packages/extension-anchor: 无法解析不存在的文件 '\packages\extension-anchor'
+```
+
+这条已经真实发生过（15:16 起每次手敲都是这个结果），而排查它花了整整一轮来回：
+用户看到的是"窗口弹出来了"，我看到的是"应该没问题"——**两边都没错，错的是那条命令**。
+
+**修法**（都是"让失败无处藏身"这一条思路）：
+
+1. 新增 `scripts/devhost.mjs`：从 `import.meta.url` 算出**绝对路径**，把要执行的命令**打印出来**，
+   并且在起之前**先查**扩展目录、产物、样本目录在不在（缺了就直接报错退出）。
+   `pnpm devhost`（线1）/ `pnpm devhost:pdf`（线2）都走它。
+2. 文档里**所有**手敲相对路径的地方一并改掉（根 README、两个包 README、STATE、SLICES 里
+   S4/S5 的验收步骤 —— 那两片用户还没实操，不改就等于埋着同一个坑）。
+
+**为什么记这么细**：这是本项目里**最贵的一类失败** —— 没有错误、没有提示，
+症状（"起来了但没有图标"）与原因（"路径没解析对"）之间隔着一个 VS Code 的日志文件。
+下次再遇到，先去看 `%APPDATA%\Code\logs\<最新时间戳>\window*\renderer.log`，
+搜 `Error scanning extensions`，而不是怀疑自己的代码。
+（F5 那条路用的是 `${workspaceFolder}` 展开出的绝对路径，本来没有这个问题 —— D58 修的是另一件事。）
+
+**状态**：生效。
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

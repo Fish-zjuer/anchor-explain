@@ -750,7 +750,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/test/*.test.ts`（13 个，161 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter`，**S8 加 `startModel` / `startUi` / `describe`** | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
-| `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器。**S8 起产物冒烟也真跑一遍开始面板的宿主侧**（拿到 provider 驱动它） | — |
+| `scripts/{make-fixture-pdf.mjs, devhost.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**起开发宿主（绝对路径 + 先查产物，D59）**；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器。**S8 起产物冒烟也真跑一遍开始面板的宿主侧**（拿到 provider 驱动它） | — |
 | `packages/extension-anchor-pdf/`（整树） | 线2：`mathematic-inc/vscode-pdf` 的 fork（**Apache-2.0**）。改动逐条见本包 `MODIFICATIONS.md` | `src/extension.ts`：`openInAnchorViewer`:45 `activate`:75 `deactivate`:85；`src/pdf-viewer-provider.ts`：`PDFViewerProvider`:99（`viewType = "anchorPdf.view"`） |
 | `packages/extension-anchor-pdf/src/anchor/rectToNormalizedBBox.ts` | **S5 新增**。像素矩形 → 「第几页 + 归一化 bbox」的**全部**换算（注入脚本一行业务数学都不做，就是为了让这门换算有单测） | `PixelRect`:17 `PageRect`:24 `intersectRects`:35 `pickDominantPage`:52 `rectToNormalizedBBox`:77 `resolveSelection`:91 |
 | `packages/extension-anchor-pdf/src/anchor/bridge.ts` | **S5 新增**。§5.2 两个联合类型的 TS 落地 + 边界守卫（注入脚本的输出和 AI 输出一样不可信） | `HostToSelect`:17 `CapturedGeometry`:33 `SelectToHost`:40 `parseSelectMessage`:92 |

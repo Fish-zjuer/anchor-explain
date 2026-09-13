@@ -45,7 +45,7 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
 | # | 切片 | 要做什么 | 要看什么 |
 |---|---|---|---|
 | 1 | S3 | `Anchor: 设置 API Key` + 设置里填 `anchorExplain.providers`，然后选中一段代码按 `Ctrl+Shift+A` | 讲解内容是不是真的了（不再是写死的 `rb_pop` 文本）；输出面板「Anchor」里有没有取件记录 |
-| 2 | S4 | `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures` → `Anchor: 用 Anchor 打开 PDF` | 能打开；**直接双击 PDF 仍是原来的打开方式**（不劫持）；设置里能搜到 `anchorPdf.*` |
+| 2 | S4 | `pnpm devhost:pdf`（起线2 宿主）→ `Anchor: 用 Anchor 打开 PDF` | 能打开；**直接双击 PDF 仍是原来的打开方式**（不劫持）；设置里能搜到 `anchorPdf.*` |
 | 3 | S5 | 在 Anchor 的 PDF 视图里 `Ctrl+Alt+S` 拖一个矩形 | 跟手；**抬手后屏幕上不留东西**；拖到页外有提示；跨页拖判给盖得多的那一页 |
 | 4 | S6 | 框选之后看侧边栏，点某一步上的「第 N 页」 | PDF **滚到那一页**（不是画框）；编辑器里一个框都不该出现 |
 | 5 | S8 | `pnpm build` 后按 F5 → **看左侧活动栏有没有 Anchor 图标** → 点开「开始」面板 | 面板里「讲解选中的代码」显示的键是你**自己绑的那个**；点「显示状态」有反应；没配模型时「设置 API Key」是灰的且**说清缺什么**；`Ctrl+Alt+A` 能呼出它；**欢迎页的「演练」里有「开始使用 Anchor」**（那四步里的字点下去应当能触发命令） |
@@ -167,14 +167,17 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
 7. **`wantsImage` 只有"锚点自带截图"这一个触发条件**：`ModelRouter` 的两条判据有单测，
    但"模型自己说要看图"这条路径线1 走不到（S5 的 PDF 才有截图）。
 8. **线2 没有进 F5 的 launch 配置**：`.vscode/launch.json` 只载入线1。
-   单独看线2 用 `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures`。
+   单独看线2 用 `pnpm devhost:pdf`（**别手敲相对路径**，见 D59）。
    （`pnpm devhost` 同理只起线1。）
-9. **手敲 `code --extensionDevelopmentPath=...` 时不会自动构建**。`pnpm devhost` 已经修成
-   "先 `pnpm build` 再起宿主"了（S3 顺带），F5 有 `preLaunchTask`，但手敲那条命令没有 ——
-   拿旧产物测新代码会让排查跑偏（这一条已经坑过一次）。
-   **S8 补**：F5 那条路上的就绪信号也有过两处隐患（早于线1 产物写完 / 构建报错时可能永不报就绪），
-   已在 D58 修掉。**"F5 没反应"先按 `packages/extension-anchor/README.md` 的
-   「F5 完全没反应的查法」走三步**，不要先怀疑代码。
+9. **起宿主这条路有三个坑，而且都不报错**（都踩过）：
+   ① **手敲命令不会自动构建** —— `pnpm devhost` 已经是"先 build 再起"（S3 顺带），
+   F5 有 `preLaunchTask`，但手敲那条命令没有，拿旧产物测新代码会让排查跑偏；
+   ② **就绪信号曾经可能早于线1 产物写完**（D58 已修）；
+   ③ **相对路径是静默坑**（D59 已修）：`code --extensionDevelopmentPath=相对路径` 会被
+   已在运行的 VS Code 按它自己的 CWD 解析 —— 症状是"**窗口起来了、稳定、但没有图标也没有命令，
+   而且不弹任何错**"。现在一律 `pnpm devhost` / `pnpm devhost:pdf`（算绝对路径 + 起之前查产物）。
+   **遇到"起了但没扩展"先看日志**：`%APPDATA%\Code\logs\<最新时间戳>\window*\renderer.log`
+   里搜 `Error scanning extensions`，不要先怀疑代码。
 10. **上游 vendored pdf.js 里的 `PDF.js viewer` 字样没有改**：那是 pdf.js 自己的品牌，
     属于 vendored 依赖的一部分，不在"移除上游品牌"（publisher/displayName）的范围里。
     改它就要动 `assets/`，而那是明令不许碰的。

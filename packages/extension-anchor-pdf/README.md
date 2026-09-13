@@ -64,8 +64,14 @@ pnpm --filter anchor-pdf typecheck # tsc --noEmit
 仓库根的 F5 配置目前只载入线1。要单独看线2：
 
 ```bash
-code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures
+pnpm devhost:pdf        # 在仓库根执行；等于「先 build，再用绝对路径起宿主」
 ```
+
+> **不要手敲 `code --extensionDevelopmentPath=packages/extension-anchor-pdf ...`（相对路径）。**
+> `code` CLI 把参数转交给已在运行的 VS Code 实例时**不传 CWD**，相对路径会被解析成
+> `/packages/extension-anchor-pdf` —— 结果是**窗口照开、一切正常、就是没有这个扩展**
+> （设置里搜不到 `anchorPdf.*`、命令面板也没有那条命令，且不弹任何错）。见 D59。
+> 这条已经坑过一次，所以 `pnpm devhost:pdf` 专门算绝对路径，并在起之前查产物在不在。
 
 然后在新窗口里：命令面板 → `Anchor: 用 Anchor 打开 PDF` → 选 `sample-30p.pdf`。
 应该能用 Anchor 的视图打开它，**并且**在设置里能搜到 `anchorPdf.defaultZoomValue` 与

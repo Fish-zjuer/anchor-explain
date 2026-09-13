@@ -319,8 +319,9 @@ fork 基线：`1153346694f457bc7b4c73c9b0e95b629f02dc03`（上游 `0.2.5`，2026
 （上游的 pdf.js 不变式守卫：`PDF.js assets verified (113 locales)`）。
 
 **验收靠**：**用户实操**，三条都要看：
-1. `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures` 起宿主
-   → 命令面板 `Anchor: 用 Anchor 打开 PDF` → 选 `sample-30p.pdf` → 能用我们的视图打开
+1. 起宿主 → 命令面板 `Anchor: 用 Anchor 打开 PDF` → 选 `sample-30p.pdf` → 能用我们的视图打开
+   （当时写的是 `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures`；
+   **现在一律用 `pnpm devhost:pdf`** —— 手敲相对路径是个静默坑，见 D59）
 2. **直接双击**一个 `.pdf`（不装/不卸载都试）→ 应由别的扩展或内置打开（**不劫持**）
 3. 设置里搜 `anchorPdf` → 两个配置项都在（证明命名空间改对了）
 
@@ -358,8 +359,8 @@ fork 基线：`1153346694f457bc7b4c73c9b0e95b629f02dc03`（上游 `0.2.5`，2026
 「未握手不推 / 握手后补推」、「产物里**根本没有** decoration API（不画框不是靠自觉）」。
 
 **验收靠**：**用户实操**，手感只能本人确认：
-`code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures` → 打开 `sample-30p.pdf`
-→ `Ctrl+Alt+S`（或命令面板 `Anchor: 框选一块并讲解（PDF）`）→ 拖一个矩形。要看四件事：
+`pnpm devhost:pdf`（当时写的是手敲 `code --extensionDevelopmentPath=...` 相对路径 —— 现在一律用脚本，见 D59）
+→ 打开 `sample-30p.pdf` → `Ctrl+Alt+S`（或命令面板 `Anchor: 框选一块并讲解（PDF）`）→ 拖一个矩形。要看四件事：
 1. 拖的时候跟手；**抬手之后屏幕上不留任何东西**（没有残留的框）
 2. 拖到页缝/页外 → 提示"没有落在任何一页上"，不留垃圾状态
 3. **跨页拖**（从第 1 页底部拖到第 2 页）→ 交给线1 的锚点应是"盖得多的那一页"
