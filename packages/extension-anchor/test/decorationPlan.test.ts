@@ -1,11 +1,15 @@
 /**
- * 「该画哪些框」的单测。播放器本身依赖 vscode，但**决策**在这一层，所以配色分支可以直测。
+ * 「这一拍该画哪些框」的单测。播放器本身依赖 vscode，但**决策**在这一层，所以可以直测。
+ *
+ * 重点锁住两件事（都是用户看过第一版之后提的）：
+ *   - 块级底色在每一拍**都在**（浅色荧光包住整个块）
+ *   - 一次只点亮**一个**子高亮（"隔行乱变颜色"就是这么来的）
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { WalkthroughStep } from '@anchor/core';
-import { EMPHASES, FALLBACK_EMPHASIS, planForStep, primaryLocationOf } from '../src/playback/decorationPlan.ts';
+import { EMPHASES, FALLBACK_EMPHASIS, planForBeat, primaryLocationOf } from '../src/playback/decorationPlan.ts';
 
 const FILE = 'C:\\repo\\test\\fixtures\\main.c';
 
@@ -21,34 +25,54 @@ function codeStep(): WalkthroughStep {
   };
 }
 
-test('一个步级底色 + 每个子高亮一个框，顺序是先铺底再点重点', () => {
-  const specs = planForStep(codeStep());
-  assert.equal(specs.length, 3);
-
+test('整块那一拍：只有块级底色，一个子高亮都不亮', () => {
+  const specs = planForBeat(codeStep(), -1);
+  assert.equal(specs.length, 1);
   assert.equal(specs[0]!.kind, 'step');
   assert.deepEqual(specs[0]!.location, { filePath: FILE, lineStart: 40, lineEnd: 42 });
+});
 
-  assert.deepEqual(
-    specs.slice(1).map((s) => [s.kind, s.emphasis, s.location.lineStart]),
-    [
-      ['highlight', 'context', 40],
-      ['highlight', 'caveat', 42],
-    ],
-  );
+test('扫描第 1 个点：块级底色 + 恰好一个子高亮（不是两个）', () => {
+  const specs = planForBeat(codeStep(), 0);
+  assert.equal(specs.length, 2, '块 + 一个点，多一个都会导致"隔行变颜色"');
+  assert.equal(specs[0]!.kind, 'step');
+  assert.equal(specs[1]!.kind, 'highlight');
+  assert.equal(specs[1]!.emphasis, 'context');
+  assert.equal(specs[1]!.location.lineStart, 40);
+});
+
+test('扫描第 2 个点：仍然只有块 + 那一个点', () => {
+  const specs = planForBeat(codeStep(), 1);
+  assert.equal(specs.length, 2);
+  assert.equal(specs[1]!.emphasis, 'caveat');
+  assert.equal(specs[1]!.location.lineStart, 42);
+});
+
+test('块级底色在每一拍都是同一个范围（这就是"统一"的含义）', () => {
+  const ranges = [-1, 0, 1].map((p) => JSON.stringify(planForBeat(codeStep(), p)[0]!.location));
+  assert.equal(new Set(ranges).size, 1, `块级范围在各拍之间变了：${ranges.join(' / ')}`);
+});
+
+test('越界的扫描位置：退化成"只有整块"，不抛错', () => {
+  for (const pointIndex of [2, 99, 1.5]) {
+    const specs = planForBeat(codeStep(), pointIndex);
+    assert.equal(specs.length, 1, `pointIndex=${pointIndex}`);
+    assert.equal(specs[0]!.kind, 'step');
+  }
+});
+
+test('没有 highlights 的 step：每一拍都只有整块', () => {
+  const step = codeStep();
+  step.highlights = undefined;
+  for (const pointIndex of [-1, 0, 1]) {
+    assert.equal(planForBeat(step, pointIndex).length, 1);
+  }
 });
 
 test('子高亮缺 emphasis 时回落到默认档，而不是留 undefined', () => {
   const step = codeStep();
   step.highlights = [{ location: { filePath: FILE, lineStart: 41, lineEnd: 41 }, narration: 'a' }];
-  assert.equal(planForStep(step)[1]!.emphasis, FALLBACK_EMPHASIS);
-});
-
-test('没有 highlights 的 step 只有底色', () => {
-  const step = codeStep();
-  step.highlights = undefined;
-  const specs = planForStep(step);
-  assert.equal(specs.length, 1);
-  assert.equal(specs[0]!.kind, 'step');
+  assert.equal(planForBeat(step, 0)[1]!.emphasis, FALLBACK_EMPHASIS);
 });
 
 test('PDF 位置一个框都不产出（线2 硬约束：PDF 上不出现任何高亮框）', () => {
@@ -57,11 +81,12 @@ test('PDF 位置一个框都不产出（线2 硬约束：PDF 上不出现任何�
     text: '这一页在讲什么',
     highlights: [{ location: { page: 23, bbox: [0.1, 0.1, 0.2, 0.2] }, narration: 'x', emphasis: 'primary' }],
   };
-  assert.deepEqual(planForStep(pdfStep), []);
+  assert.deepEqual(planForBeat(pdfStep, -1), []);
+  assert.deepEqual(planForBeat(pdfStep, 0), []);
   assert.equal(primaryLocationOf(pdfStep), undefined);
 });
 
-test('混来源：代码步里夹一个 PDF 子高亮，只画代码那个', () => {
+test('混来源：代码步里夹一个 PDF 子高亮，扫到它时不产出框，但块级底色还在', () => {
   const step: WalkthroughStep = {
     location: { filePath: FILE, lineStart: 44, lineEnd: 45 },
     text: 'x',
@@ -70,9 +95,9 @@ test('混来源：代码步里夹一个 PDF 子高亮，只画代码那个', () 
       { location: { filePath: FILE, lineStart: 45, lineEnd: 45 }, narration: 'code', emphasis: 'definition' },
     ],
   };
-  const specs = planForStep(step);
-  assert.equal(specs.length, 2);
-  assert.equal(specs[1]!.emphasis, 'definition');
+  assert.equal(planForBeat(step, 0).length, 1, '扫到 PDF 点时只剩块级底色');
+  assert.equal(planForBeat(step, 1).length, 2);
+  assert.equal(planForBeat(step, 1)[1]!.emphasis, 'definition');
 });
 
 test('四档 emphasis 都能被原样带出来（S1 必须验到全部分支）', () => {
@@ -86,7 +111,7 @@ test('四档 emphasis 都能被原样带出来（S1 必须验到全部分支）'
     })),
   };
   assert.deepEqual(
-    planForStep(step).slice(1).map((s) => s.emphasis),
+    EMPHASES.map((_, i) => planForBeat(step, i)[1]!.emphasis),
     [...EMPHASES],
   );
 });

@@ -84,6 +84,7 @@ const webviews = [];
 const statusItems = [];
 let applyEditCalls = 0;
 let receiveFromWebview;
+let onCloseDocument;
 
 const editor = {
   document: {
@@ -91,15 +92,23 @@ const editor = {
     lineCount,
     getText: () => source,
     lineAt: (n) => ({ text: source.split(/\r?\n/)[n] ?? '' }),
+    // 讲解期间用户完全可能把这个文件关掉。桩必须能模拟它 —— 见下面第 6 节
+    get isClosed() {
+      return closed;
+    },
   },
   decorations: new Map(),
   setDecorations(type, ranges) {
+    // 真实的 VS Code 在编辑器已释放时抛异常。`disposedThrow` 用来单独验"没有 isClosed 兜底时"的路径
+    if (closed || disposedThrow) throw new Error('TextEditor has been disposed');
     editor.decorations.set(type, [...ranges]);
   },
   revealRange(range, kind) {
     reveals.push({ range: range.toString(), kind });
   },
 };
+let closed = false;
+let disposedThrow = false;
 
 const vscodeStub = {
   Position,
@@ -198,7 +207,11 @@ const vscodeStub = {
       return Promise.resolve(true);
     },
     onDidChangeTextDocument: () => ({ dispose() {} }),
-    onDidCloseTextDocument: () => ({ dispose() {} }),
+    // 把回调留下来：第 6 节要手动触发"讲解期间文件被关掉"这条回归路径
+    onDidCloseTextDocument: (cb) => {
+      onCloseDocument = cb;
+      return { dispose() {} };
+    },
     fs: {
       readFile: (uri) => Promise.resolve(readFileSync(uri.fsPath)),
       stat: (uri) => (existsSync(uri.fsPath) ? Promise.resolve(statSync(uri.fsPath)) : Promise.reject(new Error('ENOENT'))),
@@ -262,6 +275,7 @@ const update = webviews[0].webview.posted.at(-1);
 check(update?.type === 'session:update', '侧边栏收到 session:update', update?.type ?? '(无)');
 check(update?.result?.steps?.length === 3, '讲解结果是 3 个 step', `${update?.result?.steps?.length}`);
 check(update?.index === 0 && update?.state === 'running', '首帧是 running / 第 0 步');
+check(update?.pointIndex === -1, '首帧停在第 0 步的"整块"那一拍（不是直接扫点）', `pointIndex=${update?.pointIndex}`);
 check(
   typeof webviews[0].webview.html === 'string' &&
     webviews[0].webview.html.includes('ui:ready') &&
@@ -273,25 +287,22 @@ check(
   '用户实际键位被内联进 webview（面板有焦点时客户端自己派发，D47）',
 );
 
-// 第 1 步：40-42 铺底；40 上下文；42 定义
+// 第 1 步：整块 40-42，**只有一个点被点亮**（第一拍 = 只铺底色）
 check(
   linesOf(typeByBackground('editor.selectionHighlightBackground')).join() === '40-42',
   '步级底色铺在第 40-42 行',
   linesOf(typeByBackground('editor.selectionHighlightBackground')).join() || '(空)',
 );
 check(
-  linesOf(typeByBackground('editor.wordHighlightBackground')).join() === '40',
-  'context 档落在第 40 行',
-  linesOf(typeByBackground('editor.wordHighlightBackground')).join() || '(空)',
-);
-check(
-  linesOf(typeByBorderColor('editorInfo.foreground')).join() === '42',
-  'definition 档（左侧边线）落在第 42 行',
-  linesOf(typeByBorderColor('editorInfo.foreground')).join() || '(空)',
+  linesOf(typeByBackground('editor.wordHighlightBackground')).length === 0 &&
+    linesOf(typeByBorderColor('editorInfo.foreground')).length === 0,
+  '整块那一拍：一个子高亮都不亮（"隔行乱变颜色"就是这么修掉的）',
+  `context=${linesOf(typeByBackground('editor.wordHighlightBackground')).join() || '空'} definition=${linesOf(typeByBorderColor('editorInfo.foreground')).join() || '空'}`,
 );
 check(reveals.at(-1)?.kind === 1, '用 InCenter 定位（TextEditorRevealType.InCenter = 1）', `kind=${reveals.at(-1)?.kind}`);
 check(statusItems[0]?.shown === true, '状态栏显示中');
 check(statusItems[0]?.text.includes('下一步'), '状态栏提示里带键位', statusItems[0]?.text ?? '');
+check(statusItems[0]?.text.includes('1/3 步'), '状态栏显示步进度', statusItems[0]?.text ?? '');
 
 // §4.3 的硬指标：半透明主题色 + isWholeLine + ClosedClosed。一次把 5 个 type 全查一遍。
 check(
@@ -312,40 +323,97 @@ check(
   '没有任何写死颜色',
 );
 
-// ---- 3. 流转 ---------------------------------------------------------------
+// ---- 3. 扫描与流转 ---------------------------------------------------------
+// 第 2 拍：扫第 1 步的第 1 个点（40 行 ·上下文）
 registered.get('anchorExplain.next')?.();
 await flush();
-check(webviews[0].webview.posted.at(-1)?.index === 1, 'next 推进到第 2 步');
 check(
-  linesOf(typeByBackground('editor.selectionHighlightBackground')).join() === '44-45',
-  '第 2 步的底色换到第 44-45 行（上一步的框被清掉）',
+  webviews[0].webview.posted.at(-1)?.pointIndex === 0,
+  'next 从"整块"进到"扫第 1 个点"',
+  `pointIndex=${webviews[0].webview.posted.at(-1)?.pointIndex}`,
+);
+check(
+  linesOf(typeByBackground('editor.wordHighlightBackground')).join() === '40',
+  'context 档点亮在第 40 行',
+  linesOf(typeByBackground('editor.wordHighlightBackground')).join() || '(空)',
+);
+check(
+  linesOf(typeByBackground('editor.selectionHighlightBackground')).join() === '40-42',
+  '扫描时块级底色不变（40-42 仍然整块铺着）',
   linesOf(typeByBackground('editor.selectionHighlightBackground')).join() || '(空)',
 );
 check(
+  linesOf(typeByBorderColor('editorInfo.foreground')).length === 0,
+  '只亮一个点：另一个点（42 行 ·定义）此刻不许亮',
+  linesOf(typeByBorderColor('editorInfo.foreground')).join() || '空',
+);
+
+// 第 3 拍：扫第 1 步的第 2 个点（42 行 ·定义），上一个点必须灭掉
+registered.get('anchorExplain.next')?.();
+await flush();
+check(
+  webviews[0].webview.posted.at(-1)?.pointIndex === 1,
+  '再 next 进到"扫第 2 个点"',
+  `pointIndex=${webviews[0].webview.posted.at(-1)?.pointIndex}`,
+);
+check(
+  linesOf(typeByBorderColor('editorInfo.foreground')).join() === '42',
+  'definition 档（左侧边线）点亮在第 42 行',
+  linesOf(typeByBorderColor('editorInfo.foreground')).join() || '(空)',
+);
+check(
+  linesOf(typeByBackground('editor.wordHighlightBackground')).length === 0,
+  '上一个点（40 行 ·上下文）已灭',
+  linesOf(typeByBackground('editor.wordHighlightBackground')).join() || '空',
+);
+check(
+  executed.filter((c) => c.id === 'setContext' && c.args[1] === true).length >= 1 &&
+    webviews[0].webview.posted.at(-1)?.state === 'running',
+  '扫描过程中会话一直是活的',
+);
+
+// 第 4 拍：进第 2 步的整块拍
+registered.get('anchorExplain.next')?.();
+await flush();
+const stepTwo = webviews[0].webview.posted.at(-1);
+check(stepTwo?.index === 1 && stepTwo?.pointIndex === -1, '扫完第 1 步的两个点才进第 2 步的整块拍', `index=${stepTwo?.index} pointIndex=${stepTwo?.pointIndex}`);
+check(
+  linesOf(typeByBackground('editor.selectionHighlightBackground')).join() === '44-45',
+  '第 2 步的底色换到第 44-45 行（上一步的框全灭）',
+  linesOf(typeByBackground('editor.selectionHighlightBackground')).join() || '(空)',
+);
+check(
+  decorationTypes.every(
+    (t) => linesOf(t).length === 0 || t.options.backgroundColor?.id === 'editor.selectionHighlightBackground',
+  ),
+  '第 2 步的整块拍上没有多余的点亮',
+);
+
+// 第 5 拍：扫第 2 步的第 1 个点（44 行 ·重点）
+registered.get('anchorExplain.next')?.();
+await flush();
+check(
   linesOf(typeByBorderColor('editor.findMatchBorder')).join() === '44',
-  'primary 档（强调描边）落在第 44 行',
+  'primary 档（强调描边）点亮在第 44 行',
   linesOf(typeByBorderColor('editor.findMatchBorder')).join() || '(空)',
 );
 
-registered.get('anchorExplain.next')?.();
+// 一路走到最后一拍，再按一次收尾（拍数 = 1+2 + 1+2 + 1+2 = 9）
+for (let i = 0; i < 4; i += 1) registered.get('anchorExplain.next')?.();
 await flush();
-check(webviews[0].webview.posted.at(-1)?.index === 2, 'next 推进到第 3 步');
+const lastBeat = webviews[0].webview.posted.at(-1);
+check(lastBeat?.index === 2 && lastBeat?.pointIndex === 1, '走到第 3 步的第 2 个点 = 最后一拍', `index=${lastBeat?.index} pointIndex=${lastBeat?.pointIndex}`);
+check(lastBeat?.state === 'running', '还在最后一拍时状态不是 done（还能再按一次）');
 check(
   linesOf(typeByBorderColor('editorWarning.foreground')).join() === '46',
-  'caveat 档（虚线警示）落在第 46 行',
+  'caveat 档（虚线警示）点亮在第 46 行',
   linesOf(typeByBorderColor('editorWarning.foreground')).join() || '(空)',
 );
-check(
-  linesOf(typeByBackground('editor.selectionHighlightBackground')).join() === '46-48',
-  '第 3 步的底色换到第 46-48 行',
-  linesOf(typeByBackground('editor.selectionHighlightBackground')).join() || '(空)',
-);
 
-// 到最后一步再 next → 收尾
 registered.get('anchorExplain.next')?.();
 await flush();
 const doneFrame = webviews[0].webview.posted.at(-1);
-check(doneFrame?.state === 'done', '讲完落到 done', doneFrame?.state ?? '(无)');
+check(doneFrame?.state === 'done', '最后一拍再 next 落成 done', doneFrame?.state ?? '(无)');
 check(
   executed.filter((c) => c.id === 'setContext' && c.args[0] === 'anchorExplain.walkthroughActive' && c.args[1] === false)
     .length >= 1,
@@ -407,6 +475,61 @@ check(
 const afterBytes = sha1(readFileSync(MAIN_C));
 check(afterBytes === beforeBytes, 'main.c 字节未变（高亮是纯装饰）');
 check(applyEditCalls === 0, 'workspace.applyEdit 从未被调用');
+
+// ---- 7. 回归：讲解期间目标文件被关掉，stop() 必须照样收完尾 -----------------
+// 这就是用户报的"按 Esc 没反应、后面都没法测了"：编辑器一旦释放，
+// `setDecorations` 会抛；修之前异常会把 stop() 后面的收尾全部跳过，会话卡在半死状态。
+closed = true;
+const contextBefore = executed.filter((c) => c.id === 'setContext').length;
+
+await registered.get('anchorExplain.capture')?.(); // 起一个新的会话（此时编辑器已在桩里被标成已关闭）
+check(webviews[0].webview.posted.at(-1)?.type === 'session:update', '文件已关闭时仍能起讲解（渲染退化为无高亮）');
+
+let stopThrew = false;
+try {
+  registered.get('anchorExplain.stop')?.();
+} catch {
+  stopThrew = true;
+}
+const contextAfter = executed.filter((c) => c.id === 'setContext').slice(contextBefore);
+check(!stopThrew, 'stop() 在编辑器已释放时也不抛（异常不许逃出清框这一步）');
+check(
+  contextAfter.some((c) => c.args[0] === 'anchorExplain.sessionOpen' && c.args[1] === false) &&
+    contextAfter.some((c) => c.args[0] === 'anchorExplain.walkthroughActive' && c.args[1] === false),
+  '关文件后 stop() 仍然把两个 context key 都落回 false（收尾没有被打断）',
+  JSON.stringify(contextAfter.map((c) => c.args)),
+);
+check(statusItems[0]?.shown === false, '关文件后 stop() 仍然收起了状态栏');
+check(webviews[0].webview.posted.at(-1)?.type === 'session:end', '关文件后 stop() 仍然通知了侧边栏');
+
+// 同一个坑的另一条路径：编辑器对象被释放但 isClosed 没报（只有 try/catch 能兜住）
+closed = false;
+disposedThrow = true;
+await registered.get('anchorExplain.capture')?.();
+let stopThrew2 = false;
+try {
+  registered.get('anchorExplain.stop')?.();
+} catch {
+  stopThrew2 = true;
+}
+check(!stopThrew2, 'setDecorations 直接抛异常时 stop() 也不抛（try/catch 那一层兜住了）');
+check(statusItems[0]?.shown === false, '这条路径下状态栏同样被收起');
+disposedThrow = false;
+
+// ---- 8. 真·onDidCloseTextDocument：讲解期间关文件 → 自动收工 ----------------
+await registered.get('anchorExplain.capture')?.();
+check(webviews[0].webview.posted.at(-1)?.type === 'session:update', '为关文件路径起了新会话');
+closed = true;
+let closeThrew = false;
+try {
+  onCloseDocument?.({ uri: { fsPath: MAIN_C } });
+} catch {
+  closeThrew = true;
+}
+check(!closeThrew, 'onDidCloseTextDocument 回调本身不抛');
+check(webviews[0].webview.posted.at(-1)?.type === 'session:end', '关掉正在讲的文件会主动结束会话（§4.2）');
+check(statusItems[0]?.shown === false, '关文件后状态栏已收起');
+closed = false;
 
 // ---- 收尾 -----------------------------------------------------------------
 Module._load = originalLoad;

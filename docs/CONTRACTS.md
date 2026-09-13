@@ -307,10 +307,15 @@ interface SourceAdapter {
 
 全部走主题色变量（不写死十六进制），`isWholeLine: true`，纯视觉不改文件。
 
-**步级底色与 emphasis 分层（S1 冻结，D41）**：一个 step 的**整体范围**只画一层中性底色
+**步级底色与 emphasis 分层（S1 冻结，D41 / D48）**：一个 step 的**整体范围**只画一层中性底色
 （就是上表 `context` 那档的视觉：`editor.selectionHighlightBackground`、无描边），
 `emphasis` 四档配色**只作用于 `highlights[]` 子高亮**。原因：步级范围与子高亮几乎总是重叠，
 两套半透明底色叠在一起会糊成一团，反而看不清"这一步在讲哪几行、重点是哪一行"。
+
+**而且一次只点亮一个子高亮（D48）**：会话的游标是"拍"，一个 step（n 个子高亮）占 n+1 拍 ——
+第 1 拍只铺块级底色，之后每拍点亮一个点。第一版把同一 step 的所有子高亮同时画上，
+结果 40/41/42 三行出现三种混合色，用户看到的是"隔行乱变颜色"。
+所以"块级底色恒为均匀"是**结构性**保证，靠的是点亮策略，不是靠调色。
 
 实测映射（`scripts/smoke-walkthrough.mjs` 按这些 id 反查 decoration type，所以它们**就是**断言）：
 
@@ -375,11 +380,16 @@ type SidebarToHost =
   | { type: 'ui:stop' } | { type: 'ui:revealStep'; index: number };
 ```
 
-**`ui:ready` 是 S1 追加的唯一一条消息（D42）**，非加不可：webview 的 DOM 生命周期与宿主无关 ——
+**`ui:ready` 是 S1 追加的第一条消息（D42）**，非加不可：webview 的 DOM 生命周期与宿主无关 ——
 用户关掉面板再触发一次讲解时，新 webview 的脚本才刚 `acquireVsCodeApi()`，
 宿主在 `webview.html = ...` 之后立刻 post 的消息会丢在它订阅之前，表现为"重开面板一片空白"。
 有了握手，宿主收到 `ui:ready` 就把最近的若干条消息（环形，上限 50）原样重放，
 webview 因此**不需要自己持久化任何状态**。
+
+**`session:update` 上的 `pointIndex` 是第二条（D48）**：`-1` = 正在铺整块底色，
+`0..n-1` = 正在扫该步的第几个逻辑点。非加不可：面板原来自己按 `index >= total - 1`
+判断"是不是最后一步"，改拍之后这个判断会在最后一步的**第一拍**就把「下一步」按死，
+而后面还有几个扫描点没走完。拍总数客户端能用 `result` 自己算，所以只传这一个字段。
 
 **`ui:goto` / `ui:revealStep` 的分工**：点侧边栏里某条的**正文** = `ui:goto`（把那条变成当前步）；
 点那条的**位置标签** = `ui:revealStep`（只把视图滚过去，不改变当前步）。
@@ -408,14 +418,17 @@ S6 的 PDF 侧边栏是同一套语义（点击滚动到该页）。
 
 S1 落地的行为（`sidebar/statusBar.ts`）：
 
-- 提示形如 `$(book) 1/3 · 讲解中 · Alt+] 下一步 · Alt+[ 上一步 · Esc 退出`；
-  `playing` / `paused` 换成对应措辞，`done` 用 `$(check)`。
-- 用户的键位**只在第一次要显示提示时才读一次** `keybindings.json`（激活阶段零磁盘 I/O），
+- 提示形如 `$(book) 1/3 步 · 第 2/2 点 · 讲解中 · Alt+] 下一步 · Alt+[ 上一步 · Esc 退出`；
+  `playing` / `paused` 换成对应措辞，`done` 用 `$(check)` 且**只留「退出」**（推进键已失效）。
+- 用户的键位**在激活时读一次** `keybindings.json`（同一次解析结果也交给侧边栏内联，D47），
   读不到/解析失败一律静默保留默认键位 —— 状态栏宁可保守，也不能因为读不到键位而骗人。
 - 用户把某个键解绑（`-anchorExplain.next`）时，提示里**只显示动作、不显示键**。
 - 状态栏是 **staleness 唯一如实告诉用户的地方**：讲解期间文件被改动 → 前缀换成
   `$(warning) 文件已改动`（§5.3 的 `session:update` 里没有这个字段，而这句话必须有人说）。
 - 点击状态栏项 = `anchorExplain.goto`（跳转面板）。
+- `probe()` 暴露"此刻是否显示 + 文本"，`Anchor: 显示状态` 会打印它 ——
+  用户报过"找不到状态栏提示"，而"看不见"有两种可能（没显示 / 显示了但没找到），
+  只有把这两个值读出来才能分辨。
 
 ---
 
@@ -508,14 +521,14 @@ function createContextRequestLogger(opts?: {
 | `packages/core/src/fakes/fakeEditorPort.ts` | 假选区（写死 40-48 行）。S2 被真实现替换 | `FAKE_FILE_PATH`:18 `FAKE_LINE_START`:19 `FAKE_LINE_END`:20 `FAKE_SELECTION_TEXT`:27 `FAKE_DOCUMENT_HASH`:39 `createFakeEditorPort`:63 |
 | `packages/extension-anchor/src/extension.ts` | activate → `registerCommands`（入口保持极薄） | `activate`:11 `deactivate`:16 |
 | `packages/extension-anchor/src/paths.ts` | 路径归一 / 比较 / 行数（vscode-free，四条链路共用一份） | `normPath`:11 `samePath`:15 `countTextLines`:25 |
-| `packages/extension-anchor/src/commands.ts` | §4.1 八个命令 + 四层装配。**全项目唯一的假货接线点**（见 §2.1） | `registerCommands`:41 `resolveS1FixturePath`:331（S1 脚手架，S2 删除） |
-| `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 两处边界守卫 | `WalkthroughState`:19 `HostToSidebar`:25 `SidebarToHost`:38 `HostToSelect`:50 `SelectToHost`:55 `isAnchorLike`:86 `parseSidebarMessage`:115 |
+| `packages/extension-anchor/src/commands.ts` | §4.1 八个命令 + 四层装配。**全项目唯一的假货接线点**（见 §2.1） | `registerCommands`:41 `resolveS1FixturePath`:382（S1 脚手架，S2 删除） |
+| `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 两处边界守卫 | `WalkthroughState`:19 `HostToSidebar`:35 `SidebarToHost`:54 `HostToSelect`:66 `SelectToHost`:71 `isAnchorLike`:102 `parseSidebarMessage`:131 |
 | `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**） | `ValidationIssue`:35 `ExplanationOutline`:42 `ExplanationValidation`:49 `coerceEmphasis`:66 `parseMaybeJson`:76 `validateExplanation`:299 `describeIssues`:336 |
-| `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（vscode-free） | `WalkthroughSnapshot`:16 `SnapshotListener`:28 `PLAY_INTERVAL_MS`:31 `WalkthroughSession`:37 |
-| `packages/extension-anchor/src/playback/decorationPlan.ts` | 「一个 step 该画哪些框」的纯决策 | `DecorationSpec`:20 `EMPHASES`:27 `FALLBACK_EMPHASIS`:29 `planForStep`:35 `primaryLocationOf`:55 |
+| `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
+| `packages/extension-anchor/src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策 | `DecorationSpec`:25 `EMPHASES`:32 `FALLBACK_EMPHASIS`:34 `planForBeat`:40 `primaryLocationOf`:60 |
 | `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档** | `CodeWalkthroughPlayer`:83 |
 | `packages/extension-anchor/src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 | `SidebarHandlers`:17 `SidebarPanel`:28 |
-| `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（键位读用户实际绑定，并**交给侧边栏复用**） | `StatusBarHandle`:23 `createStatusBar`:59 |
+| `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（读用户实际绑定，并**交给侧边栏复用**）+ `probe()` 自检 | `StatusBarHandle`:23 `createStatusBar`:65 |
 | `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表 + JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:13 `WalkthroughChordSpec`:15 `WALKTHROUGH_CHORDS`:27 `ResolvedChord`:76 `ResolvedChords`:77 `KeyBindingEntry`:79 `defaultChords`:86 `keybindingsPathFrom`:99 `stripJsonc`:116 `parseKeybindings`:175 `resolveChords`:191 `formatChord`:258 |
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
 | `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（`getSelection` 当前被替身顶掉） | `createEditorPort`:24 |

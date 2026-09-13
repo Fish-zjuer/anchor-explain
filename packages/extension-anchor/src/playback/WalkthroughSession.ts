@@ -1,24 +1,50 @@
 /**
- * 会话状态机 —— 「当前讲到第几步、是播放还是暂停、文档是否已经变了」的唯一事实源。
+ * 会话状态机 —— 「现在讲到哪、是播放还是暂停、文档是否已经变了」的唯一事实源。
  *
  * @anchor 它**不 import 'vscode'**，也不碰任何渲染：宿主（commands.ts）订阅它的变化，
  *         再分别推给 decoration 渲染器、侧边栏、状态栏。三者读的是同一份快照，
  *         所以「侧边栏说第 2 步、编辑器高亮第 3 步」这类错位在结构上不可能发生。
  *
- * 说明它为什么不是"多一层没用"：staleness（讲解期间文件被改）必须由一个中心点判定，
- * 否则三个渲染方各自判断，就会各自给出不同的结论。
+ * ## 游标是「拍」，不是「步」（D48）
+ *
+ * 用户给的观感要求是：**浅色荧光包住整个块，再用一个荧光在块内部逐个小逻辑点扫过去**。
+ * 于是游标设计的不是"第几步"，而是线性的**拍**：
+ *
+ * ```
+ * 第 1 步： [整块底色] → [扫第 1 个点] → [扫第 2 个点]
+ * 第 2 步： [整块底色] → [扫第 1 个点] → …
+ * ```
+ *
+ * 一个 step（有 n 个子高亮）占 n+1 拍：第 1 拍只铺块级底色（"先看清这一段整体"），
+ * 之后每拍点亮一个子高亮。`next()` 推进一拍，所以"更细"这件事不需要新的按键。
+ *
+ * 这也顺带修掉了 S1 第一版的观感事故：那版把**所有**子高亮同时点亮，
+ * 于是 40/41/42 三行出现三种不同混合色，看起来像"隔行乱变颜色"。
+ * 一次只点亮一个点，块级底色就永远是均匀的，那一行亮色是"扫描位置"而不是噪声。
+ *
+ * 为什么用扁平下标而不是 (stepIndex, pointIndex) 两个字段：`next`/`prev`/`atEnd`/
+ * 播放定时器全都要"往后挪一格"，扁平下标让这件事只有一个地方会算错。
+ * 对外仍然暴露 `index`（步骤下标）—— §5.3 的 `session:update` 用的就是它。
  */
 
 import { AnchorError } from '@anchor/core';
-import type { ExplanationResult, WalkthroughStep } from '@anchor/core';
+import type { ExplanationResult, SubHighlight, WalkthroughStep } from '@anchor/core';
 import type { WalkthroughState } from '../protocol.ts';
 
 export interface WalkthroughSnapshot {
   readonly state: WalkthroughState;
   readonly result: ExplanationResult;
-  readonly index: number;          // 0-based
-  readonly step: WalkthroughStep;  // 恒存在：构造时已保证 steps 非空
-  readonly total: number;
+  /** 步骤下标（0-based）。名字保持 `index`：`session:update` 用的就是它 */
+  readonly index: number;
+  readonly step: WalkthroughStep;
+  readonly total: number;              // 共几步
+  /** 步内扫描位置：`-1` = 这一拍只铺整块底色；`0..n-1` = 正在扫第几个子高亮 */
+  readonly pointIndex: number;
+  readonly pointTotal: number;         // 当前步有几个子高亮
+  readonly point: SubHighlight | undefined;
+  /** 跨整段讲解的第几拍（1-based），一拍 = 按一次「下一步」 */
+  readonly beat: number;
+  readonly beatTotal: number;
   /** 讲解开始后文档被改动过：高亮可能已错行，UI 必须如实提示而不是装作没事 */
   readonly stale: boolean;
   readonly atStart: boolean;
@@ -27,11 +53,48 @@ export interface WalkthroughSnapshot {
 
 export type SnapshotListener = (snapshot: WalkthroughSnapshot) => void;
 
-/** 自动播放的默认步间隔。**不做成配置项**（§6 配置表已冻结）；需要时改这里。 */
-export const PLAY_INTERVAL_MS = 2600;
+/**
+ * 自动播放每一拍的间隔。**不做成配置项**（§6 配置表已冻结）。
+ * 比 S1 第一版短：那时候一拍 = 一整步，现在一拍 = 一个扫描点，太长会显得拖。
+ */
+export const PLAY_INTERVAL_MS = 1600;
 
 export interface WalkthroughSessionOptions {
   playIntervalMs?: number;
+}
+
+/** 一个 step 占几拍：1 拍铺整块 + 每个子高亮 1 拍 */
+export function beatsPerStep(step: WalkthroughStep): number {
+  return 1 + (step.highlights?.length ?? 0);
+}
+
+export function totalBeats(steps: readonly WalkthroughStep[]): number {
+  let n = 0;
+  for (const step of steps) n += beatsPerStep(step);
+  return n;
+}
+
+/** 把扁平的"拍"换算成 (步骤下标, 步内扫描位置)；越界返回 undefined */
+export function locateBeat(
+  steps: readonly WalkthroughStep[],
+  beat: number,
+): { index: number; pointIndex: number } | undefined {
+  if (!Number.isInteger(beat) || beat < 0) return undefined;
+  let rest = beat;
+  for (let i = 0; i < steps.length; i += 1) {
+    const n = beatsPerStep(steps[i]!);
+    if (rest < n) return { index: i, pointIndex: rest - 1 };
+    rest -= n;
+  }
+  return undefined;
+}
+
+/** 某一步的第一拍（只铺底色那一拍）；越界返回最后一步的第一拍 */
+export function firstBeatOfStep(steps: readonly WalkthroughStep[], index: number): number {
+  const clamped = Math.min(Math.max(Math.trunc(index), 0), Math.max(steps.length - 1, 0));
+  let beat = 0;
+  for (let i = 0; i < clamped; i += 1) beat += beatsPerStep(steps[i]!);
+  return beat;
 }
 
 export class WalkthroughSession {
@@ -40,14 +103,14 @@ export class WalkthroughSession {
   readonly #intervalMs: number;
   readonly #listeners = new Set<SnapshotListener>();
 
-  #index = 0;
+  #beat = 0;
   #state: WalkthroughState = 'running';
   #stale = false;
   #timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(result: ExplanationResult, opts: WalkthroughSessionOptions = {}) {
     // 校验闸门（validateExplanation §3.3 第 2 条）已经保证 steps ≥ 1；
-    // 这里再断言一次，是因为"至少有一个 step"是下面 `#steps[#index]!` 成立的前提 ——
+    // 这里再断言一次，是因为"至少有一个 step"是下面 `#steps[...]!` 成立的前提 ——
     // 与其用可选类型把 undefined 扩散到所有渲染方，不如在门口挡住。
     if (result.steps.length === 0) {
       throw new AnchorError('SCHEMA_VIOLATION', '讲解结果没有任何步骤，拒绝开启会话');
@@ -58,15 +121,24 @@ export class WalkthroughSession {
   }
 
   get snapshot(): WalkthroughSnapshot {
+    const cursor = locateBeat(this.#steps, this.#beat) ?? { index: 0, pointIndex: -1 };
+    const step = this.#steps[cursor.index]!;
+    const pointTotal = step.highlights?.length ?? 0;
+
     return {
       state: this.#state,
       result: this.#result,
-      index: this.#index,
-      step: this.#steps[this.#index]!,
+      index: cursor.index,
+      step,
       total: this.#steps.length,
+      pointIndex: cursor.pointIndex,
+      pointTotal,
+      point: cursor.pointIndex >= 0 ? step.highlights?.[cursor.pointIndex] : undefined,
+      beat: this.#beat + 1,
+      beatTotal: totalBeats(this.#steps),
       stale: this.#stale,
-      atStart: this.#index === 0,
-      atEnd: this.#index === this.#steps.length - 1,
+      atStart: this.#beat === 0,
+      atEnd: this.#beat >= totalBeats(this.#steps) - 1,
     };
   }
 
@@ -79,32 +151,33 @@ export class WalkthroughSession {
     return this.#steps.length;
   }
 
-  /** 推进到下一步；已在最后一步则收尾（`done`）并返回 false。 */
+  /** 推进一步；已在最后一拍则收尾（`done`）并返回 false。 */
   next(): boolean {
-    if (this.#index >= this.#steps.length - 1) {
+    if (this.#beat >= totalBeats(this.#steps) - 1) {
       this.#clearTimer();
       this.#state = 'done';
       this.#emit();
       return false;
     }
-    this.#index += 1;
+    this.#beat += 1;
     this.#emit();
     return true;
   }
 
   prev(): boolean {
-    if (this.#index <= 0) return false;
-    this.#index -= 1;
+    if (this.#beat <= 0) return false;
+    this.#beat -= 1;
     if (this.#state === 'done') this.#state = 'running';
     this.#emit();
     return true;
   }
 
-  /** 跳到指定步（0-based）。越界一律忽略，不抛错。 */
+  /** 跳到某一步的**第一拍**（只铺底色那拍）。越界一律忽略，不抛错。 */
   goto(index: number): boolean {
     if (!Number.isInteger(index) || index < 0 || index >= this.#steps.length) return false;
-    if (index === this.#index && this.#state !== 'done') return false;
-    this.#index = index;
+    const target = firstBeatOfStep(this.#steps, index);
+    if (target === this.#beat && this.#state !== 'done') return false;
+    this.#beat = target;
     if (this.#state === 'done') this.#state = 'running';
     this.#emit();
     return true;
@@ -169,7 +242,7 @@ export class WalkthroughSession {
 
   #tick(): void {
     if (this.#state !== 'playing') return;
-    // next() 在最后一步会自己落成 done 并清掉定时器，所以这里只需处理"还能继续"的情况
+    // next() 在最后一拍会自己落成 done 并清掉定时器，所以这里只需处理"还能继续"的情况
     if (this.next()) this.#schedule();
   }
 

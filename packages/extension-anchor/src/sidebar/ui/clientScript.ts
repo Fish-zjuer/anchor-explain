@@ -53,7 +53,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return "";
   }
 
-  function buildHeader(result, index, state) {
+  function buildHeader(result, index, state, pointIndex) {
     var wrap = mk("div", "header");
     if (result.title) wrap.appendChild(mk("h1", "doc-title", result.title));
     if (result.summary) wrap.appendChild(mk("p", "summary", result.summary));
@@ -61,13 +61,19 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var meta = mk("div", "meta");
     meta.appendChild(mk("span", "badge", STATE_LABEL[state] || state));
     meta.appendChild(mk("span", "badge", "第 " + (index + 1) + "/" + result.steps.length + " 步"));
+    if (typeof pointIndex === "number" && pointIndex >= 0) {
+      var points = (result.steps[index].highlights || []).length;
+      meta.appendChild(mk("span", "badge", "第 " + (pointIndex + 1) + "/" + points + " 个逻辑点"));
+    } else {
+      meta.appendChild(mk("span", "badge", "整块"));
+    }
     var pct = Math.round((typeof result.confidence === "number" ? result.confidence : 0) * 100);
     meta.appendChild(mk("span", "badge", "可信度 " + pct + "%"));
     wrap.appendChild(meta);
     return wrap;
   }
 
-  function buildStep(step, i, current) {
+  function buildStep(step, i, current, pointIndex) {
     var li = mk("li", "step" + (i === current ? " current" : i < current ? " dim" : ""));
     li.setAttribute("data-act", "goto");
     li.setAttribute("data-index", String(i));
@@ -90,7 +96,10 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       var ul = mk("ul", "highlights");
       for (var k = 0; k < subs.length; k++) {
         var h = subs[k];
-        var row = mk("li");
+        // 只有"当前这一步"才谈得上"正在扫第几个点"；其它步的行不参与高亮
+        var scanning = i === current && k === pointIndex;
+        var row = mk("li", scanning ? "scanning" : null);
+        if (scanning) row.appendChild(mk("span", "scan-mark", "▸"));
         var emphasis = h.emphasis || "primary";
         row.appendChild(mk("span", "tag tag-" + emphasis, EMPHASIS_LABEL[emphasis] || emphasis));
         row.appendChild(mk("span", "narration", h.narration + " [" + locText(h.location) + "]"));
@@ -102,16 +111,24 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return li;
   }
 
-  function buildToolbar(index, total, ended) {
+  /**
+   * 注意：这个字符串里**不能出现反引号**（它是外层模板字符串的结束符，写一个就把文件切断了）。
+   * JS 代码里要引用标识符就用双引号括起来，别用反引号。
+   *
+   * done 的判断只能用 state === "done"，不能用 index >= total - 1：
+   * 一拍 = 一个扫描点之后，最后一步的第一拍还没走完它内部的点，
+   * 按步骤下标去禁用「下一步」会把剩下的点直接憋死。
+   */
+  function buildToolbar(done, atStart, ended) {
     var bar = mk("div", "toolbar");
 
     var prev = mk("button", null, "上一步");
     prev.setAttribute("data-act", "prev");
-    prev.disabled = ended || index <= 0;
+    prev.disabled = ended || atStart;
 
-    var next = mk("button", null, index >= total - 1 ? "讲完了" : "下一步");
+    var next = mk("button", null, done ? "讲完了" : "下一步");
     next.setAttribute("data-act", "next");
-    next.disabled = ended || index >= total - 1;
+    next.disabled = ended || done;
 
     var stop = mk("button", null, "退出");
     stop.setAttribute("data-act", "stop");
@@ -157,16 +174,20 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     }
 
     var result = snapshot.result;
-    root.appendChild(buildHeader(result, snapshot.index, snapshot.state));
+    var index = snapshot.index;
+    var pointIndex = snapshot.pointIndex;
+    var done = snapshot.state === "done" || snapshot.state === "idle";
+
+    root.appendChild(buildHeader(result, index, snapshot.state, pointIndex));
 
     var list = mk("ul", "steps");
     for (var i = 0; i < result.steps.length; i++) {
-      list.appendChild(buildStep(result.steps[i], i, snapshot.index));
+      list.appendChild(buildStep(result.steps[i], i, index, pointIndex));
     }
     root.appendChild(list);
 
     if (snapshot.ended) root.appendChild(mk("p", "ended", "讲解已结束。重新选中一段再发起即可。"));
-    root.appendChild(buildToolbar(snapshot.index, result.steps.length, snapshot.ended));
+    root.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
     root.appendChild(buildTrace());
   }
 
@@ -187,7 +208,16 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var msg = ev.data;
     if (!msg || typeof msg.type !== "string") return;
     if (msg.type === "session:update") {
-      snapshot = { result: msg.result, index: msg.index, state: msg.state, ended: false };
+      // atStart 由"第 0 步的整块那一拍"推出，不必再让宿主多传一个字段
+      var atStart = msg.index === 0 && !(msg.pointIndex >= 0);
+      snapshot = {
+        result: msg.result,
+        index: msg.index,
+        state: msg.state,
+        pointIndex: typeof msg.pointIndex === "number" ? msg.pointIndex : -1,
+        atStart: atStart,
+        ended: false
+      };
       render();
     } else if (msg.type === "session:end") {
       if (snapshot) snapshot.ended = true;

@@ -13,7 +13,8 @@
 ## 现在能跑什么
 
 **S1 阶段：线1（代码编辑器）的最小闭环能跑了。** 打开 `main.c`、选中一段、按 `Ctrl+Shift+A`，
-编辑器里出现半透明高亮，侧边栏出逐步讲解，`Alt+]` 往下走，`Esc` 退出。**文件一个字节都不会变。**
+编辑器里出现**均匀的浅色块**，`Alt+]` 让一个荧光在块内**逐个小逻辑点扫过去**，
+侧边栏同步出讲解，`Esc` 退出。**文件一个字节都不会变。**
 
 目前**只有"AI 从哪来"与"选区从哪来"两处是替身**（写死的三个 step、写死的第 40-48 行），
 链路其余部分全是真的：输出校验 → 会话状态 → decoration → 侧边栏 → 状态栏。
@@ -41,9 +42,9 @@ pnpm fixtures     # 重新生成 test/fixtures/sample-30p.pdf（零依赖，已�
 pnpm build        # esbuild 打包扩展，产物落在各自 packages/<包名>/dist/extension.cjs
 pnpm watch        # 同上，watch 模式；F5 的 preLaunchTask 用的就是这个
 pnpm typecheck    # tsc --noEmit，只做类型检查，不出产物
-pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 58
+pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 65
 pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（19 项断言）
-pnpm smoke:chain  # 链路冒烟：跑一次完整讲解，断言高亮画在哪几行（43 项断言）
+pnpm smoke:chain  # 链路冒烟：跑一次完整讲解，断言每一拍只亮一个点、文件未变（64 项断言）
 pnpm check        # 上面最后五件事串起来：typecheck → test → build → smoke → smoke:chain
 ```
 

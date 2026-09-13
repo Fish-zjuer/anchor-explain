@@ -133,11 +133,12 @@
   - `packages/extension-anchor/src/vscode/ports/{editorPort.ts, fileSystemPort.ts}`（此处为 S1 的**假选区**实现）
   - `packages/extension-anchor/src/orchestrator/validateExplanation.ts`（首次落地）
   - `packages/extension-anchor/package.json` 的 `contributes.commands` / `contributes.keybindings`
-- **验收标准**：**用户实操确认**（高亮像不像荧光笔、流转顺不顺）。补充硬指标：
+- **验收标准**：**用户实操确认**（高亮像不像荧光笔、扫描顺不顺）。补充硬指标：
   - 高亮为**半透明背景 + `isWholeLine` + border**，纯视觉
   - 文件 `isDirty === false` 且**字节未变**
   - 键位走 `contributes.keybindings` 默认声明，**不硬编码 Space**
   - 状态栏提示**反映用户实际绑定**
+  - **块级底色在各拍之间必须完全一致**，且任意一拍最多只有一行被单独点亮（D48）
 - **回退点**：`slice-F2`
 - **状态**：实现与自动化验收完成（2026-09-13）。**硬门未过：等用户 F5 实操确认后才进 S2。**
 
@@ -167,28 +168,39 @@
 2. `contributes.keybindings` 额外给了 mac 变体（`key` + `mac` 两个字段）。§4.1 只写了 ctrl 形式，
    但 `keybindings` 的 `mac` 字段本来就是为这件事存在的（D45）。
 
+### S1 第二轮（用户实测反馈后）
+
+用户 F5 实测通过，但报了三件事，都已改完（`DECISIONS.md` D48 / D49）：
+
+| 反馈 | 真因 | 处置 |
+|---|---|---|
+| "荧光不够统一，隔行就变颜色" | 同一 step 的**所有**子高亮被同时点亮 → 三行三种混合色 | 游标改成「**拍**」：整块 1 拍 + 每个逻辑点 1 拍，一次只亮一个点 |
+| "讲解不够细？应该浅色荧光包住整块 + 一个荧光扫描内部逐个小逻辑点" | 一拍 = 一整步，粒度太粗 | 同上；`Ctrl+Shift+Space` 可自动扫 |
+| "ESC 好像没有，后面都没法测了" | 编辑器被释放后 `setDecorations` 抛异常，把 `stop()` 的收尾整段跳过；渲染面一抛还会被误判成"讲解失败"并落掉 `sessionOpen` | 状态先置、渲染面各自隔离、清框兜异常、`startSession` 移出 try |
+| "状态栏没找到"（用户说"小事，后面固定到一个地方就行"） | 未定论 | `Anchor: 显示状态` 增报状态栏项的 `shown`/`text`；落点待用户决定 |
+
+新增/改动的文件：`WalkthroughSession.ts`（拍游标 + 4 个纯函数）、`decorationPlan.ts`
+（`planForStep` → `planForBeat`）、`CodeWalkthroughPlayer.ts`（清框兜异常）、`commands.ts`
+（`stop`/`emit`/`explain` 的顺序与隔离）、`statusBar.ts`（扫描位置 + `probe()`）、
+`protocol.ts`（`session:update` + `pointIndex`）、`ui/clientScript.ts`（`▸` 标记、
+按 `state` 而非步骤下标禁用按钮）、`ui/styles.ts`、两个 smoke 脚本、单测。
+
 ### S1 自动化验收结果
 
-`pnpm check`：typecheck 0 错 → **86 测**（core 28 + ext 58）全过 → build 299.6kb →
-`pnpm smoke` **19 项** → `pnpm smoke:chain` **43 项**（数字都是运行时实际执行到的断言数，
-不是 `grep` 出来的调用点数）。链路冒烟的硬断言包括
-「第 1 步底色在第 40-42 行、context 在 40、definition 在 42」「next 后底色换到 44-45」
-「caveat 在 46」「5 个 decoration type 全部 `isWholeLine` + `ClosedClosed` + 主题色、无写死颜色」
+`pnpm check`：typecheck 0 错 → **93 测**（core 28 + ext 65）全过 → build → `pnpm smoke` **19 项**
+→ `pnpm smoke:chain` **64 项**（数字都是运行时实际执行到的断言数，不是 `grep` 出来的调用点数）。
+链路冒烟的硬断言包括「整块那一拍一个子高亮都不亮」「扫描时只亮一个点、上一个点已灭」
+「扫完两个点才进第 2 步」「5 个 decoration type 全部 `isWholeLine` + `ClosedClosed` + 主题色、无写死颜色」
 「done 时状态栏是「已讲完」且不再展示已失效的 next/prev」「`sessionOpen` 在 done 时仍为 true」
-「stop 后所有 decoration type 清空」「`main.c` 字节未变」「`applyEdit` 从未被调用」，
-外加 `pnpm smoke` 的一条结构性断言：**产物里根本不存在写文件的 API**。
+「stop 后所有 decoration type 清空」「**编辑器已释放 / `setDecorations` 直接抛时 `stop()` 仍要收完尾**」
+「`main.c` 字节未变」「`applyEdit` 从未被调用」，外加 `pnpm smoke` 的结构性断言：
+**产物里根本不存在写文件的 API**。
 
-**独立只读校验（D32）抓到并已修的问题**（详见 `DECISIONS.md` D46 / D47）：
-① `done` 之后 `escape` 变死键 → 最后一步的框再也清不掉；② 状态栏在 `done` 时仍写「讲解中」
-并展示三个已失效的键；③ 用户解绑某个键时，状态栏把**动作**一起删掉了；
-④ `isAnchorLike` 放行 `web` 与 `NaN` 行号，把"锚点不合法"报成"AI 输出不合法"；
-⑤ 连按两次 capture 会留下一个仍然活着的旧会话；⑥ 冒烟桩把 `DecorationRangeBehavior`
-的两个枚举值写反了（等于把"编辑时框不撑到新行"在测试里反转）；⑦ 三份文档把
-`engines.vscode` 必须写成"精确版本"，实际它应当是范围（见 D39 的更正）。
+**独立只读校验（D32）第一轮抓到并已修的 2 个阻塞级 + 6 项需修正**见上表与 `DECISIONS.md` D46/D47。
 
-**未被自动化覆盖、必须靠这次 F5 的**：配色好不好看、流转顺不顺、`borderWidth: '0 0 0 3px'`
-在真实主题下渲染成什么样、以及**焦点落在侧边栏面板里时键位还灵不灵**（D47 的转发逻辑
-无法在本机验证，见 STATE.md 的 F5 检查项 5）。
+**未被自动化覆盖、必须靠 F5 的**：配色好不好看、扫描顺不顺、`borderWidth: '0 0 0 3px'`
+在真实主题下渲染成什么样、焦点落在侧边栏面板里时键位还灵不灵（D47 的转发逻辑），
+以及**侧边栏客户端脚本的 DOM 行为**（已知缺口，见 `STATE.md`）。
 
 ## S2 线1 触发与确认 UI
 

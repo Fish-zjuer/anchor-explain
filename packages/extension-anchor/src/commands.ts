@@ -89,6 +89,15 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     void vscode.commands.executeCommand('setContext', key, value);
   }
 
+  /** 单个渲染面失败只记日志，不向上抛（D49：一个面坏了不该把会话一起带走）。 */
+  function isolated(what: string, run: () => void): void {
+    try {
+      run();
+    } catch (err) {
+      console.error(`[anchor] ${what}更新失败：`, err);
+    }
+  }
+
   /**
    * §4.2 的两个 key 分工（D46）：
    *   - `walkthroughActive`：running / playing / paused 为 true，**done 与 idle 都落 false**。
@@ -100,22 +109,36 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     setContextKey('anchorExplain.walkthroughActive', active);
   }
 
-  /** 三个渲染方读的是同一份快照，所以"侧边栏说第 2 步、编辑器高亮第 3 步"不可能发生。 */
+  /**
+   * 三个渲染方读的是同一份快照，所以"侧边栏说第 2 步、编辑器高亮第 3 步"不可能发生。
+   *
+   * **顺序与隔离都是刻意的**（D49）：
+   *   1. 先把 context key 落定 —— 三个渲染面各自都可能失败（编辑器被关掉、webview 已释放…），
+   *      但"会话现在算不算活着"不能因为其中一个失败而错位。第一版把 `setActive` 放在最后，
+   *      结果状态栏一抛异常就会跳过它，用户就卡在"讲完了 alt+] 还在响应"的状态里。
+   *   2. 三个渲染面各自 try/catch：一个面失败不该把另外两个拖下水，更不该让异常逃回会话内部
+   *      （`emit` 同时是会话变更的监听器，异常逃出去会污染状态机）。
+   */
   function emit(snapshot: WalkthroughSnapshot): void {
-    // 渲染是异步的（先把目标文件打开到编辑器里）。这里兜住 rejection：
-    // 讲解过程中一次渲染失败不该让扩展宿主崩掉 —— 侧边栏的文字仍然是有用的。
-    void playerOf()
-      .render(snapshot)
-      .catch((err: unknown) => console.error('[anchor] decoration 渲染失败：', err));
-
-    sidebar?.post({
-      type: 'session:update',
-      result: snapshot.result,
-      index: snapshot.index,
-      state: snapshot.state,
-    });
-    status.update(snapshot);
     setActive(snapshot.state !== 'idle' && snapshot.state !== 'done');
+
+    isolated('decoration', () => {
+      void playerOf()
+        .render(snapshot)
+        .catch((err: unknown) => console.error('[anchor] decoration 渲染失败：', err));
+    });
+    isolated('侧边栏', () => {
+      sidebar?.post({
+        type: 'session:update',
+        result: snapshot.result,
+        index: snapshot.index,
+        state: snapshot.state,
+        pointIndex: snapshot.pointIndex,
+      });
+    });
+    isolated('状态栏', () => {
+      status.update(snapshot);
+    });
   }
 
   function startSession(result: ExplanationResult): void {
@@ -134,29 +157,41 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   function stop(): void {
+    // 顺序同样是刻意的：**先收状态，再清视觉**（D49）。
+    // 清框要碰编辑器，而编辑器可能在讲解期间被关掉（`setDecorations` 会抛）。
+    // 第一版是"先清框"，于是一次异常就能让后面的收尾全部跳过 ——
+    // 用户看到的就是"按 Esc 没反应、框还在、后面都没法测了"。
     unsubscribe?.();
     unsubscribe = undefined;
     session?.dispose();
     session = undefined;
-    player?.clear();
-    status.hide();
     setActive(false);
     setContextKey('anchorExplain.sessionOpen', false);
-    // 面板不清空：讲解文字留着，用户还能回看。侧边栏据此显示"已结束"。
-    sidebar?.post({ type: 'session:end' });
+    status.hide();
+
+    isolated('清框', () => player?.clear());
+    isolated('侧边栏', () => {
+      // 面板不清空：讲解文字留着，用户还能回看。侧边栏据此显示"已结束"。
+      sidebar?.post({ type: 'session:end' });
+    });
   }
 
   /**
-   * 捕获 → 请求 → 校验 → 开会话。**校验失败一律不渲染**（§3.3 第 5 条），
-   * 而不是"能画多少画多少" —— 错位的荧光笔比没有荧光笔更糟。
+   * 捕获 → 请求 → 校验 → 开会话。
+   *
+   * **「讲解失败」与「渲染失败」在这里被分开**（D49）：只有 provider / 校验的失败才算讲解失败；
+   * 一旦有了合法的 `ExplanationResult`，`startSession` 就在 try 之外调用 ——
+   * 否则渲染面的一次异常会走进下面这个 catch，把好不容易拿到的讲解当成失败丢掉，
+   * 还顺手把 context key 落成 false（用户按 Esc 就真没反应了）。
    */
   async function explain(anchor: Anchor): Promise<void> {
     stop();
     const gen = (generation += 1);
     status.showBusy('正在讲解…');
 
+    let result: ExplanationResult;
     try {
-      const result = await provider(anchor);
+      const produced = await provider(anchor);
       // 期间用户又发起了一次：这次的结果已经过期，直接丢掉。
       // 没有这道闸，先发后到的那次会把 UI 拽回旧讲解（S3 接上真 AI 后必然遇到）。
       if (gen !== generation) return;
@@ -165,21 +200,23 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         ? { documentLineCount: await countLines(fsPort, anchor.location.filePath), pageCount: null }
         : { documentLineCount: null, pageCount: null };
 
-      const verdict = validateExplanation(result, anchor, outline);
+      const verdict = validateExplanation(produced, anchor, outline);
       if (!verdict.ok) {
         throw new AnchorError('SCHEMA_VIOLATION', `AI 输出未通过校验：${describeIssues(verdict.issues)}`, {
           issues: verdict.issues,
         });
       }
-
-      startSession(verdict.result);
+      result = verdict.result;
     } catch (err) {
       if (gen !== generation) return;
       status.hide();
       setActive(false);
       setContextKey('anchorExplain.sessionOpen', false);
       void vscode.window.showErrorMessage(`Anchor：${describeError(err)}`);
+      return;
     }
+
+    startSession(result);
   }
 
   /**
@@ -257,6 +294,10 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   /**
    * 骨架自检命令（F2 遗留）。它同时是一次**接线验证**：
    * `locationLabel` 来自 `@anchor/core`，能正常输出就说明 workspace 链接与打包都通了。
+   *
+   * S1 起它多报两件事，都是"只有肉眼可见、脚本判不了"的东西：
+   *   - 讲解当前是否活着、扫到第几步第几点（用来核对 UI 有没有跟上状态机）
+   *   - 状态栏项实际显示成什么（用来分辨"提示没显示"与"提示显示了但没找到"）
    */
   function showState(): void {
     const editor = vscode.window.activeTextEditor;
@@ -278,6 +319,16 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
     const peer = vscode.extensions.getExtension(PEER_EXTENSION_ID);
     parts.push(`对端 anchor-pdf：${peer ? '已安装' : '未安装'}`);
+
+    const step = session?.snapshot;
+    parts.push(
+      step
+        ? `讲解中：第 ${step.index + 1}/${step.total} 步${step.pointIndex >= 0 ? ` · 第 ${step.pointIndex + 1}/${step.pointTotal} 点` : '（整块）'}`
+        : '没有进行中的讲解',
+    );
+
+    const bar = status.probe();
+    parts.push(`状态栏：${bar.shown ? bar.text : '未显示'}`);
 
     const line = parts.join(' · ');
     console.log('[anchor] showState:', line);

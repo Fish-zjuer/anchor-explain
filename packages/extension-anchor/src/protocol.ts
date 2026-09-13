@@ -22,8 +22,24 @@ export type WalkthroughState = 'idle' | 'running' | 'playing' | 'paused' | 'done
 // §5.3 ext-A 内部：宿主 ↔ 侧边栏 webview
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * 宿主 → webview。
+ *
+ * `pointIndex` 是 S1 的"拍"游标带来的第二个附加字段（D48）：`-1` = 正在铺整块底色，
+ * `0..n-1` = 正在扫该步的第几个逻辑点。**为什么非加不可**：侧边栏原来是自己按
+ * `index >= total - 1` 判断"是不是最后一步"来决定按钮禁用，改成拍之后这个判断会
+ * 在最后一步的**第一拍**就把「下一步」按死，而后面还有几个扫描点没走完。
+ * 有了它，面板既能按真实拍位禁用按钮，也能把"正在扫第几个点"标出来。
+ * 拍总数客户端可以自己从 `result` 算（Σ(1 + highlights.length)），所以不必再传。
+ */
 export type HostToSidebar =
-  | { type: 'session:update'; result: ExplanationResult; index: number; state: WalkthroughState }
+  | {
+      type: 'session:update';
+      result: ExplanationResult;
+      index: number;
+      state: WalkthroughState;
+      pointIndex: number;
+    }
   | { type: 'session:end' }
   | { type: 'tooltrace:append'; entry: ContextRequestLogEntry };
 

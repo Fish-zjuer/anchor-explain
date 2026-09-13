@@ -14,7 +14,7 @@
 import * as vscode from 'vscode';
 import type { CodeLocation, HighlightEmphasis } from '@anchor/core';
 import { normPath } from '../paths.ts';
-import { EMPHASES, planForStep } from './decorationPlan.ts';
+import { EMPHASES, planForBeat, primaryLocationOf } from './decorationPlan.ts';
 import type { WalkthroughSnapshot } from './WalkthroughSession.ts';
 
 type DecorationKey = 'step' | HighlightEmphasis;
@@ -96,9 +96,9 @@ export class CodeWalkthroughPlayer {
     };
   }
 
-  /** 渲染当前步的全部框，并把视图滚到它上面。 */
+  /** 渲染当前拍的框，并把视图滚到它上面。 */
   async render(snapshot: WalkthroughSnapshot): Promise<void> {
-    const specs = planForStep(snapshot.step);
+    const specs = planForBeat(snapshot.step, snapshot.pointIndex);
     this.clear();
 
     const anchorLoc = specs[0]?.location;
@@ -130,9 +130,9 @@ export class CodeWalkthroughPlayer {
     if (first) await this.#reveal(editor, first);
   }
 
-  /** `ui:revealStep`：只把视图滚过去，**不改变当前步**（对照 S6 里"点一条滚 PDF 到该页"）。 */
+  /** `ui:revealStep`：只把视图滚过去，**不改变当前拍**（对照 S6 里"点一条滚 PDF 到该页"）。 */
   async revealStep(step: WalkthroughSnapshot['step']): Promise<void> {
-    const loc = planForStep(step)[0]?.location;
+    const loc = primaryLocationOf(step);
     if (!loc) return;
     const editor = await this.#ensureEditor(loc.filePath);
     if (!editor) return;
@@ -140,10 +140,23 @@ export class CodeWalkthroughPlayer {
     if (range) await this.#reveal(editor, range);
   }
 
-  /** 清除所有框。退出讲解、文档关闭、staleness 提示都走这里。 */
+  /**
+   * 清除所有框。退出讲解、文档关闭、staleness 提示都走这里。
+   *
+   * **必须逐编辑器兜住异常**：讲解期间用户完全可以关掉那个文件（或让它变成非预览编辑器），
+   * 此时 `editor.document.isClosed` 为真、`setDecorations` 会抛。
+   * 这个异常若逃出去，`stop()` 后面的收尾（落 context key、收状态栏、通知侧边栏）**全都不会执行**，
+   * 会话就卡在"框还在、状态栏还说讲解中、但谁都清不掉"的半死状态 —— 这正是用户报的
+   * "按 Esc 没反应、后面都没法测了"。所以清框这一步永远不许把异常带出去。
+   */
   clear(): void {
     for (const editor of this.#decorated) {
-      for (const key of ALL_KEYS) editor.setDecorations(this.#types[key], []);
+      if (editor.document.isClosed) continue;
+      try {
+        for (const key of ALL_KEYS) editor.setDecorations(this.#types[key], []);
+      } catch {
+        // 编辑器在两次渲染之间失效了：丢掉它，别让它拖累其它编辑器与调用方
+      }
     }
     this.#decorated.clear();
   }

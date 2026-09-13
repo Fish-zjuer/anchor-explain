@@ -114,6 +114,19 @@ body {
   border-top: 1px dashed var(--vscode-panel-border);
 }
 
+/* 正在被"扫描"的那个逻辑点：和编辑器里那行亮色对应上（D48） */
+.highlights li.scanning {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+  border-radius: 3px;
+}
+
+.scan-mark {
+  flex: 0 0 auto;
+  color: var(--vscode-editorInfo-foreground);
+  font-weight: 700;
+}
+
 .tag {
   flex: 0 0 auto;
   align-self: flex-start;
