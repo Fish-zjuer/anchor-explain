@@ -26,6 +26,7 @@ import {
 import type {
   Anchor,
   CodeLocation,
+  ContextRequest,
   ContextRequestLogEntry,
   ContextRequestLogger,
   EditorPort,
@@ -53,6 +54,7 @@ import { createOrchestrator } from './orchestrator/Orchestrator.ts';
 import { createModelRouter } from './orchestrator/ModelRouter.ts';
 import { createOpenAICompatibleProvider } from './orchestrator/providers/openAICompatible.ts';
 import { describeIssues, validateExplanation } from './orchestrator/validateExplanation.ts';
+import { describeFetched } from './orchestrator/validateContextRequest.ts';
 import { isAnchorLike } from './protocol.ts';
 import { CodeWalkthroughPlayer } from './playback/CodeWalkthroughPlayer.ts';
 import { WalkthroughSession } from './playback/WalkthroughSession.ts';
@@ -160,6 +162,28 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     output ??= vscode.window.createOutputChannel('Anchor');
     output.appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
   };
+  /** 从请求里取"读的是哪一段"，交给 `describeFetched` 说成人话（进度通知与拒绝原因共用一套说法） */
+  const spanOfRequest = (
+    req: ContextRequest,
+  ): { type: ContextRequest['type']; path: string | null; start: number; end: number } => {
+    const { start, end } = req.params;
+    return {
+      type: req.type,
+      path: typeof req.params.path === 'string' ? req.params.path : null,
+      start: typeof start === 'number' ? start : 0,
+      end: typeof end === 'number' ? end : 0,
+    };
+  };
+  /**
+   * 拒绝原因只取第一句（给进度通知用；日志里仍是全文）。
+   * 那些原因很多是**写给模型的**（"写相对路径时按锚点文件所在目录算，例如…"），
+   * 整段出现在一个转瞬即逝的通知里，人只会看到一堵墙（D68）。
+   */
+  const briefReason = (reason: string): string => {
+    const cut = reason.indexOf('。');
+    const first = cut >= 0 ? reason.slice(0, cut) : reason;
+    return first.length > 48 ? `${first.slice(0, 47)}…` : first;
+  };
   const loggerOf = (): ContextRequestLogger => {
     output ??= vscode.window.createOutputChannel('Anchor');
     return createContextRequestLogger({
@@ -180,8 +204,14 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         traceThisRun.push(entry);
         onPhase?.(
           entry.accepted
-            ? `第 ${entry.round} 轮取件：${JSON.stringify(entry.request.params)} → ${entry.resultChars ?? 0} 字`
-            : `第 ${entry.round} 轮取件被拒（${entry.rejectReason ?? ''}）—— 让它基于现有信息作答`,
+            ? // 说人话，并且**指向正在发生的事**：取到之后紧接着就是"等它给结论"，
+              // 而那一步可能要十几秒 —— 通知里停在一句取件记录上会让人以为卡住了（D68）
+              `已读 ${describeFetched(spanOfRequest(entry.request))}（${entry.resultChars ?? 0} 字），正在等它的结论…`
+            : // 拒绝不是错误：模型拿到这句就会改用现有信息作答，所以尾巴要朝向"正在等它作答"，
+              // 而不是留在"被拒"两个字上 —— 用户会把它读成"出错了"（D68）。
+              // 原因被截到第一句：那些话是**写给模型**的（教它怎么写路径），整段塞进通知就是一堵墙；
+              // 全文在输出通道与侧边栏那块日志里，一个字都不少
+              `第 ${entry.round} 轮取件被拒（${briefReason(entry.rejectReason ?? '')}）—— 正在等它基于现有信息作答…`,
         );
       },
     });
@@ -585,6 +615,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       busyPhase = '已经在讲解这一处了 —— 这一次重复的按下了，等它出来就好';
       refreshStart();
       status.showBusy('正在讲解…');
+      // 这一行是给排查用的：屏幕上那条"正在讲解…"通知滞留时，光看屏幕分不清
+      // 是"两份在跑"还是别的 —— 有了它，日志里能一眼看出第二次被挡下了（D68）
+      note('重复按下被忽略 —— 上一份还在跑');
       return;
     }
     running = true;
@@ -600,6 +633,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const gen = (generation += 1);
     fetchedThisRun = [];
     traceThisRun = [];
+    // 「开始/结束」各留一行（D68）：进度通知与这份日志是同一段时间轴，
+    // 屏幕上出现滞留通知时，第一件要回答的事就是"到底开了几份" —— 看这两行即可
+    note(`讲解开始（第 ${gen} 次）`);
     // 面板存在的话先清空（不存在就等下面灌的时候一起给）—— 它不该显示上一轮读了什么
     sidebar?.post({ type: 'tooltrace:reset' });
     status.showBusy('正在讲解…');
@@ -684,6 +720,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // **「讲解失败」与「渲染失败」在这里被分开**（D49）：只有 provider / 校验的失败才算讲解失败；
     // 一旦有了合法的 `ExplanationResult`，`startSession` 就在 try **之外**调用 ——
     // 否则渲染面的一次异常会走进 catch，把好不容易拿到的讲解当成失败丢掉。
+    note(`讲解的等待结束（第 ${gen} 次）—— 进度通知在此时关闭`);
     if (!result) {
       busyPhase = undefined;
       refreshStart();

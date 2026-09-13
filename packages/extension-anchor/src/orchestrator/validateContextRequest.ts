@@ -88,10 +88,11 @@ export interface FetchedSpan {
  * 一句人话指认"取过的是哪一段"：文件用**文件名 + 行范围**，PDF 用页码。
  *
  * @anchor 跨文件之后"1-60"是有歧义的（哪个文件的 1-60？）—— 而这条文案既回灌给模型，
- *         也是用户在输出面板/侧边栏里看到的那句。含糊的指认会把两件事同时毁掉：
+ *         也是用户在输出面板/侧边栏/进度通知里看到的那句。含糊的指认会把两件事同时毁掉：
  *         模型可能以为"这份文件读过了"而不再申请，看日志的人也复核不了它到底读了哪儿（D68）。
+ *         **导出给命令层复用**：进度通知要说同一句话，两处各写一遍早晚会说得不一样。
  */
-function describeFetched(span: Omit<FetchedSpan, 'content'>): string {
+export function describeFetched(span: { type: ContextRequest['type']; path: string | null; start: number; end: number }): string {
   if (span.path !== null) return `${basenameOf(span.path)} 的 ${span.start}-${span.end} 行`;
   return `第 ${span.start}-${span.end} 页`;
 }

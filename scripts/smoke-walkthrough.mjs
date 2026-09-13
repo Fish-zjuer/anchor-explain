@@ -1016,8 +1016,10 @@ check(
 
 // ⑥ 讲解进行中再按一次：不许开出第二份（D68）。白烧一份 token 之外，屏幕上还会多出一个
 //    要等它自己跑完才消失的进度通知 —— 用户截图里那条"正在讲解: 第 2 轮取件被拒"就是它。
+//    诊断靠输出通道那两行"开始/结束"：光看屏幕分不清"通知滞留"与"两份在跑"。
 fetchMode = 'related';
 fetchCalls.length = 0;
+outputLines.length = 0;
 const firstRun = registered.get('anchorExplain.capture')?.();
 const secondRun = registered.get('anchorExplain.capture')?.();
 await Promise.all([firstRun, secondRun]);
@@ -1025,6 +1027,21 @@ check(
   fetchCalls.length === 2,
   '讲解进行中重复按下不产生第二次讲解（一次讲解 = 2 次模型调用）',
   `${fetchCalls.length} 次模型调用`,
+);
+check(
+  outputLines.filter((l) => l.includes('讲解开始')).length === 1,
+  '日志里只有一次"讲解开始"（一眼看出只开了一份）',
+  outputLines.filter((l) => l.includes('讲解开始')).join(' | '),
+);
+check(
+  outputLines.some((l) => l.includes('重复按下被忽略')),
+  '被挡下的那一次在日志里留了痕（不然屏幕上分不清滞留通知与两份在跑）',
+  outputLines.find((l) => l.includes('重复按下被忽略')) ?? '(没有)',
+);
+check(
+  outputLines.some((l) => l.includes('讲解的等待结束')),
+  '等待阶段结束也留了一行 —— 它是"进度通知此刻已关闭"的凭据',
+  outputLines.find((l) => l.includes('讲解的等待结束')) ?? '(没有)',
 );
 
 // ② 工作区之外：拒
@@ -1149,6 +1166,17 @@ check(
   progressReports.some((m) => m.includes('取件')),
   '取件那一段也变成了进度（AI 的"背后操作"要看得见）',
   progressReports.filter((m) => m.includes('取件')).join(' | '),
+);
+// D68：进度那两句话都要说人话，并且**指向正在发生的事**（拒绝不是错误 —— 用户会把它读成"出错了"）
+check(
+  progressReports.some((m) => /已读 .+ 的 \d+-\d+ 行/.test(m) && m.includes('正在等它的结论')),
+  '取到件那条进度写的是"已读哪个文件的哪几行"，不是一坨 JSON，且尾巴朝向"正在等结论"',
+  progressReports.find((m) => m.includes('已读')) ?? '(没有)',
+);
+check(
+  progressReports.some((m) => m.includes('正在等它基于现有信息作答')),
+  '被拒那条的尾巴也是"正在等它作答"，而不是停在"被拒"两个字上',
+  progressReports.find((m) => m.includes('被拒')) ?? '(没有)',
 );
 
 // ---- 收尾 -----------------------------------------------------------------
