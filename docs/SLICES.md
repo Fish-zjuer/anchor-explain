@@ -11,17 +11,17 @@
 
 ## 总览
 
-| 编号 | 目标 | 验收 |
-|---|---|---|
-| F1 | 契约冻结：`packages/core` 类型与 ports 落地 | 自动化 |
-| F2 | 走通骨架 + 测试台（能装能编能跑能测 + 假货 + fixture） | 自动化 |
-| S1 | 线1 最小可视：F5 → main.c → FakeProvider 写死 3 step → 高亮流转 → ESC 清除 | **用户实操确认** |
-| S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 |
-| S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 |
-| S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 |
-| S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） |
-| S6 | PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位） | 自动化 + 用户实操 |
-| S7 | PDF 取件（page_range 取附近页文字） | 自动化 |
+| 编号 | 目标 | 验收 | 状态 |
+|---|---|---|---|
+| F1 | 契约冻结：`packages/core` 类型与 ports 落地 | 自动化 | 完成 `slice-F1` |
+| F2 | 走通骨架 + 测试台（能装能编能跑能测 + 假货 + fixture） | 自动化 | 完成 `slice-F2` |
+| S1 | 线1 最小可视：F5 → main.c → FakeProvider 写死 3 step → 高亮流转 → ESC 清除 | **用户实操确认** | — |
+| S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 | — |
+| S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | — |
+| S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | — |
+| S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | — |
+| S6 | PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位） | 自动化 + 用户实操 | — |
+| S7 | PDF 取件（page_range 取附近页文字） | 自动化 | — |
 
 ## 硬性约束
 
@@ -75,6 +75,8 @@
 
 ## F2 走通骨架 + 测试台
 
+**状态：实现与自动化验收完成（2026-09-13）**
+
 - **目标**：能装能编能跑能测的空骨架，且测试替身与 fixture 就位。**这就是用户要的"基础 / 测试环境"。**
 - **范围**：
   - 根 `package.json`、`pnpm-workspace.yaml`、`tsconfig.base.json`、`.vscodeignore`、`esbuild.mjs`
@@ -89,6 +91,36 @@
   - 各 package README（入口 + 职责）
 - **验收标准**：自动化 —— `pnpm install && pnpm build` 通过；`node --test` 绿；F5 能起调试宿主、命令面板出现 `Anchor: 显示状态` 并弹出通知。**无视觉产出，不需用户实操。**
 - **回退点**：`slice-F1`
+
+### 实际落地（比声明范围多的部分，均为机械必需或强化验收）
+
+| 文件 | 为什么多出来 |
+|---|---|
+| `packages/extension-anchor/.vscodeignore` | 声明里写作"根 `.vscodeignore`"，但该文件是 `vsce` 的**per-extension** 配置，放根上不起作用。改放扩展包内 |
+| `packages/core/test/fakes.test.ts` | 替身是本片新增的可执行代码，不给它单测等于"新增行为零覆盖"。其中一条是**耦合锁**：断言 `FAKE_SELECTION_TEXT` 与 `main.c` 第 40-48 行逐字一致 |
+| `scripts/smoke-extension.mjs` | 把"F5 能起调试宿主"从纯肉眼验收变成自动化：不启动 VS Code，只对 `vscode` 打桩，断言产物可加载 + core 真被 bundle。见 `DECISIONS.md` D36 |
+| 根 `README.md` | 人类视角的"怎么装怎么跑"入口；`AGENTS.md` 是给 agent 的，不适合当安装说明 |
+| `packages/core/tsconfig.json`（**修改**） | 原为内联全部 compilerOptions。声明要求建 `tsconfig.base.json`，一个没人 `extends` 的 base 是死配置，所以改为 `extends` |
+| `packages/core/src/ports.ts`（**修改**） | 追加 `ExplainProvider` 接缝，让"假 provider → 真 orchestrator"的替换只改调用点一行。见 D37 |
+| `.gitattributes`（根） | 独立校验抓出来的：本机 `core.autocrlf=true` 而仓库无换行符约定，`main.c` 一落盘就变 CRLF，直接打红本片新加的耦合锁。见 D40 |
+| `.gitignore`（**修改**） | 同上轮校验：`dist/` 是泛匹配，会误伤 S4 要提交的 `assets/pdf.js/` 下同名目录。收窄为 `packages/*/dist/` |
+
+### F2 期间修正的三处问题（均由独立只读校验抓出）
+
+| 问题 | 修正 |
+|---|---|
+| `@types/vscode: ^1.90.0` 实际解析到 **1.137.0**，而 `engines.vscode` 承诺 `^1.90.0` —— `tsc` 会静默放行 1.90 上不存在的 API。**阻塞级** | 改为精确版本 `1.90.0`，并写入 `CONTRACTS.md` §9.5 / D39 |
+| 无 `.gitattributes` + `core.autocrlf=true` → `main.c` 重新 checkout 后变 CRLF，耦合锁必红 | 加根 `.gitattributes` 钉 LF；测试侧改按 `/\r?\n/` 切分兜底。见 D40 |
+| `title: "Anchor: 显示状态"` + `category: "Anchor"` → 面板显示成 `Anchor: Anchor: 显示状态` | `title` 改回纯动作 `显示状态`，并把这个约定写进 `CONTRACTS.md` §4.1 |
+
+另外三份 README 里"打包两个扩展""check 是三件事""漏写 `pnpm smoke`""包内相对路径写错"也已一并更正。
+
+### F2 期间修正的一处失败
+
+`pnpm-workspace.yaml` 最初按 pnpm 10 的写法用了 `onlyBuiltDependencies:`（列表）。pnpm 11 不认，
+`pnpm install` 直接把 `allowBuilds:\n  esbuild: set this to true or false` 占位符写回了该文件。
+改为 `allowBuilds: { esbuild: true }` 后警告消失。见 D35。
+（附带确认：esbuild 平台二进制走 optional dependency，**即使被拦也能用**，放行只为消噪音。）
 
 ## S1 线1 最小可视
 

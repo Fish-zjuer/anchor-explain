@@ -8,7 +8,7 @@
  *         adapters 只依赖这里的接口，因此可在 Node 里直接测。
  */
 
-import type { CodeLocation, Location } from './types.ts';
+import type { Anchor, CodeLocation, ExplanationResult, Location } from './types.ts';
 
 export interface EditorSelection {
   filePath: string;
@@ -35,3 +35,14 @@ export interface ImageRendererPort {
   /** 第二层视觉兜底；未注入时 PDFAdapter 退化为纯文本 */
   renderRegion(sourceId: string, location: Location): Promise<string | null>;   // 返回 dataURL
 }
+
+/**
+ * 【新增，非规范原文】讲解来源的边界 —— 也就是"AI 从哪来"这一问的接缝。
+ *
+ * S1/S2 由 `fakes/fakeProvider.ts` 实现（返回写死的 ExplanationResult）；
+ * S3 由 orchestrator 循环实现（真实 AI + fetch_context 取件）。
+ *
+ * 之所以让两侧签名完全一致：这样 S3 只替换**调用点上的一行**，
+ * 中间的 校验 → 会话 → decoration → 侧边栏 → 状态栏 全链路不动（SLICES.md 防返工约定）。
+ */
+export type ExplainProvider = (anchor: Anchor) => Promise<ExplanationResult>;

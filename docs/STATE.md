@@ -11,7 +11,7 @@
 
 ## 当前切片
 
-**F1（契约冻结）— 已完成，tag `slice-F1`**
+**F2（走通骨架 + 测试台）— 已完成，tag `slice-F2`**
 
 ## 已完成切片
 
@@ -19,22 +19,30 @@
 |---|---|---|---|
 | F0 | 规划定稿 + docs 六件套基线 | `slice-F0` | 2026-09-13 |
 | F1 | 契约冻结：core 类型 + ports + 纯函数 | `slice-F1` | 2026-09-13 |
+| F2 | 走通骨架 + 测试台：workspace / 最小可激活扩展 / F5 / 两个替身 / fixtures | `slice-F2` | 2026-09-13 |
 
 ## 下次第一件事
 
-**F2 走通骨架 + 测试台**。具体动作：
+**S1 线1 最小可视**（`SLICES.md` S1 那一节）。建议落盘顺序：
 
-1. 建根 `package.json`、`pnpm-workspace.yaml`、`tsconfig.base.json`、`esbuild.mjs`、`.vscodeignore`
-2. `packages/extension-anchor/{package.json, src/extension.ts}` 最小可激活：贡献命令 `anchorExplain.showState`，执行后弹一条通知
-3. `.vscode/launch.json` + `tasks.json`，F5 能起扩展开发宿主
-4. `packages/core/src/fakes/{fakeProvider.ts, fakeEditorPort.ts}` 就位（`fakeEditorPort` 返回写死的第 40-48 行）
-5. `scripts/make-fixture-pdf.mjs` 生成 30 页 `test/fixtures/sample-30p.pdf`；写 `test/fixtures/main.c`（≥48 行）
-6. 各 package 补 `README.md`（入口 + 职责）
+1. `packages/extension-anchor/src/orchestrator/validateExplanation.ts` —— §3.3 输出校验。
+   **先写它**：这是「AI 输出不可信」的唯一闸门，S1 要真跑，S3 接真 AI 时不再动。
+2. `packages/extension-anchor/src/protocol.ts` —— §5 消息协议类型（`WalkthroughState` / `HostToSidebar` / `SidebarToHost`）
+3. `packages/extension-anchor/src/playback/WalkthroughSession.ts` —— 会话状态机（下标 / 状态 / staleness）
+4. `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` —— decoration 渲染 + `revealLocation`
+5. `packages/extension-anchor/src/sidebar/{SidebarPanel.ts, ui/*}` —— 原生 DOM 侧边栏（不用 React）
+6. `packages/extension-anchor/src/sidebar/{statusBar.ts, keybindingResolve.ts}` —— 读**用户实际绑定**渲染提示
+7. `packages/extension-anchor/src/vscode/ports/{editorPort.ts, fileSystemPort.ts}` —— 真 ports；
+   `getSelection` 先用 `fakes/fakeEditorPort.ts` 的假选区（S2 换成真选区）
+8. `packages/extension-anchor/src/commands.ts` —— §4.1 命令 + 四层装配
+9. `packages/extension-anchor/package.json` 的 `contributes.commands` / `contributes.keybindings`
+
+**唯一的接线点**：`commands.ts` 里 `const provider: ExplainProvider = fakeProvider;` —— S3 只改这一行。
+
+**S1 是硬门**：必须用户实操确认（荧光笔手感、流转顺不顺），不允许"先做完再一起看"。
 
 ## 未完成待办
 
-- F2 走通骨架 + 测试台（见上）。
-  **注意**：`packages/core/pnpm-lock.yaml` 现在落在 `packages/core/` 内，F2 建根 workspace 时要删掉并在根重装（见 `CONTRACTS.md` §9.3）
 - S1~S7（见 `SLICES.md`）
 - **未开始也未规划**：PDF 高亮渲染、PDF 流转导航、MCP 出口、TTS —— 均已明确砍掉，非待办
 
@@ -49,6 +57,13 @@
 7. **S1 必须用户实操确认后才进 S2**，不允许"先做完再一起看"
 8. **`SourceAdapter.detect()` 是同步 `boolean`**（规范原文如此）。改成 `Promise` 属契约变更，须经用户确认。
 9. **`node --test` 直接跑 `.ts`**（Node 24 类型剥离已可用，无需构建步骤）。测试脚本必须写成 `node --test "test/*.test.ts"`——传目录不行，Windows 下 shell 不展开通配符。
+10. **产物一律 `dist/extension.cjs`**（CommonJS：宿主的 `require` 不吃 ESM 入口；包内 `type: module`，故用 `.cjs` 后缀）。`tsc` **只做类型检查、从不产 JS**。新增扩展往 `esbuild.mjs` 的 `TARGETS` 加一行，不另写打包脚本。
+11. **提交前跑 `pnpm check`**（typecheck → test → build → smoke）。`pnpm smoke` 不启动 VS Code，只对 `vscode` 模块打桩，验证产物可加载 + core 真被 bundle。
+12. **`fakes/*` 不进 `@anchor/core` 的 barrel**，导入必须写成 `@anchor/core/fakes/fakeProvider`——多打一截路径就是防止正式链路悄悄依赖替身。
+13. **改 `test/fixtures/main.c` 第 40-48 行** → 必须同步 `fakes/fakeEditorPort.ts` 的 `FAKE_SELECTION_TEXT` 与 `fakes/fakeProvider.ts` 的脚本行号；`test/fakes.test.ts` 里有一条耦合锁会拦住漏改。
+14. **`@types/vscode` 与 `engines.vscode` 必须是同一个精确版本**（现为 `1.90.0`，不带 `^`）。写成 `^` 会让类型漂到最新版，`tsc` 静默放行低版本不存在的 API。见 `CONTRACTS.md` §9.5 / D39。
+15. **仓库内文本一律 LF**（根 `.gitattributes` 钉死）。本机 `core.autocrlf=true`，没有它就等着耦合锁变红。见 D40。
+16. **`pnpm test` 目前只覆盖 `@anchor/core`**：`extension-anchor` 没有 `test` 脚本（F2 阶段包内没有可脱离 `vscode` 测的东西），它的行为由 `pnpm smoke` 覆盖。S1 起补。
 
 ## 待补 docs
 
@@ -56,4 +71,4 @@
 
 ## 最后更新
 
-2026-09-13，F1 收工。
+2026-09-13，F2 收工。

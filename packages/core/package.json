@@ -11,7 +11,9 @@
     "./normalizeBBox": "./src/normalizeBBox.ts",
     "./locationLabel": "./src/locationLabel.ts",
     "./errors": "./src/errors.ts",
-    "./logging": "./src/logging.ts"
+    "./logging": "./src/logging.ts",
+    "./fakes/fakeProvider": "./src/fakes/fakeProvider.ts",
+    "./fakes/fakeEditorPort": "./src/fakes/fakeEditorPort.ts"
   },
   "scripts": {
     "test": "node --test \"test/*.test.ts\"",

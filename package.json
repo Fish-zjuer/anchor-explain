@@ -1,0 +1,25 @@
+{
+  "name": "anchor-explain-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "跨场景 AI 截图讲解系统 —— 单仓库两扩展 + 一共享包。核心命题：截图 = 带地址的锚点。",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --if-present test",
+    "fixtures": "node scripts/make-fixture-pdf.mjs",
+    "smoke": "node scripts/smoke-extension.mjs",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,10 @@
+# vsce 打包时排除的内容。我们把所有依赖都 bundle 进 dist/extension.cjs，
+# 所以 node_modules 可以整个排除（pnpm 的符号链接还会让 vsce 报错）。
+.vscode/**
+src/**
+test/**
+tsconfig.json
+node_modules/**
+**/*.map
+**/*.ts
+!dist/**

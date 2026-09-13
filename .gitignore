@@ -1,6 +1,9 @@
 # 依赖与构建产物
 node_modules/
-dist/
+# 写成 packages/*/dist/ 而**不是** dist/：后者是泛匹配，会连
+# packages/extension-anchor-pdf/assets/pdf.js/ 里任何同名目录一起忽略 ——
+# 那是上游 vendored 源码，必须提交（见文件末尾说明）。
+packages/*/dist/
 out/
 
 # 打包产物

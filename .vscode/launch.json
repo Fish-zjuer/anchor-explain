@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Anchor：扩展开发宿主（线1 代码讲解）",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/extension-anchor",
+        "${workspaceFolder}/test/fixtures"
+      ],
+      "outFiles": ["${workspaceFolder}/packages/*/dist/**/*.cjs"],
+      "sourceMaps": true,
+      "preLaunchTask": "anchor: watch"
+    }
+  ]
+}

@@ -233,6 +233,73 @@
 
 ---
 
+## D34 打包用 esbuild，产物是 `.cjs`，`tsc` 永不产出 JS
+
+**决策**：根 `esbuild.mjs` 是唯一打包入口；两个扩展的 `main` 都指向 `dist/extension.cjs`；
+各包 `tsconfig.json` 一律 `extends` 根 `tsconfig.base.json` 且开 `noEmit`。
+**理由**：
+- 扩展宿主的入口是 `require()`，**不支持 ESM 入口**，所以产物必须是 CommonJS；包内是 `type: module`，故用 `.cjs` 后缀明确告诉 Node。
+- 所有依赖 bundle 进产物 ⇒ `.vscodeignore` 可整体排除 `node_modules`（pnpm 的符号链接还会让 `vsce` 报错，排除掉正好）。
+- `tsc` 只做类型检查这条路已经在 F1 走通（`allowImportingTsExtensions` + `noEmit`），继续沿用以避免"编译产物"和"打包产物"两套东西打架。
+**状态**：生效。
+
+## D35 pnpm 11 的构建脚本放行键是 `allowBuilds`，且是映射
+
+**决策**：`pnpm-workspace.yaml` 写 `allowBuilds: { esbuild: true }`。
+**理由**：pnpm 10 的 `onlyBuiltDependencies`（列表）在 11 上不再生效——`pnpm install` 会直接把
+`allowBuilds:\n  esbuild: set this to true or false` 这个占位符写回 `pnpm-workspace.yaml`。
+写错不报错，只留一条 `ERR_PNPM_IGNORED_BUILDS` 噪音。
+补充事实：esbuild 的平台二进制走 optional dependency（`@esbuild/win32-x64`），**不靠 postinstall**，
+所以即便被拦也能用；放行只是为了消噪音。
+**状态**：生效。
+
+## D36 产物冒烟脚本 `scripts/smoke-extension.mjs`，只对 `vscode` 打桩
+
+**决策**：F2 起加一条自动防线：不启动 VS Code，直接 `require` 打包产物，把 `vscode` 模块换成假的，
+断言产物可加载、`activate` 注册了命令、命令回调能跑通且 `@anchor/core` 真的被 bundle 进去
+（用 `locationLabel` 输出 `第 40-48 行` 来证明，而不是"编译通过"）。`pnpm check` 里排在 `build` 之后。
+**理由**："F5 能起调试宿主"只能靠肉眼，一旦某天产物格式或 workspace 链接断了，要等到手动 F5 才发现。
+把桩**只**打在 `vscode` 这一层，正好符合 D17「假货只允许出现在最外层边界」——
+脚本本身不引入任何中间层替身。
+**状态**：生效。
+
+## D37 新增接缝 `ExplainProvider`（core/ports.ts）
+
+**决策**：在 `ports.ts` 追加 `type ExplainProvider = (anchor: Anchor) => Promise<ExplanationResult>`，
+标注【新增，非规范原文】；它是"AI 从哪来"的边界。
+**理由**：假 provider 与真 orchestrator 必须**签名一致**，S3 才可能只改调用点一行。
+若在 S1 让 `commands.ts` 直接调 `fakeProvider`，S3 就得在命令层做适配，链路中间会多出一层形状转换。
+**注意**：这是**加法**，未改动任何已冻结签名（同 §1.2 的处理方式）。
+**状态**：生效。
+
+## D38 `fakes/` 不进 barrel，用子路径显式引入
+
+**决策**：`packages/core/src/index.ts` **不导出** `fakes/*`；导入写法是 `@anchor/core/fakes/fakeProvider`。
+**理由**：替身必须显眼。若能从 barrel 一把导入，正式链路里很容易悄悄依赖上测试替身，
+而这类依赖在 S3 换真实现时才会暴露。多打一截路径就是一道自觉的闸门。
+**状态**：生效。
+
+## D39 `@types/vscode` 用精确版本，跟 `engines.vscode` 严格对齐
+
+**决策**：`packages/extension-anchor` 里 `engines.vscode` 与 `@types/vscode` 都写 `1.90.0`，**不带 `^`**。
+**理由**（F2 独立校验抓出来的阻塞级问题）：两处都写 `^1.90.0` 时看起来一致，实则不然 ——
+`vsce` 那条 `@types/vscode ≤ engines.vscode` 的守卫只比字符串、不会报错，但 pnpm 会把类型解析到**最新版**
+（实测装成了 `1.137.0`）。于是 `tsc` 会静默放行 1.90 上根本不存在的 API，
+而 `engines.vscode` 又向用户承诺了 1.90 —— 这类错误只在运行时崩。
+**状态**：生效。详见 `CONTRACTS.md` §9.5。
+
+## D40 加 `.gitattributes` 钉 LF，并把 `.gitignore` 的 `dist/` 收窄
+
+**决策**：新增根 `.gitattributes`（`* text=auto eol=lf`；`*.pdf`/`*.png`/`*.vsix` 标 `binary`；`*.bat`/`*.cmd` 保持 CRLF）。
+`.gitignore` 的 `dist/` 改成 `packages/*/dist/`。
+**理由**（同样是校验抓出来的）：本机 `core.autocrlf=true` 而仓库原先没有任何换行符约定，
+`test/fixtures/main.c` 一被 git 接手就会变 CRLF，直接打红 `fakes.test.ts` 里那条新加的耦合锁。
+测试侧也一并改成按 `/\r?\n/` 切分兜底，但换行符不该靠测试去兜。
+`.gitignore` 那条泛匹配则会误伤 `packages/extension-anchor-pdf/assets/pdf.js/` 下的同名目录 —— 那是必须提交的 vendored 源码。
+**状态**：生效。
+
+---
+
 ## 已被取代 / 已废弃（保留记录，勿重蹈）
 
 | 原计划 | 取代者 | 说明 |

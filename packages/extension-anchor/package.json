@@ -1,0 +1,41 @@
+{
+  "name": "anchor-explain",
+  "displayName": "Anchor Explain",
+  "description": "把选中的一段内容变成带地址的锚点：AI 讲解并逐步高亮流转。核心命题——截图 = 带地址的锚点，不是像素包。",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "anchor",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "onCommand:anchorExplain.showState"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "anchorExplain.showState",
+        "title": "显示状态",
+        "category": "Anchor"
+      }
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anchor/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "1.90.0",
+    "typescript": "^5.9.2"
+  }
+}

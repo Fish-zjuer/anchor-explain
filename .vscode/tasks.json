@@ -1,0 +1,65 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "anchor: watch",
+      "type": "shell",
+      "command": "node esbuild.mjs --watch",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "presentation": { "reveal": "silent", "group": "anchor", "panel": "dedicated" },
+      "problemMatcher": {
+        "owner": "esbuild",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+):\\s+(error|warning):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[anchor\\] build started",
+          "endsPattern": "^\\[anchor\\] build finished"
+        }
+      }
+    },
+    {
+      "label": "anchor: build",
+      "type": "shell",
+      "command": "node esbuild.mjs",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "group": "anchor" },
+      "problemMatcher": {
+        "owner": "esbuild",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+):\\s+(error|warning):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    },
+    {
+      "label": "anchor: typecheck",
+      "type": "shell",
+      "command": "pnpm typecheck",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "group": "anchor" },
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "anchor: test",
+      "type": "shell",
+      "command": "pnpm test",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "group": "anchor" },
+      "problemMatcher": []
+    }
+  ]
+}

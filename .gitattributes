@@ -1,0 +1,18 @@
+# 强制仓库内文本一律 LF。
+#
+# 为什么必须有这个文件：本机 `core.autocrlf=true`。没有它，test/fixtures/main.c 一旦被 git
+# 接手就会变 CRLF，而 packages/core/test/fakes.test.ts 里的耦合锁是按 LF 逐字比对的
+# （第 40-48 行 == FAKE_SELECTION_TEXT），任何一次重新 checkout 都会让它变红。
+# 测试本身也已改为按 /\r?\n/ 切分做二次兜底，但换行符不该靠测试去兜。
+
+* text=auto eol=lf
+
+# 二进制，禁止任何换行转换（PDF 的字节偏移是算出来的，动一个字节就坏）
+*.pdf binary
+*.png binary
+*.jpg binary
+*.vsix binary
+
+# Windows 批处理必须 CRLF，否则 cmd 解析异常
+*.bat text eol=crlf
+*.cmd text eol=crlf

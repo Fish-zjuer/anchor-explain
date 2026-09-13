@@ -1,0 +1,10 @@
+packages:
+  - 'packages/*'
+
+# pnpm 10+ 默认拦截依赖的构建脚本。pnpm 11 的键名是 allowBuilds，且值是「包名 -> true/false」的映射
+# （旧名 onlyBuiltDependencies 接收列表，在这个版本上不生效）。
+#
+# 注：esbuild 的平台二进制其实走 optional dependency（@esbuild/win32-x64），
+# 不靠 postinstall；这里放行只是为了消掉每次 install 都刷的 ERR_PNPM_IGNORED_BUILDS。
+allowBuilds:
+  esbuild: true

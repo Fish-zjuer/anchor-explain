@@ -156,7 +156,21 @@ interface ImageRendererPort {
   // 第二层视觉兜底；未注入时 PDFAdapter 退化为纯文本
   renderRegion(sourceId: string, location: Location): Promise<string | null>;  // 返回 dataURL
 }
+
+// F2 追加【新增，非规范原文】：讲解来源的接缝，即"AI 从哪来"这一问的边界。
+// S1/S2 由 fakes/fakeProvider.ts 实现；S3 由 orchestrator 循环实现，签名刻意一致。
+type ExplainProvider = (anchor: Anchor) => Promise<ExplanationResult>;
 ```
+
+### §2.1 假货隔离点（冻结）
+
+| 边界 | 假的实现 | 真的实现 | 替换时机 |
+|---|---|---|---|
+| AI 从哪来 | `fakes/fakeProvider.ts`（写死 3 个合法 step） | orchestrator 循环 + `openAICompatible` | S3 |
+| 选区从哪来 | `fakes/fakeEditorPort.ts`（写死第 40-48 行） | `vscode/ports/` 下的真 `EditorPort` | S2 |
+
+**中间链路永远是真的**：`ExplanationResult → 输出校验 → 会话状态 → decoration → 侧边栏 → 状态栏 → 键位`。
+不允许把假数据写进播放器（见 `DECISIONS.md` D17）。
 
 ---
 
@@ -239,6 +253,10 @@ interface SourceAdapter {
 | `anchorPdf.revealPage` | 滚动 PDF 到指定页（跨扩展调用） | — | — |
 
 **默认不绑 `Space`**（避免抢打字）。状态：默认键位为 `已冻结（可调）`。
+
+**`title` / `category` 约定（F2 冻结）**：命令的 `title` **只写动作**（如 `显示状态`），
+分类统一由 `category: "Anchor"` 提供，命令面板里显示为 `Anchor: 显示状态`。
+**不要在 `title` 里再写一遍 `Anchor:`** —— `category` 会被面板拼在前面，会显示成 `Anchor: Anchor: 显示状态`。
 
 ### §4.2 context key（冻结）
 
@@ -387,27 +405,35 @@ function createContextRequestLogger(opts?: {
 
 ## §9 模块路径映射与落地行号
 
-### 9.1 已冻结（F1 已落地）——行号 = 实体定义所在行
+### 9.1 已落地（F1 契约类 / F2 骨架与替身）——行号 = 实体定义所在行
 
 | 路径 | 职责 | 关键实体行号 |
 |---|---|---|
 | `packages/core/src/types.ts` | §1 全部类型 + 守卫 + §3 适配器接口 | `SourceType`:14 `PDFLocation`:16 `WebLocation`:21 `CodeLocation`:27 `Location`:33 `Anchor`:35 `ContextRequest`:45 `WalkthroughStep`:51 `ExplanationResult`:61 `HighlightEmphasis`:75 `SubHighlight`:78 `AdapterCapabilities`:95 `SourceAdapter`:106 `isPDFLocation`:119 `isCodeLocation`:124 `isWebLocation`:133 |
-| `packages/core/src/ports.ts` | §2 ports（**全部为新增**） | `EditorSelection`:13 `EditorPort`:20 `FileSystemPort`:28 `ImageRendererPort`:34 |
+| `packages/core/src/ports.ts` | §2 ports（**全部为新增**） | `EditorSelection`:13 `EditorPort`:20 `FileSystemPort`:28 `ImageRendererPort`:34 `ExplainProvider`:48 |
 | `packages/core/src/normalizeBBox.ts` | §10.1 bbox 数学（**唯一实现，fork 也复用**） | `BBox`:8 `clamp01`:16 `normalizeBBox`:27 `coerceBBox`:42 `isValidBBox`:50 `bboxArea`:55 |
 | `packages/core/src/locationLabel.ts` | §10.2 位置标签 | `formatLineRange`:12 `locationLabel`:24 |
 | `packages/core/src/errors.ts` | §10.3 类型化错误 | `AnchorErrorCode`:8 `AnchorError`:16 `isAnchorError`:28 `describeError`:33 |
 | `packages/core/src/logging.ts` | §7 结构化日志 | `ContextRequestLogEntry`:10 `CONTEXT_LOG_LIMIT`:20 `ContextRequestLogger`:22 `createContextRequestLogger`:28 |
-| `packages/core/src/index.ts` | barrel 入口。**外部一律从 `@anchor/core` 导入，不深链 `src/`** | — |
-| `packages/core/package.json` / `tsconfig.json` | 包声明与类型检查配置 | — |
-| `packages/core/test/{types,locationLabel,normalizeBBox}.test.ts` | 单测（`node --test`） | — |
+| `packages/core/src/index.ts` | barrel 入口。**外部一律从 `@anchor/core` 导入，不深链 `src/`**。`fakes/*` 刻意不在 barrel 里 | — |
+| `packages/core/package.json` / `tsconfig.json` | 包声明与类型检查配置（tsconfig `extends` 根 `tsconfig.base.json`） | — |
+| `packages/core/test/{types,locationLabel,normalizeBBox,fakes}.test.ts` | 单测（`node --test`） | — |
+| `packages/core/src/fakes/fakeProvider.ts` | 假 AI。S3 被 orchestrator 替换 | `FAKE_TARGET_LINE_START`:29 `FAKE_TARGET_LINE_END`:30 `FALLBACK_FILE_PATH`:33 `createFakeProvider`:161 `fakeProvider`:176 |
+| `packages/core/src/fakes/fakeEditorPort.ts` | 假选区（写死 40-48 行）。S2 被真实现替换 | `FAKE_FILE_PATH`:18 `FAKE_LINE_START`:19 `FAKE_LINE_END`:20 `FAKE_SELECTION_TEXT`:27 `FAKE_DOCUMENT_HASH`:39 `createFakeEditorPort`:63 |
+| `packages/extension-anchor/src/extension.ts` | activate / 装配四层。**F2 只注册 `showState` 做接线自检**，S1 起装配四层 | — |
+| `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
+| `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
+| `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs}`（根） | 生成 30 页 fixture；产物冒烟（见 §9.4） | — |
+| `test/fixtures/{main.c, sample-30p.pdf}`（根） | `main.c` 第 40-48 行是假选区目标；PDF 是 S5~S7 的样本 | — |
+| `package.json` / `pnpm-workspace.yaml` / `tsconfig.base.json`（根） | workspace 与依赖声明、共用 TS 基线、pnpm 11 的 `allowBuilds` 放行（见 §9.3） | — |
+| `.gitignore` / `.gitattributes`（根） | 忽略规则与**换行符纪律**（后者是 `fakes.test.ts` 耦合锁的前提，见 §9.3） | — |
+| `.vscode/{launch.json, tasks.json}` | F5 起调试宿主；`preLaunchTask` 跑 `anchor: watch`，默认工作区是 `test/fixtures/` | — |
+| `README.md`（根）/ `packages/*/README.md` | 人类视角的入口与职责说明（`AGENTS.md` 是给 agent 的协议，不是安装说明） | — |
 
 ### 9.2 未落地（按切片）
 
 | 路径 | 职责 | 落地切片 |
 |---|---|---|
-| `packages/core/src/fakes/fakeProvider.ts` | 脚本化 `ExplanationResult` | F2 |
-| `packages/core/src/fakes/fakeEditorPort.ts` | 写死 40-48 行的假选区 | F2 |
-| `packages/extension-anchor/src/extension.ts` | activate / 装配四层 | F2 |
 | `packages/extension-anchor/src/commands.ts` | §4.1 全部命令 | S1 |
 | `packages/extension-anchor/src/protocol.ts` | **§5 消息协议类型**（`WalkthroughState` / `HostToSidebar` / `SidebarToHost` / `HostToSelect` / `SelectToHost`） | S1 |
 | `packages/extension-anchor/src/vscode/ports/*` | §2 ports 的 vscode 真实现 | S1 / S2 |
@@ -423,11 +449,50 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor-pdf/media/anchor-select.js` | 注入式框选 overlay | S5 |
 | `packages/extension-anchor-pdf/src/anchor/*` | bbox 换算 / Anchor 组装 / 消息桥 | S5 / S6 |
 
-### 9.3 已知结构债（F2 必须处理）
+### 9.3 已知结构债
 
-`pnpm install` 目前是在 `packages/core/` **内**跑的，因此 `pnpm-lock.yaml` 落在该目录。
-按 D26，lockfile 应归**仓库根**。F2 建根 `package.json` + `pnpm-workspace.yaml` 时，
-必须删掉 `packages/core/pnpm-lock.yaml` 并在根重装，否则 core 与扩展包的依赖解析会不一致。
+**已清（F2）**：`pnpm-lock.yaml` 曾在 `packages/core/` 内。F2 建了根 `package.json` +
+`pnpm-workspace.yaml` 后，已删除该文件并在根重装，lockfile 现归仓库根（D26）。
+
+**待留意**：`pnpm-workspace.yaml` 的构建脚本放行键在 pnpm 11 里是 `allowBuilds`，
+且值是「包名 → true/false」的映射（旧的 `onlyBuiltDependencies` 收列表，在此版本不生效）。
+写错不会报错，只会让每次 install 都刷一条 `ERR_PNPM_IGNORED_BUILDS`。
+
+**已加护栏（F2）**：本机 `core.autocrlf=true`，仓库内又没有任何换行符约定。
+后果是 `test/fixtures/main.c` 一旦被 git 接手就会变 CRLF，
+而 `packages/core/test/fakes.test.ts` 的耦合锁按 LF 逐字比对 —— 任何一次重新 checkout 都会变红。
+已加根 `.gitattributes`（`* text=auto eol=lf`，PDF 标 `binary`），测试侧也改成按 `/\r?\n/` 切分做二次兜底。
+
+**已收窄（F2）**：`.gitignore` 原写 `dist/`（泛匹配），会连
+`packages/extension-anchor-pdf/assets/pdf.js/` 下任何同名目录一起忽略 —— 那是必须提交的上游 vendored 源码。
+已改写成 `packages/*/dist/`。
+
+### 9.5 `@types/vscode` 必须钉死，不能带 caret
+
+`packages/extension-anchor/package.json` 里 `engines.vscode` 与 `devDependencies.@types/vscode`
+**必须写成同一个具体版本**（当前都是 `1.90.0`，不带 `^`）。
+
+理由：两个都写 `^1.90.0` 时，`vsce` 那条 `@types/vscode ≤ engines.vscode` 的守卫只比字符串、不会报错，
+但 `pnpm` 会把类型实际解析到最新版（实测 `^1.90.0` → 装了 `1.137.0`）。
+于是 `tsc` 会静默放行 1.90 上不存在的 API，而 `engines.vscode` 又向用户承诺了 1.90 —— 只有运行时才崩。
+收紧 `engines.vscode` 上界时，同步收紧类型版本。
+
+### 9.4 构建与产物（F2 冻结）
+
+| 项 | 约定 |
+|---|---|
+| 打包器 | 根 `esbuild.mjs`，**唯一入口**；`tsc` 只做类型检查（`noEmit`），从不产出 JS |
+| 产物路径 | `packages/<扩展包>/dist/extension.cjs` |
+| 模块格式 | **CommonJS**。扩展宿主的入口是 `require()`，不吃 ESM 入口；包内 `type: module` 故用 `.cjs` 后缀 |
+| `external` | 仅 `vscode`（宿主注入，不能打包） |
+| 依赖处理 | 一律 bundle 进产物，因此 `.vscodeignore` 可整体排除 `node_modules` |
+| 共用配置 | 各包 `tsconfig.json` 一律 `extends` 根 `tsconfig.base.json` |
+| 新增扩展 | 往 `esbuild.mjs` 的 `TARGETS` 加一行，不另写打包脚本 |
+
+**产物冒烟**：`pnpm smoke`（`scripts/smoke-extension.mjs`）在不启动 VS Code 的前提下
+`require` 产物，只对最外层边界（`vscode` 模块）打桩，断言：产物可加载、`activate` 注册了命令、
+命令回调能跑通且 `@anchor/core` 的 `locationLabel` 确实被 bundle 进去。
+`pnpm check` 已把它排在 `build` 之后。
 
 ---
 
