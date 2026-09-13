@@ -47,20 +47,40 @@
 
 ## F1 契约冻结
 
+**状态：实现与自动化验收完成（2026-09-13）**
+
 - **目标**：把规范里的 6 个接口 + ports + 命令 ID 与默认键位 + 跨扩展消息协议落成真实代码。**此后接口不再变，除非用户确认。**
 - **范围**：
   - `packages/core/package.json`、`packages/core/tsconfig.json`
   - `packages/core/src/types.ts`、`ports.ts`、`normalizeBBox.ts`、`locationLabel.ts`、`errors.ts`、`logging.ts`
   - 同步 `docs/CONTRACTS.md`：条目状态从「待落地」改为「已冻结」，补 `path:line`
-- **不做**：任何行为逻辑。只有类型、接口、纯函数（`normalizeBBox` 的裁剪/排序/边界，`locationLabel` 的标签生成）。
+- **不做**：任何行为逻辑。只有类型、接口、纯函数。
 - **验收标准**：自动化 —— `tsc --noEmit` 通过；`node --test` 覆盖 `normalizeBBox`（0、1、越界、反向、退化零面积）与 `locationLabel`（两种来源）；`CONTRACTS.md` 所有条目状态为「已冻结」。
 - **回退点**：`slice-F0`
+
+### 实际落地（比声明范围多出 3 个文件，均为机械必需）
+
+| 文件 | 说明 |
+|---|---|
+| `packages/core/src/index.ts` | barrel 入口，外部一律从 `@anchor/core` 导入，不深链 `src/` |
+| `packages/core/test/*.test.ts` | 3 个文件，F1 验收标准要求 |
+| `.gitignore` | 原声明在 F2，但 F1 执行 `pnpm install` 会产生 `node_modules`，不建会误提交 |
+
+`packages/core/README.md` 按声明**留到 F2**（F2 范围含"各 package README"）。
+
+### F1 期间修正的一处偏离
+
+`SourceAdapter.detect()` 一度被写成 `Promise<boolean>`，与规范原文（同步 `boolean`）不符。
+已改回同步并在 `CONTRACTS.md` §3 与 `types.ts` 内注明"不要改成 Promise"。属纠正而非契约变更。
 
 ## F2 走通骨架 + 测试台
 
 - **目标**：能装能编能跑能测的空骨架，且测试替身与 fixture 就位。**这就是用户要的"基础 / 测试环境"。**
 - **范围**：
-  - 根 `package.json`、`pnpm-workspace.yaml`、`tsconfig.base.json`、`.gitignore`、`.vscodeignore`、`esbuild.mjs`
+  - 根 `package.json`、`pnpm-workspace.yaml`、`tsconfig.base.json`、`.vscodeignore`、`esbuild.mjs`
+  - **删掉 `packages/core/pnpm-lock.yaml` 并在根重装**：F1 的 `pnpm install` 是在 `packages/core/` 内跑的，
+    lockfile 位置与 D26 不符（见 `CONTRACTS.md` §9.3）
+  - `.gitignore` **已于 F1 落地**（F1 需要它来挡住 `node_modules`），本片不再创建
   - `packages/extension-anchor/{package.json, src/extension.ts}` 最小可激活（一个 `Anchor: 显示状态` 命令弹通知）
   - `.vscode/launch.json`、`tasks.json`（F5 起调试宿主）
   - `packages/core/src/fakes/{fakeProvider.ts, fakeEditorPort.ts}`

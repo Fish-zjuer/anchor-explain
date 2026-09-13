@@ -11,25 +11,30 @@
 
 ## 当前切片
 
-**F0（规划与文档基线）— 已完成，待打 tag**
+**F1（契约冻结）— 已完成，tag `slice-F1`**
 
 ## 已完成切片
 
 | 切片 | 内容 | tag | 日期 |
 |---|---|---|---|
 | F0 | 规划定稿 + docs 六件套基线 | `slice-F0` | 2026-09-13 |
+| F1 | 契约冻结：core 类型 + ports + 纯函数 | `slice-F1` | 2026-09-13 |
 
 ## 下次第一件事
 
-**F1 契约冻结**：创建 `packages/core/`（`package.json` + `tsconfig.json` + `src/types.ts` + `src/ports.ts` + `src/normalizeBBox.ts` + `src/locationLabel.ts` + `src/errors.ts` + `src/logging.ts`），
-逐字落地 `docs/CONTRACTS.md` §1~§3 中标为「待落地」的类型与 ports，然后把 CONTRACTS.md 里这些条目的状态从「待落地」改为「已冻结」并补 `path:line`。
+**F2 走通骨架 + 测试台**。具体动作：
 
-**F1 不写任何行为逻辑**，只有类型、接口、纯函数（`normalizeBBox` 的裁剪与排序、`locationLabel` 的标签生成）。
+1. 建根 `package.json`、`pnpm-workspace.yaml`、`tsconfig.base.json`、`esbuild.mjs`、`.vscodeignore`
+2. `packages/extension-anchor/{package.json, src/extension.ts}` 最小可激活：贡献命令 `anchorExplain.showState`，执行后弹一条通知
+3. `.vscode/launch.json` + `tasks.json`，F5 能起扩展开发宿主
+4. `packages/core/src/fakes/{fakeProvider.ts, fakeEditorPort.ts}` 就位（`fakeEditorPort` 返回写死的第 40-48 行）
+5. `scripts/make-fixture-pdf.mjs` 生成 30 页 `test/fixtures/sample-30p.pdf`；写 `test/fixtures/main.c`（≥48 行）
+6. 各 package 补 `README.md`（入口 + 职责）
 
 ## 未完成待办
 
-- F1 契约冻结（见上）
-- F2 走通骨架 + 测试台（workspace 能装能编、扩展能激活、`node --test` 绿、F5 起调试宿主、`FakeProvider` + fixtures 就位）
+- F2 走通骨架 + 测试台（见上）。
+  **注意**：`packages/core/pnpm-lock.yaml` 现在落在 `packages/core/` 内，F2 建根 workspace 时要删掉并在根重装（见 `CONTRACTS.md` §9.3）
 - S1~S7（见 `SLICES.md`）
 - **未开始也未规划**：PDF 高亮渲染、PDF 流转导航、MCP 出口、TTS —— 均已明确砍掉，非待办
 
@@ -42,6 +47,8 @@
 5. 假货只允许出现在**最外层边界**（`FakeProvider`、`EditorPort` 后的假选区），中间链路全真
 6. 键位**只提供命令 + 默认键位**，默认不绑 Space，用户自选；状态栏提示读**用户实际绑定**
 7. **S1 必须用户实操确认后才进 S2**，不允许"先做完再一起看"
+8. **`SourceAdapter.detect()` 是同步 `boolean`**（规范原文如此）。改成 `Promise` 属契约变更，须经用户确认。
+9. **`node --test` 直接跑 `.ts`**（Node 24 类型剥离已可用，无需构建步骤）。测试脚本必须写成 `node --test "test/*.test.ts"`——传目录不行，Windows 下 shell 不展开通配符。
 
 ## 待补 docs
 
@@ -49,4 +56,4 @@
 
 ## 最后更新
 
-2026-09-13，F0 收工。
+2026-09-13，F1 收工。

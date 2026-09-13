@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+dist/
+out/
+
+# 打包产物
+*.vsix
+
+# VS Code 集成测试下载的编辑器
+.vscode-test/
+
+# 日志与临时文件
+*.log
+*.tsbuildinfo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 说明：以下路径是**上游 vendored 源码，必须提交**，切勿加入忽略
+#   packages/extension-anchor-pdf/assets/pdf.js/
+#   packages/extension-anchor-pdf/patches/

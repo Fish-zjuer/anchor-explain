@@ -139,9 +139,10 @@
 **注**：这**改变了此前"不提交除非用户要求"的默认**。
 **状态**：生效。
 
-## D22 docs 六件套现在写满，不留空骨架
+## D22 docs 六个文件 + 根 AGENTS.md，现在一次写满
 
-**决策**：`AGENTS / STATE / SLICES / CONTRACTS / DECISIONS / PRIOR-ART / ARCHITECTURE` 一次写满。
+**决策**：`docs/` 下六个文件（`STATE / SLICES / CONTRACTS / DECISIONS / PRIOR-ART / ARCHITECTURE`）
+加根目录 `AGENTS.md`，一次全部写满，不留空骨架。
 **理由**：这几轮攒下的调研成果（MCP Walkthrough 已核实 schema、fork base 的 Apache-2.0 与 vendored pdf.js、`engines.vscode` 与 README 矛盾等）**正是最怕被上下文压缩掉、重新获取代价最高的东西**。写进 docs 成本近乎零。
 **状态**：生效。
 
@@ -185,6 +186,49 @@
 
 **决策**：取件请求校验不通过时**不抛异常**，而是回灌一条工具结果「请求被拒绝：<reason>，请基于现有信息作答」，让模型自我纠正。
 **理由**：抛错会打断循环、浪费一轮；回灌让模型有机会用现有信息作答或换一个合法请求。同时**每次请求（含被拒）都必须落日志**，便于调试 AI 取件行为。
+**状态**：生效。
+
+## D30 测试直接跑 `.ts`，不引入构建步骤
+
+**决策**：`packages/core` 的源码与测试都是 `.ts`，直接 `node --test` 运行，**不加 tsup/tsx/编译步骤**。
+**落地细节（踩过的坑，别重犯）**：
+- Node 24 的类型剥离（type stripping）默认可用，实测 `node --test` 跑 `.test.ts` 通过。import 说明符**必须带 `.ts` 扩展名**（`from './types.ts'`），配合 tsconfig 的 `allowImportingTsExtensions` + `noEmit`。
+- 测试脚本必须写成 `node --test "test/*.test.ts"`。**传目录（`node --test test/`）会失败**，Node 会把目录当入口模块解析；Windows 下 shell 也不展开通配符，所以要靠 Node 自带的 glob（已实测可用）。
+**理由**：零构建步骤，任何一次改动后"跑测试"的成本降到最低；`tsc --noEmit` 只做类型检查不产出。
+**状态**：生效。
+
+## D31 `SourceAdapter.detect()` 保持同步（曾偏离，已纠正）
+
+**决策**：`detect()` 是**同步** `boolean`，与规范原文一字一致。**不要改成 `Promise<boolean>`。**
+**经过**：F1 落地时我一度写成 `Promise<boolean>`——这是对规范的**静默偏离**，在核对规范原文时发现并改回。已在 `CONTRACTS.md` §3 与 `types.ts` 内注明原因。
+**依据**：`CodeAdapter` 的判据是 `window.activeTextEditor`（属性，同步）；`PDFAdapter` 的判据是宿主内存中的已打开 PDF 会话集合（同步）。两者都不需要异步。
+**若未来确需异步**：属**契约变更**，须经用户确认，不得自行改。
+**教训**：把契约写进 docs 时要逐字对照规范原文，新增的东西必须显式标注「新增」——否则偏离会静默传播到下游实现。
+**状态**：生效。
+
+## D32 每片收尾跑一次独立只读校验
+
+**决策**：每个切片实现完成后、打 tag 之前，用一个**独立的只读 subagent** 对照契约与规范原文复核一遍。
+校验 agent 必须**只读**，且必须拿到**规范原文**——只给契约是不够的，
+否则它无法判断"契约本身是否已经偏离规范"。
+**理由**：F1 这次校验抓出 7 条阻塞级问题，全部是我自己写的、自己没看见的：
+- `CONTRACTS.md` §3.3 把"砍掉覆盖度校验"的依据引成 `D14`（实为 `D16`）——依据链错会误导后续实现
+- `ActiveLocation` 是死类型且同节语义自相矛盾
+- `AnchorErrorCode`、`normalizeBBox`/`locationLabel` 的函数契约、日志 API 面完全没进契约，
+  而这三个文件头还写着"事实源 §9"（§9 其实只是路径表）
+- 我宣称 §1.1「一字不改」但实际补了注释——**这是个假声明**
+- F1 未提交、未打 tag，却在 `STATE.md` 里提前记账
+- `SourceAdapter.capabilities` 插在规范字段中间，破坏了规范字段的绝对顺序
+**状态**：生效。
+
+## D33 删除 `ActiveLocation`，收窄 `types.ts` 的"全项目类型"声明
+
+**决策**：
+- **删掉 `ActiveLocation`**（`CodeLocation | PDFLocation`）。它没有任何消费者，且 §1.3 同一节
+  既称它"实际接入的 union"又称"orchestrator 只认 `Location`"，自相矛盾。需要收窄时直接用 `Location`。
+- `types.ts` 头部声明从"全项目类型的事实源"**收窄**为"§1/§3 类型的事实源"；
+  §5 的消息协议类型（`WalkthroughState` / `HostToSidebar` 等）按 `CONTRACTS.md` §9.2 在 S1 落地到 `protocol.ts`。
+**理由**：死类型与过度声明都会在 S1 被误当成"已冻结但没人用"的遗留物。宁可现在删掉，需要时再加一行。
 **状态**：生效。
 
 ---
