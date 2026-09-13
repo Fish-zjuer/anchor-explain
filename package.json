@@ -16,6 +16,8 @@
     "fixtures": "node scripts/make-fixture-pdf.mjs",
     "devhost": "pnpm build && node scripts/devhost.mjs",
     "devhost:pdf": "pnpm build && node scripts/devhost.mjs line2",
+    "link:ext": "pnpm build && node scripts/link-extension.mjs",
+    "unlink:ext": "node scripts/link-extension.mjs --uninstall",
     "preview:sidebar": "node scripts/preview-sidebar.mjs --serve",
     "smoke": "node scripts/smoke-extension.mjs",
     "smoke:chain": "node scripts/smoke-walkthrough.mjs",

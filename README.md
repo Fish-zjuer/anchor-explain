@@ -60,6 +60,9 @@ docs/                          唯一事实源，见下
 ```bash
 pnpm install
 pnpm fixtures     # 重新生成 test/fixtures/sample-30p.pdf（零依赖，已提交，一般不用跑）
+pnpm link:ext     # **装进你平时的 VS Code（目录联接）→ 之后常驻，不用起开发宿主**（D60）
+pnpm unlink:ext   # 撤掉上面那次安装（只删我们建的联接，不碰源码）
+pnpm devhost      # 起一次性开发宿主（改代码调试用；会先 build）
 pnpm build        # esbuild 打包扩展，产物落在各自 packages/<包名>/dist/extension.cjs
 pnpm watch        # 同上，watch 模式；F5 的 preLaunchTask 用的就是这个
 pnpm typecheck    # tsc --noEmit，只做类型检查，不出产物
@@ -88,6 +91,11 @@ pnpm check        # 上面最后六件事串起来：typecheck → test → buil
 是等价命令（不用 F5、不用调试器；会先构建，并打印实际执行的命令）。
 **别手敲 `code --extensionDevelopmentPath=相对路径`** —— CLI 不把 CWD 传给已在运行的实例，
 那条路会**静默地少一个扩展**（窗口照开、没有图标、也没有报错），见 D59。
+
+**要"像别的插件一样常驻"**（每次打开 VS Code 就有，不用起开发宿主、不用 F5）：
+`pnpm link:ext` —— 它在 `~/.vscode/extensions/` 下建两个指向本仓库的联接，
+装完**重启 VS Code**（或「开发人员: 重新加载窗口」）即可。改完代码 `pnpm build` + 重载窗口即生效；
+撤掉用 `pnpm unlink:ext`（只删联接，不碰源码）。见 D60。
 **改侧边栏排版**用 `pnpm preview:sidebar`：把真实生成的侧边栏 HTML 起在本地服务上，
 浏览器打开就能看，不用起 VS Code（D50）。
 **第一次上手请照 [`packages/extension-anchor/README.md`](packages/extension-anchor/README.md)

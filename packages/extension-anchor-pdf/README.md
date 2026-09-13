@@ -67,6 +67,13 @@ pnpm --filter anchor-pdf typecheck # tsc --noEmit
 pnpm devhost:pdf        # 在仓库根执行；等于「先 build，再用绝对路径起宿主」
 ```
 
+**日常用就装成常驻扩展**（活动栏/命令面板一直在，不用每次起宿主）：
+
+```bash
+pnpm link:ext           # 线1 + 线2 一起装进 ~/.vscode/extensions（目录联接）
+pnpm unlink:ext         # 撤掉
+```
+
 > **不要手敲 `code --extensionDevelopmentPath=packages/extension-anchor-pdf ...`（相对路径）。**
 > `code` CLI 把参数转交给已在运行的 VS Code 实例时**不传 CWD**，相对路径会被解析成
 > `/packages/extension-anchor-pdf` —— 结果是**窗口照开、一切正常、就是没有这个扩展**
