@@ -97,6 +97,7 @@ let onCloseDocument;
 // 这些逻辑在冒烟里跑的是真代码，只有字节没有真的过网线。
 let fetchMode = 'with-fetch';
 let fetchFail;
+let peerPdfInstalled = true;
 
 /** main.c 第 40-48 行的三个步骤（内容对应 rb_pop）——这就是"模型返回什么" */
 const EXPLANATION_JSON = JSON.stringify({
@@ -160,12 +161,37 @@ function toolCallTurn() {
   };
 }
 
+/** 线2 的锚点长这样：没有 filePath，只有 page/bbox */
+const PDF_PATH = path.join(FIXTURES, 'sample-30p.pdf');
+
+const PDF_EXPLANATION_JSON = JSON.stringify({
+  summary: '这一块是环形队列的图示与出队顺序说明。',
+  confidence: 0.8,
+  steps: [
+    {
+      location: { page: 23, bbox: [0.1, 0.1, 0.6, 0.4] },
+      title: '图示里的三个元素',
+      text: 'head、tail、count 三者的关系在这张图上标了出来。',
+      highlights: [
+        { location: { page: 23, bbox: [0.1, 0.1, 0.2, 0.2] }, narration: 'head 指向下一个要取的位置。', emphasis: 'primary' },
+      ],
+    },
+    {
+      location: { page: 24, bbox: [0.2, 0.2, 0.8, 0.6] },
+      title: '出队顺序',
+      text: '取走之后 head 前移，图上用箭头画了出来。',
+    },
+  ],
+});
+
 /** 假端点：只看"对话里有没有 tool 结果"来决定回哪一轮，因此无状态、可重入 */
 function cannedCompletion(body) {
   const seen = (body.messages ?? []).map((m) => m.role);
   if (fetchMode === 'always-fetch') return toolCallTurn();
   if (!seen.includes('tool')) return toolCallTurn();
-  return { content: EXPLANATION_JSON };
+  // PDF 锚点的 prompt 里写的是「页码：第 N 页」，拿它区分两条线
+  const prompt = String(body.messages?.[1]?.content ?? '');
+  return { content: prompt.includes('页码：') ? PDF_EXPLANATION_JSON : EXPLANATION_JSON };
 }
 
 globalThis.fetch = (url, init) => {
@@ -363,7 +389,8 @@ const vscodeStub = {
     },
   },
 
-  extensions: { getExtension: () => undefined },
+  // S6：线2 装没装，会改变"点侧边栏定位"那一跳的行为
+  extensions: { getExtension: (id) => (peerPdfInstalled && id === 'anchor.anchor-pdf' ? { id } : undefined) },
 };
 
 const require = createRequire(import.meta.url);
@@ -862,6 +889,64 @@ const fetchCallsBeforeCancel = fetchCalls.length;
 await registered.get('anchorExplain.capture')?.();
 check(fetchCalls.length === fetchCallsBeforeCancel, '取消确认时一次网络请求都不发（不白花钱）');
 quickPickAnswer = '讲解这段';
+
+// ---- 11. S6：PDF 锚点走线1（不画框 + 点击滚页） ----------------------------
+// 这一节把线2 交出来的那种锚点灌进线1 的跨扩展入口，验三件用户在 F5 才会发现的事：
+//   1. PDF 锚点也能出讲解（侧边栏每条 step 带「第 N 页」标签）
+//   2. **编辑器里一个框都不画**（约束 1 在这一侧也要成立）
+//   3. 点侧边栏那条位置标签 → `anchorPdf.revealPage`（滚动），不是画框
+const pdfAnchor = {
+  sourceType: 'pdf',
+  sourceId: 'sha1:pdf',
+  sourceName: 'sample-30p.pdf',
+  location: { page: 23, bbox: [0.1, 0.1, 0.6, 0.4] },
+};
+
+// 先收掉上一节留下的框，免得下面的断言把旧框算进来
+registered.get('anchorExplain.stop')?.();
+
+fetchCalls.length = 0;
+await registered.get('anchorExplain.explainAnchor')?.(pdfAnchor);
+
+const pdfUpdate = webviews[0].webview.posted.at(-1);
+check(pdfUpdate?.type === 'session:update', 'PDF 锚点也能起讲解（跨扩展入口 §5.1）');
+check(pdfUpdate?.result?.steps?.length === 2, 'PDF 讲解有两个 step', `${pdfUpdate?.result?.steps?.length}`);
+check(
+  pdfUpdate?.result?.steps?.[0]?.location?.page === 23,
+  'step 的 location 是 PDF 位置（侧边栏据此显示「第 23 页」）',
+  JSON.stringify(pdfUpdate?.result?.steps?.[0]?.location),
+);
+
+const dirty = decorationTypes.filter((t) => (editor.decorations.get(t) ?? []).length > 0);
+check(dirty.length === 0, '**PDF 会话一拍都不画框**（约束 1：PDF 上不出现任何高亮框）', `${dirty.length} 个 type 有框`);
+
+// 点「第 23 页」那条 → 应该去滚 PDF，而不是去编辑器里定位
+executed.length = 0;
+receiveFromWebview?.({ type: 'ui:revealStep', index: 0 });
+await flush();
+const revealCall = executed.find((c) => c.id === 'anchorPdf.revealPage');
+check(Boolean(revealCall), '点 PDF 那一步 → 调 anchorPdf.revealPage（滚动定位）', executed.map((c) => c.id).join(','));
+check(revealCall?.args?.[0] === 23, '带的是那一步的页码', String(revealCall?.args?.[0]));
+
+// 对端缺失：明确提示，不静默失败（§5.1）
+peerPdfInstalled = false;
+executed.length = 0;
+messages.length = 0;
+receiveFromWebview?.({ type: 'ui:revealStep', index: 0 });
+await flush();
+check(!executed.some((c) => c.id === 'anchorPdf.revealPage'), '没装线2 时不去 executeCommand（会抛"命令未找到"）');
+check(messages.some((m) => String(m[1]).includes('没有安装线2')), '没装线2 时明确提示', String(messages.at(-1)?.[1] ?? ''));
+peerPdfInstalled = true;
+
+// 代码锚点仍然走播放器（两条线的定位方式必须是两套）
+quickPickAnswer = '讲解这段';
+await registered.get('anchorExplain.capture')?.();
+executed.length = 0;
+reveals.length = 0;
+receiveFromWebview?.({ type: 'ui:revealStep', index: 0 });
+await flush();
+check(!executed.some((c) => c.id === 'anchorPdf.revealPage'), '代码锚点**不**去调线2（不然会在 PDF 里瞎滚）');
+check(reveals.length > 0, '代码锚点走的是编辑器里的定位（revealRange）', `${reveals.length} 次`);
 
 // ---- 收尾 -----------------------------------------------------------------
 Module._load = originalLoad;

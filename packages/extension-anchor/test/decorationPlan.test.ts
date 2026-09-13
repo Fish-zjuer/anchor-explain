@@ -115,3 +115,33 @@ test('四档 emphasis 都能被原样带出来（S1 必须验到全部分支）'
     [...EMPHASES],
   );
 });
+
+// ── 约束 1 的结构性保证（S6） ──────────────────────────────────────────────
+
+/** 一个 PDF 步骤：`location` 里没有 filePath/lineStart，只有 page/bbox */
+function pdfStep(): WalkthroughStep {
+  return {
+    location: { page: 23, bbox: [0.1, 0.1, 0.5, 0.5] },
+    text: 'PDF 上的一段',
+    color: 'primary',
+    highlights: [
+      { location: { page: 23, bbox: [0.1, 0.1, 0.2, 0.2] }, narration: 'a', emphasis: 'context' },
+    ],
+  };
+}
+
+test('PDF 步骤：**一拍都不画**（"PDF 上不出现任何高亮框"的结构性保证）', () => {
+  // 这一条不靠调用方自觉：decorationPlan 把非 CodeLocation 全部过滤掉。
+  // 线2 的框选位置只用来"滚到那一页"，从来不该变成编辑器里的框。
+  for (let beat = -1; beat <= 4; beat += 1) {
+    assert.deepEqual(planForBeat(pdfStep(), beat), [], `第 ${beat} 拍不该有任何 decoration`);
+  }
+  assert.equal(primaryLocationOf(pdfStep()), undefined, 'PDF 步骤拿不到"主位置"，所以走不到播放器');
+});
+
+test('混着一个 PDF 步骤时：只有代码步骤被画', () => {
+  // 校验闸门允许 steps 里有别的来源吗？不允许（§3.3 要求与锚点同源）。
+  // 但"结构上画不出来"这件事必须由这一层保证，而不是靠上游不传进来。
+  assert.ok(planForBeat(codeStep(), -1).length > 0);
+  assert.deepEqual(planForBeat({ ...pdfStep(), location: { url: 'https://x', selector: '#a', scrollY: 0 } }, 0), []);
+});

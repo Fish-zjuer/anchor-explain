@@ -12,7 +12,14 @@
  */
 
 import * as vscode from 'vscode';
-import { AnchorError, createContextRequestLogger, describeError, isCodeLocation, locationLabel } from '@anchor/core';
+import {
+  AnchorError,
+  createContextRequestLogger,
+  describeError,
+  isCodeLocation,
+  isPDFLocation,
+  locationLabel,
+} from '@anchor/core';
 import type {
   Anchor,
   CodeLocation,
@@ -20,8 +27,10 @@ import type {
   EditorPort,
   ExplanationResult,
   FileSystemPort,
+  WalkthroughStep,
 } from '@anchor/core';
 import { createCodeAdapter } from './adapters/CodeAdapter.ts';
+import { primaryLocationOf } from './playback/decorationPlan.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
 import { describeConfig } from './config.ts';
 import { createOrchestrator } from './orchestrator/Orchestrator.ts';
@@ -41,7 +50,7 @@ import { createEditorPort } from './vscode/ports/editorPort.ts';
 import { countLines, createFileSystemPort } from './vscode/ports/fileSystemPort.ts';
 
 /** 线2 的扩展 ID（D27）。对端缺失时必须明确提示，不静默失败。 */
-const PEER_EXTENSION_ID = 'anchor.anchor-pdf';
+const PDF_EXTENSION_ID = 'anchor.anchor-pdf';
 
 export function registerCommands(context: vscode.ExtensionContext): void {
   const fsPort: FileSystemPort = createFileSystemPort();
@@ -99,9 +108,43 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     onStop: () => stop(),
     onRevealStep: (index) => {
       const step = session?.snapshot.result.steps[index];
-      if (step) void playerOf().revealStep(step);
+      if (step) void revealStep(step);
     },
   };
+
+  /**
+   * 「定位到这一步」的点击（侧边栏每条 step 上的位置标签）。
+   *
+   * @anchor 两条线的定位方式**必须是两套**（约束 1）：
+   *   - 线1（代码）：在编辑器里高亮 + 滚过去（`CodeWalkthroughPlayer.revealStep`）
+   *   - 线2（PDF）：**只滚到那一页，不画任何框** —— 框选出来的位置信息仅用于导航
+   *
+   * 这里也是"PDF 上不出现高亮框"的落点之一：PDF 那句话根本不经过播放器，
+   * 而 `decorationPlan` 又会过滤掉所有非 `CodeLocation`（约束 20），两头都不会画。
+   */
+  async function revealStep(step: WalkthroughStep): Promise<void> {
+    if (primaryLocationOf(step)) {
+      await playerOf().revealStep(step);
+      return;
+    }
+
+    if (isPDFLocation(step.location)) {
+      const { page } = step.location;
+      if (!vscode.extensions.getExtension(PDF_EXTENSION_ID)) {
+        // §5.1：对端缺失时明确提示，不静默失败
+        void vscode.window.showWarningMessage(
+          'Anchor：没有安装线2（anchor.anchor-pdf），无法把 PDF 滚到这一页。',
+        );
+        return;
+      }
+      // §5.1 的调用形状就是 (page)。**不传文件**：`PDFLocation` 里没有路径字段
+      // （它只有 page/bbox），而线2 那边会把"该滚哪一份"落到当前聚焦的那个面板上。
+      await vscode.commands.executeCommand('anchorPdf.revealPage', page);
+      return;
+    }
+
+    // web：本次不接入（D7）。什么都不做，而不是抛错。
+  }
 
   function sidebarOf(): SidebarPanel {
     if (!sidebar || sidebar.disposed) {
@@ -432,7 +475,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       parts.push('没有活动的代码编辑器');
     }
 
-    const peer = vscode.extensions.getExtension(PEER_EXTENSION_ID);
+    const peer = vscode.extensions.getExtension(PDF_EXTENSION_ID);
     parts.push(`对端 anchor-pdf：${peer ? '已安装' : '未安装'}`);
 
     // 真选区接上之后，"我刚才那一按到底讲了哪一段"屏幕上再也看不出来

@@ -11,8 +11,9 @@
 
 ## 当前切片
 
-**S5（PDF 注入 overlay 框选）— 代码与自动化验收完成，tag `slice-S5`。等用户确认拖拽手感。**
-（S3 的配 key、S4 的开 PDF 也还挂着；三片的实操心互不依赖，可以一起做。）
+**S6（PDF 框选 → 侧边栏 + 点击滚动定位）— 代码与自动化验收完成，tag `slice-S6`。**
+只剩 **S7**（PDF `page_range` 取件）没做。
+（S3 的配 key、S4 的开 PDF、S5 的拖拽手感三件实操心都还挂着，互不依赖。）
 
 ## 已完成切片
 
@@ -26,28 +27,28 @@
 | S3 | 线1 接真实 AI：编排循环 + §3.2 取件闸门 + §3.3 双闸门 + repair + §6 配置 + SecretStorage | `slice-S3` | 2026-09-13 |
 | S4 | 线2 fork `mathematic-inc/vscode-pdf`：改名 / **不劫持** / 移除品牌 / `MODIFICATIONS.md` | `slice-S4` | 2026-09-13 |
 | S5 | 线2 注入式框选 overlay：像素→归一化换算（有单测）+ `anchorPdf.selectRegion` | `slice-S5` | 2026-09-13 |
+| S6 | 线2 框选 → 线1 侧边栏讲解 + 点击滚动定位（**只滚，不画框**） | `slice-S6` | 2026-09-13 |
 
 **线1（代码编辑器）的功能面到此完整**：真选区 → 真适配器 → 真 AI（带取件）→ 真校验 → 真渲染。
 **产物里已经没有任何替身。**
 
 ## 下次第一件事
 
-**S6：框选 → 侧边栏讲解 + 点击滚动定位。** 范围与验收见 `SLICES.md` 的 S6 一节。
+**S7：PDF 的 `page_range` 取件。** 范围与验收见 `SLICES.md` 的 S7 一节。落地清单：
 
-线2 → 线1 那半**已经在 S5 接通了**（`anchorPdf` 收到 `anchor:captured` 就
-`executeCommand('anchorExplain.explainAnchor', anchor)`）。S6 要补的是**另一半**：
+1. `packages/extension-anchor-pdf/src/anchor/pdfText.ts` —— 用 `pdfjs-dist` 的 **legacy 无头**构建
+   按页取文字（**不依赖 webview**）。注意：fork 的 `assets/pdf.js/` 是**打过补丁的 vendored 构建**，
+   不是 npm 包，所以这一处要么复用 `assets/pdf.js/build/pdf.mjs`，要么加 `pdfjs-dist` 依赖 ——
+   **先决定用哪一种，并把这个决定写进 `MODIFICATIONS.md`**（它决定了升级 pdf.js 时要动几处）
+2. `packages/extension-anchor/src/adapters/PDFAdapter.ts` —— 线1 侧的 PDF 适配器：
+   `capabilities.contextTypes = ['page_range']`、`fetchContext` 按页取文字、
+   以及**终于该落的 `detect()`**（出现第二个 adapter 了，"谁适用"第一次有真假之别）
+3. 线1 要能拿到 PDF 的页数（`makeOutline` 现在对 PDF 恒传 `pageCount: null`，
+   于是 §3.3 的页码上界被跳过）—— 这是 S6 留下的缺口（D55 第 4 条），S7 正好是补它的时机：
+   **要么**改契约（给 `Anchor` 加字段 / 让 §5.1 带返回值），**要么**在 `PDFAdapter` 侧自己读页数
+   （如果 1 已经引入了无头 pdf.js，这一条几乎免费）。**优先后者**：不动冻结的契约。
 
-1. 线1 的侧边栏为 PDF 锚点显示位置标签「第 N 页」—— `locationLabel` 已经支持，确认它真的被用上
-2. 侧边栏每条 step 被点击时，**滚 PDF 到对应页**（不是画框）：
-   `SidebarHandlers.onRevealStep` 现在只调 `playerOf().revealStep(step)`，
-   要为 PDF 锚点改成 `executeCommand('anchorPdf.revealPage', page, filePath)`；
-   对端缺失时明确提示（`CONTRACTS` §5.1）
-3. **线1 的 `deck`：`decorationPlan.ts` 已经会过滤掉所有非 `CodeLocation`**（约束 20），
-   所以 PDF 锚点天然不会被画框 —— 但要有一条**断言**把它钉住（现在只有代码保证，没有测试保证）
-4. 线1 的 `explainAnchor` 目前对 PDF 锚点走的是同一条 `explain()`：确认
-   `makeOutline` 会传 `pageCount`（现在恒为 null），否则 §3.3 的页码上界检查被跳过
-
-**S3/S4/S5 的实操验收都还挂着**，见下。互不依赖，谁先都行。
+**S3/S4/S5/S6 的实操验收都还挂着**（配 key / 开 PDF / 拖拽手感 / 点位置标签），互不依赖。
 
 ### S3 的验收怎么走（多了一步配置，只做一次）
 
@@ -115,6 +116,9 @@
 44. **宿主对框选结果优先用 `geometry` 重算**（D54 第 3 条），不要图省事直接用脚本给的 `bbox`：那等于让唯一有对错的换算由没有测试覆盖的代码定案。冒烟里专门喂了一个**错的** bbox 来钉这件事。
 45. **"不画框"的结构性判据在 `smoke:pdf` 里**：它查线2 产物里**有没有** `TextEditorDecorationType` 这个 API。"线2 不做高亮流转"这条约束因此不是靠自觉。
 46. **路径工具在 `@anchor/core`（`packages/core/src/paths.ts`）**：`normPath` / `samePath` / `basenameOf` / `countTextLines`。线1 的 `src/paths.ts` 只是转发（保留它是不想改十几个导入路径）。**新增代码直接从 `@anchor/core` 导入。**
+47. **两条线的定位方式必须是两套**（D55 第 1 条）：`commands.ts` 的 `revealStep` 先看 `primaryLocationOf`（只对 `CodeLocation` 有值）走播放器，否则看 `isPDFLocation` 走 `anchorPdf.revealPage`。**PDF 那一句根本不经过播放器**，再叠上 `decorationPlan` 的过滤，"PDF 上不出现高亮框"是结构性的。
+48. **`anchorPdf.revealPage` 只接收 `page`，且落到当前聚焦的面板**（D55 第 2 条）：`PDFLocation` 里没有路径字段，所以线1 报不出"该滚哪一份"；落到所有面板会让"同时开两份对比"时一起滚。
+49. **`pageCount` 传不进线1 是刻意留的缺口**（D55 第 4 条）：§5.1 是单向、不依赖返回值，`PDFLocation` 里也没有路径。后果是 §3.3 的页码上界被跳过（pdf.js 自己会把越界页夹住，所以用户可见后果有限）。**S7 是补它的时机**，优先在 `PDFAdapter` 侧自己读页数，别去动冻结的契约。
 
 ## 待补 docs
 
@@ -144,5 +148,5 @@
 
 ## 最后更新
 
-2026-09-13，S5 收工（等用户确认拖拽手感）。
-S3 的配 key、S4 的开 PDF、S5 的拖拽三件实操心都还挂着，互不依赖。
+2026-09-13，S6 收工（只剩 S7）。
+S3 的配 key、S4 的开 PDF、S5 的拖拽、S6 的点位置标签四件实操心都还挂着，互不依赖。

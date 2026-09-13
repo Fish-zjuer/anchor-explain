@@ -21,7 +21,7 @@
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | — |
 | S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | 代码与自动化完成 `slice-S4`，**待用户实操** |
 | S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | 代码与自动化完成 `slice-S5`，**待用户实操** |
-| S6 | PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位） | 自动化 + 用户实操 | — |
+| S6 | PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位） | 自动化 + 用户实操 | 代码与自动化完成 `slice-S6`，**待用户实操** |
 | S7 | PDF 取件（page_range 取附近页文字） | 自动化 | — |
 
 ## 硬性约束
@@ -372,6 +372,33 @@ fork 基线：`1153346694f457bc7b4c73c9b0e95b629f02dc03`（上游 `0.2.5`，2026
 - **范围**：`bridge.ts` 的 `executeCommand('anchorExplain.explainAnchor', anchor)` 通路；ext-A 的 `explainAnchor` 命令；`SidebarPanel` 加位置标签与点击；ext-B 的 `anchorPdf.revealPage` 命令 + 注入脚本 `gotoPage`（`PDFViewerApplication.page = N`）
 - **验收标准**：自动化 + **用户实操**。**PDF 上不出现任何高亮框。** 未装 ext-B 时明确提示而非静默失败。
 - **回退点**：`slice-S5`
+
+### S6 落地结果（2026-09-13，tag `slice-S6`）
+
+线2 → 线1 那半在 S5 已经接通（`anchor:captured` → `anchorExplain.explainAnchor`），
+S6 补的是另一半：**线1 拿到 PDF 锚点之后**。
+
+| 声明范围内 | 落地 |
+|---|---|
+| 侧边栏显示「第 N 页」 | **本来就支持**（`clientScript.ts` 的 `locText` 认 `loc.page`）。S6 只补了提示词：PDF 那条写"把 PDF 滚到这一页"，代码那条写"在编辑器里定位到这一段"（对 PDF 说"在编辑器里定位"是句假话，用户会以为是它坏了） |
+| 点击该条滚动 PDF | `commands.ts` 新增 `revealStep()`：按位置类型分岔 —— 代码走播放器（高亮+滚），PDF 走 `anchorPdf.revealPage`（**只滚不画**）。对端缺失时明确提示 |
+| 空格/next 只推进文字、不动 PDF | 天然成立：`decorationPlan` 过滤非 `CodeLocation`（约束 20），播放器对 PDF 步骤什么都不做 |
+| `anchorPdf.revealPage` | S5 已注册；S6 改成**落到当前聚焦的面板**（不是所有打开的 PDF —— 开两份对比时会一起滚） |
+| 线1 的 `test` | 113 → **115 条**（`decorationPlan.test.ts` 加 2 条：PDF 步骤**一拍都不画**、混着 PDF 步骤时只有代码步骤被画） |
+| `scripts/smoke-walkthrough.mjs` | 105 → **115 项**：新增第 11 节，把线2 交出来的锚点灌进线1 |
+
+**自动化验收结果**：`pnpm check` 全绿 —— **154 测**（core 28 + ext 115 + pdf 11）
++ `pnpm smoke` 30 项 + `pnpm smoke:chain` **115 项** + `pnpm smoke:pdf` 66 项。
+第 11 节的硬断言：「**PDF 会话一拍都不画框**（逐个 decoration type 数框数）」
+「点 PDF 那一步走的是 `anchorPdf.revealPage` 且带对页码」
+「代码锚点**不**去调线2」「没装线2 时明确提示而不是 executeCommand」。
+
+**一处刻意留的缺口，已声明**：线1 拿不到 `pageCount`（§5.1 单向、`PDFLocation` 里也没有路径），
+所以 §3.3 的 `1 ≤ page ≤ pageCount` 那条上界被跳过。补它要改契约，见 D55 第 4 条。
+
+**验收靠**：**用户实操** —— 框选一块 → 侧边栏出讲解 → 点某一步上的「第 N 页」→
+PDF 应**滚到那一页**（不是画框，编辑器里也不该出现任何框）；
+没装线1 或没装线2 两种缺件情况各试一次，都应看到明确提示。
 
 ## S7 PDF 取件
 

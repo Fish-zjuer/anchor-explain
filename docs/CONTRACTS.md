@@ -416,6 +416,16 @@ vscode.commands.executeCommand('anchorPdf.revealPage', page: number);
 
 未安装对端时**明确提示，不静默失败**。
 
+**S6 落地时的两点实现约定**：
+
+1. **只传 `page`，不传文件。** `PDFLocation` 里没有路径字段（只有 `page`/`bbox`），
+   所以线1 报不出"该滚哪一份"。线2 那边的处置是：落到**当前聚焦的那个面板**上
+   （同时开着两份 PDF 对比着看时，用户按下侧边栏那一条，想动的显然是他刚才在看的那一份）。
+2. **两条线的定位走两套**：`commands.ts` 的 `revealStep` 先看 `primaryLocationOf(step)`
+   （只对 `CodeLocation` 有值）→ 走播放器；否则看 `isPDFLocation` → 走 `anchorPdf.revealPage`。
+   `decorationPlan` 会过滤掉所有非 `CodeLocation`（约束 20），所以 PDF 那一侧**天然画不出框** ——
+   两头都不画，"PDF 上不出现任何高亮框"因此是结构性的，不是靠自觉。
+
 ### §5.2 ext-B 内部：宿主 ↔ 注入脚本
 
 ```ts

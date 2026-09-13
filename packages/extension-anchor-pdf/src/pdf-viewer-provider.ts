@@ -355,12 +355,16 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
         : Number(await window.showInputBox({ title: "跳到第几页？", prompt: "输入一个 ≥1 的整数" }));
     if (!Number.isInteger(target) || target < 1) return;
 
-    const panels = instance.panelsFor(filePath);
-    if (panels.length === 0) {
+    // §5.1 的调用形状是 `revealPage(page)` —— **不带文件**（`PDFLocation` 里没有路径字段）。
+    // 所以"该滚哪一份"落到当前聚焦的那个面板上：同时开着两份 PDF 对比着看时，
+    // 用户按下侧边栏那一条，想动的显然是他刚才在看的那一份。
+    const panels = filePath === undefined ? [instance.lastFocusedPanel()] : instance.panelsFor(filePath);
+    const alive = panels.filter((panel): panel is WebviewPanel => panel !== undefined);
+    if (alive.length === 0) {
       void window.showWarningMessage("Anchor：没有打开的 Anchor PDF 视图可以定位。");
       return;
     }
-    for (const panel of panels) instance.post(panel, { type: "anchor:gotoPage", page: target });
+    for (const panel of alive) instance.post(panel, { type: "anchor:gotoPage", page: target });
   }
 
   /**

@@ -655,6 +655,39 @@ S3 才存在，现在写出来就是没有消费者的死码。这是**分期兑
 
 ---
 
+## D55 S6：PDF 锚点走线1 —— 两条线的定位方式必须是两套
+
+**决策**：四件事。
+
+1. **`revealStep` 按位置类型分岔**（`commands.ts`）：`primaryLocationOf(step)` 有值（只可能是
+   `CodeLocation`）→ 播放器高亮 + 滚；否则 `isPDFLocation` → `anchorPdf.revealPage`（**只滚，不画**）。
+   这是约束 1 在代码里的落点：**PDF 那句话根本不经过播放器**。
+   两头都不画（另一头是 `decorationPlan` 过滤非 `CodeLocation`），所以"PDF 上不出现任何高亮框"
+   是结构性的，不是靠调用方自觉。
+2. **§5.1 只传 `page`，不传文件**：`PDFLocation` 里没有路径字段。线2 的处置是落到
+   **当前聚焦的面板**上（`lastFocusedPanel`），而不是"所有打开的 PDF"——
+   后者在同时开两份 PDF 时会一起滚，那不是用户按下那一条时想看到的事。
+3. **侧边栏的位置标签提示词也跟着位置类型变**：对 PDF 说"在编辑器里定位到这一段"是句假话，
+   用户会以为是它坏了。现在 PDF 那一条写"把 PDF 滚到这一页"。
+   （webview 里 import 不到 core，所以客户端脚本里那 4 行 `isPdfLoc` 是一份**副本** ——
+   与 `locText` 的副本同一个已知代价，见 STATE 约束 19。）
+4. **`pageCount` 仍然传不进去，这是刻意留的缺口**：线1 不知道 PDF 有多少页，而 §5.1 是
+   "单向、不依赖返回值"，没有一条干净的通道把页数递给线1。后果是 §3.3 里
+   `1 ≤ page ≤ pageCount` 这条上界被跳过（`pageCount: null` → 跳过该项检查）。
+   用户可见的后果有限：AI 报一个越界的页号，线2 那边 `pdfViewer.currentPageNumber` 会被 pdf.js 自己夹住。
+   **要真正补上它得改契约**（给 `Anchor` 加字段，或让 §5.1 破例带返回值）—— 两件都不该顺手做，
+   记在已知缺口里等用户发话。
+
+**验证**：`pnpm check` 全绿 —— 154 测（core 28 + ext 115 + pdf 11）→ `pnpm smoke` 30 项
+→ `pnpm smoke:chain` **115 项**（S5 时 105）→ `pnpm smoke:pdf` 66 项。
+链路冒烟的第 11 节把**线2 交出来的那种锚点**灌进线1 的跨扩展入口，验三件事：
+PDF 锚点也能出讲解、**编辑器里一个框都不画**、点位置标签走的是 `anchorPdf.revealPage`
+（并且没装线2 时明确提示、代码锚点**不**去调线2）。
+
+**状态**：生效。
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

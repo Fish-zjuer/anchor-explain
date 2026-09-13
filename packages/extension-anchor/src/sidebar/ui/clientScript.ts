@@ -42,6 +42,11 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return n;
   }
 
+  /** 是不是 PDF 位置。判断方式与 core 的 isPDFLocation 一致（webview 里 import 不到 core）。 */
+  function isPdfLoc(loc) {
+    return !!loc && typeof loc.page === "number";
+  }
+
   function locText(loc) {
     if (!loc) return "";
     if (typeof loc.lineStart === "number") {
@@ -87,7 +92,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var loc = mk("button", "loc", locText(step.location));
     loc.setAttribute("data-act", "reveal");
     loc.setAttribute("data-index", String(i));
-    loc.title = "在编辑器里定位到这一段";
+    // 两条线的定位方式不同，提示词也不能一样 ——
+    // 对 PDF 说"在编辑器里定位"是句假话，用户会以为是它坏了（S6）
+    loc.title = isPdfLoc(step.location) ? "把 PDF 滚到这一页" : "在编辑器里定位到这一段";
     head.appendChild(loc);
     li.appendChild(head);
 
