@@ -61,7 +61,10 @@ export function explainOutputContract(): string {
   ].join('\n');
 }
 
-export function buildSystemPrompt(style: ExplainStyle = DEFAULT_STYLE): string {
+export function buildSystemPrompt(
+  style: ExplainStyle = DEFAULT_STYLE,
+  options: { crossFile?: boolean } = {},
+): string {
   return [
     '你是一个代码与技术文档讲解助手。用户会给你一个"锚点"：文档里的一段位置，可能还带着那段的原文。',
     '',
@@ -92,7 +95,7 @@ export function buildSystemPrompt(style: ExplainStyle = DEFAULT_STYLE): string {
     `可以调用工具 \`${FETCH_CONTEXT_TOOL.name}\` 请求额外上下文。规则：`,
     '- 只在**真的需要**时调用。能凭现有信息讲清楚的，不要为了保险而多取一次。',
     '- 一次最多请求一小段（代码按行、PDF 按页）。',
-    '- 只能取**锚点所在的那个文件**，不能取别的文件。',
+    fetchSourceRule(options.crossFile === true),
     '- 取件次数有上限，且已经取过的区间不会重复给你。',
     '- 收到取件结果后就该给出最终 JSON，不要反复取件。',
     '',
@@ -100,6 +103,26 @@ export function buildSystemPrompt(style: ExplainStyle = DEFAULT_STYLE): string {
     '',
     explainOutputContract(),
   ].join('\n');
+}
+
+/**
+ * "能取哪里的件"这一句，按 `anchorExplain.fetchScope` 走（S9a）。
+ *
+ * @anchor 跨文件那一版要**同时**做两件事：给它许可（否则它就是不敢引用别的文件，
+ *         讲解里只会写"某个宏"），和给它节制（一次一个文件、只为讲清数据流）。
+ *         用户的原话是"没有跨文件的理解啊，像是嵌入式等等，很多分散的代码"——
+ *         所以这里明确点名嵌入式最常见的三样：**宏、结构体、调用者**。
+ */
+function fetchSourceRule(crossFile: boolean): string {
+  if (!crossFile) return '- 只能取**锚点所在的那个文件**，不能取别的文件。';
+  return [
+    '- **可以读锚点文件之外的相关文件**（同一个 `path` 参数，写相对路径或工作区内的路径）：',
+    '  宏定义、类型/结构体、以及**调用它或被它调用的代码**通常不在同一个文件里 ——',
+    '  讲不清"数据从哪来、给谁用"时就去读，这是被鼓励的。',
+    '- 一次只读**一个**文件的一小段（≤60 行），别整份读；读完就该给出结论。',
+    '- 密钥、依赖目录（`node_modules`）、构建产物读不到，也不用试。',
+    '- 你**只能在讲解里引用你读过的文件**（或锚点文件）—— 没读过的文件不许出现在 location 里。',
+  ].join(String.fromCharCode(10));
 }
 
 /**
@@ -149,7 +172,10 @@ export function describeAnchor(anchor: Anchor): string {
   return lines.join('\n');
 }
 
-export function buildUserPrompt(anchor: Anchor): string {
+export function buildUserPrompt(
+  anchor: Anchor,
+  options: { candidates?: readonly string[]; focus?: string } = {},
+): string {
   const parts = ['## 锚点', describeAnchor(anchor), ''];
 
   if (anchor.extractedText && anchor.extractedText.trim() !== '') {

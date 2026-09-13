@@ -33,7 +33,18 @@ export { clamp01, normalizeBBox, coerceBBox, isValidBBox, bboxArea } from './nor
 
 export { formatLineRange, locationLabel } from './locationLabel.ts';
 
-export { basenameOf, countTextLines, normPath, samePath } from './paths.ts';
+export {
+  basenameOf,
+  countTextLines,
+  dirnameOf,
+  isAbsolutePath,
+  isInsidePath,
+  joinPath,
+  normPath,
+  relativeToPath,
+  resolveCandidatePaths,
+  samePath,
+} from './paths.ts';
 
 export type { Rect } from './rect.ts';
 export { intersectRects, rectArea } from './rect.ts';

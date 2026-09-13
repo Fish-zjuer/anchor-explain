@@ -42,3 +42,121 @@ export function countTextLines(text: string): number {
   const parts = text.split(/\r?\n/);
   return parts[parts.length - 1] === '' ? parts.length - 1 : parts.length;
 }
+
+// ─────────────────────────────────────────────────────────────
+// 跨文件取件要用的路径运算（S9a）。**纯字符串，不碰文件系统**。
+//
+// @anchor 为什么不用 `node:path`：它是**平台相关**的（`resolve`/`isAbsolute`/`sep` 在 Windows 与
+//         POSIX 上行为不同），而我们的测试要能在两个平台上给出同一个结论 —— 与上面
+//         `basenameOf` 不用 `node:path.basename` 是同一个理由（D20/D29 的立场）。
+//         这里两种分隔符都当分隔符、盘符单独处理，于是"同一条相对路径解析出的结果"
+//         在哪个平台上都一致，也就能被单测钉住。
+// ─────────────────────────────────────────────────────────────
+
+/** 绝对路径吗：`C:\x`、`C:/x`、`\\server\share`、`/x`（POSIX 根）。 */
+export function isAbsolutePath(p: string): boolean {
+  return /^([A-Za-z]:[\\/]|\\\\|\/)/u.test(p);
+}
+
+/** 去掉最后一段（保留盘符或根）。`C:/a/b.c` → `C:/a`；`/a/b.c` → `/a`；`a.c` → `''`。 */
+export function dirnameOf(p: string): string {
+  const normalized = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const cut = normalized.lastIndexOf('/');
+  if (cut < 0) return '';
+  const head = normalized.slice(0, cut);
+  // `C:/a` 再往上切会变成 `C:`（没有斜杠的盘符）—— 那种路径没法再往上，保持盘符原样
+  return head === '' ? '/' : head;
+}
+
+/**
+ * 把 `relative` 拼到 `base` 上并**归一化**（处理 `.` 与 `..`）。
+ * `..` 走到根以外时停在根上（`/a/../..` → `/`），不产生越界的怪路径。
+ */
+export function joinPath(base: string, relative: string): string {
+  const combined = `${base.replace(/\\/g, '/').replace(/\/+$/, '')}/${relative.replace(/\\/g, '/')}`;
+  const drive = /^([A-Za-z]:)/u.exec(combined)?.[1] ?? '';
+  const rest = drive === '' ? combined : combined.slice(drive.length);
+  const rooted = rest.startsWith('/');
+  const out: string[] = [];
+
+  for (const part of rest.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (out.length > 0) out.pop();
+      continue; // 已经在根上：`..` 无效，停在根
+    }
+    out.push(part);
+  }
+
+  const body = out.join('/');
+  if (drive !== '') return `${drive}/${body}`;
+  return rooted ? `/${body}` : body;
+}
+
+/**
+ * `candidate` 在 `root` 里面吗（含二者相等）。
+ *
+ * 归一化用 `normPath` 的立场（两种斜杠等价、大小写不敏感）—— 与"同一个文件"的判断保持一致，
+ * 否则会出现"闸门说在里面、播放器说是另一个文件"这种自相矛盾。
+ */
+export function isInsidePath(root: string, candidate: string): boolean {
+  const r = normPath(root);
+  const c = normPath(candidate);
+  if (r === '' || c === '') return false;
+  return c === r || c.startsWith(`${r}/`);
+}
+
+/**
+ * 模型给的路径 → 一串**候选绝对路径**（按优先级，**已过滤到允许范围内**）。
+ *
+ * 顺序：相对路径**先按锚点文件所在目录**，再按各个 root；绝对路径只做归一化。
+ * **落在所有 root 之外的候选一律丢掉** —— 这一步是刻意的：闸门批准的就是适配器会去读的，
+ * 多留一个候选就等于留了一条"闸门没看过但会被读到"的路。
+ * `roots` 为空 = 跨文件关闭（只可能返回锚点目录下那一个候选，且它也得在 root 内才算数）。
+ *
+ * 纯函数、不查存在性：不存在这件事由适配器回一句人话给模型（那是正常的工具结果，不是异常）。
+ */
+export function resolveCandidatePaths(
+  given: string,
+  anchorFile: string,
+  roots: readonly string[],
+): string[] {
+  const raw = given.trim();
+  if (raw === '') return [];
+
+  const candidates: string[] = [];
+  if (isAbsolutePath(raw)) {
+    candidates.push(normalizeAbsolute(raw));
+  } else {
+    if (dirnameOf(anchorFile) !== '') candidates.push(joinPath(dirnameOf(anchorFile), raw));
+    for (const root of roots) {
+      if (root !== '') candidates.push(joinPath(root, raw));
+    }
+  }
+
+  const out: string[] = [];
+  for (const candidate of candidates) {
+    if (!roots.some((root) => isInsidePath(root, candidate))) continue;
+    if (!out.some((p) => samePath(p, candidate))) out.push(candidate);
+  }
+  return out;
+}
+
+/** 绝对路径的归一化：盘符单独处理，UNC 与 POSIX 走同一套（比较时都归一化，不影响判断）。 */
+function normalizeAbsolute(p: string): string {
+  const drive = /^([A-Za-z]:)[\\/]?/u.exec(p);
+  if (drive) return joinPath(`${drive[1]}/`, p.slice(drive[0].length));
+  return joinPath('/', p.replace(/^[\\/]+/u, ''));
+}
+
+/**
+ * `p` 相对 `root` 的写法（不在 root 内则原样返回）。**只用于给人/给模型看的清单**，
+ * 不用于"是不是同一个文件"的判断（那个用 `samePath`）。
+ */
+export function relativeToPath(root: string, p: string): string {
+  if (!isInsidePath(root, p)) return p;
+  const r = normPath(root);
+  const c = normPath(p);
+  if (c === r) return '.';
+  return p.slice(p.length - (c.length - r.length - 1)); // 用原串切，保留原大小写
+}

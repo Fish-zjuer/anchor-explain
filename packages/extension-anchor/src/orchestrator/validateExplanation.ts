@@ -39,6 +39,18 @@ export interface ValidationIssue {
 }
 
 /** §3.3 里 `ctx` 的两项上界。取不到就传 `null`，跳过该上界检查（不是跳过整条 location 校验）。 */
+/**
+ * §3.3 的放行选项（S9a）。
+ *
+ * @anchor `allowedPaths` = **模型这次真取过件的文件**（不含锚点文件，那个永远允许）。
+ *         跨文件讲解就靠它把关：**不是不许出去，是"出去过的地方才许写"** ——
+ *         模型没读过 `isr.c` 却把某一步放到 `isr.c` 里，仍然判失败。
+ *         第二道闸门（`commands.ts` 里那次）也从取件日志收集同一个集合传进来。
+ */
+export interface ExplanationValidationOptions {
+  readonly allowedPaths?: readonly string[];
+}
+
 export interface ExplanationOutline {
   /** code：文档总行数 */
   documentLineCount?: number | null;
@@ -145,6 +157,7 @@ function checkLocation(
   outline: ExplanationOutline,
   path: string,
   issues: ValidationIssue[],
+  allowedPaths: readonly string[],
 ): Location | null {
   if (!isRecord(raw)) {
     issues.push({ path, message: 'location 必须是对象' });
@@ -164,10 +177,16 @@ function checkLocation(
       issues.push({ path, message: 'anchor 是代码来源，此处 location 必须是 CodeLocation（含 filePath/lineStart/lineEnd）' });
       return null;
     }
-    if (!samePath(loc.filePath, anchor.location.filePath)) {
+    // §3.3 第 3 条（S9a 改写）：可以落在**别的文件**，但只限"锚点文件 ∪ 这次真取过件的文件"。
+    const allowed =
+      samePath(loc.filePath, anchor.location.filePath) ||
+      allowedPaths.some((p) => samePath(p, loc.filePath));
+    if (!allowed) {
       issues.push({
         path: `${path}.filePath`,
-        message: `不允许漫游到别的文件：期望 ${anchor.location.filePath}，收到 ${loc.filePath}`,
+        message:
+          `这个文件没读过，不能引用：收到 ${loc.filePath}。` +
+          `只允许锚点所在的文件（${anchor.location.filePath}），或者你这次用取件工具读过的文件。`,
       });
       return null;
     }
@@ -180,7 +199,9 @@ function checkLocation(
       issues.push({ path, message: `行号区间非法：${lineStart}-${lineEnd}（要求 1 ≤ lineStart ≤ lineEnd）` });
       return null;
     }
-    const total = outline.documentLineCount;
+    // 行上界只对**锚点文件**成立：别的文件的行数校验层拿不到（它是同步纯函数），
+    // 那些文件由适配器把 end 夹到文件末尾（S9a）
+    const total = samePath(loc.filePath, anchor.location.filePath) ? outline.documentLineCount : null;
     if (total != null && lineEnd > total) {
       issues.push({ path, message: `行号越界：${lineEnd} 超出文档总行数 ${total}` });
       return null;
@@ -217,6 +238,7 @@ function checkHighlights(
   outline: ExplanationOutline,
   stepPath: string,
   issues: ValidationIssue[],
+  allowedPaths: readonly string[],
 ): SubHighlight[] | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (!Array.isArray(raw)) {
@@ -231,7 +253,7 @@ function checkHighlights(
       issues.push({ path, message: '子高亮必须是对象' });
       return;
     }
-    const location = checkLocation(h.location, anchor, outline, `${path}.location`, issues);
+    const location = checkLocation(h.location, anchor, outline, `${path}.location`, issues, allowedPaths);
     if (!location) return;
     if (typeof h.narration !== 'string' || h.narration.trim() === '') {
       issues.push({ path: `${path}.narration`, message: '子高亮的 narration 必须是非空字符串' });
@@ -253,6 +275,7 @@ function checkSteps(
   anchor: Anchor,
   outline: ExplanationOutline,
   issues: ValidationIssue[],
+  allowedPaths: readonly string[],
 ): WalkthroughStep[] {
   if (!Array.isArray(raw) || raw.length === 0) {
     issues.push({ path: '$.steps', message: 'steps 必须是长度不小于 1 的数组' });
@@ -266,7 +289,7 @@ function checkSteps(
       issues.push({ path, message: 'step 必须是对象' });
       return;
     }
-    const location = checkLocation(s.location, anchor, outline, `${path}.location`, issues);
+    const location = checkLocation(s.location, anchor, outline, `${path}.location`, issues, allowedPaths);
     if (!location) return;
 
     // §3.3 未逐字要求 text 非空，但空 text 的 step 在侧边栏里是一片空白——
@@ -282,7 +305,7 @@ function checkSteps(
     if (typeof s.color === 'string' && s.color.trim() !== '') step.color = s.color;
     if (typeof s.title === 'string' && s.title.trim() !== '') step.title = s.title;
     if (typeof s.intro === 'string' && s.intro.trim() !== '') step.intro = s.intro;
-    const highlights = checkHighlights(s.highlights, anchor, outline, path, issues);
+    const highlights = checkHighlights(s.highlights, anchor, outline, path, issues, allowedPaths);
     if (highlights !== undefined) step.highlights = highlights;
 
     steps.push(step);
@@ -300,8 +323,10 @@ export function validateExplanation(
   raw: unknown,
   anchor: Anchor,
   outline: ExplanationOutline = {},
+  options: ExplanationValidationOptions = {},
 ): ExplanationValidation {
   const issues: ValidationIssue[] = [];
+  const allowedPaths = options.allowedPaths ?? [];
 
   const parsed = parseMaybeJson(raw);
   if ('error' in parsed) return { ok: false, issues: [{ path: '$', message: parsed.error }] };
@@ -318,7 +343,7 @@ export function validateExplanation(
     issues.push({ path: '$.confidence', message: `confidence 必须是 [0,1] 内的数字，收到 ${JSON.stringify(confidence)}` });
   }
 
-  const steps = checkSteps(root.steps, anchor, outline, issues);
+  const steps = checkSteps(root.steps, anchor, outline, issues, allowedPaths);
 
   if (issues.length > 0) return { ok: false, issues };
 

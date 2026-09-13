@@ -16,10 +16,12 @@ import {
   AnchorError,
   createContextRequestLogger,
   describeError,
+  dirnameOf,
   isAnchorError,
   isCodeLocation,
   isPDFLocation,
   locationLabel,
+  samePath,
 } from '@anchor/core';
 import type {
   Anchor,
@@ -45,6 +47,7 @@ import {
   promoteFlattenedProviders,
 } from './config.ts';
 import { captureSummary } from './describe.ts';
+import { listRelatedFiles } from './vscode/relatedFiles.ts';
 import { createOrchestrator } from './orchestrator/Orchestrator.ts';
 import { createModelRouter } from './orchestrator/ModelRouter.ts';
 import { createOpenAICompatibleProvider } from './orchestrator/providers/openAICompatible.ts';
@@ -59,7 +62,7 @@ import { createStatusBar } from './sidebar/statusBar.ts';
 import { StartViewProvider } from './start/StartViewProvider.ts';
 import { buildStartModel, findStartAction } from './start/startModel.ts';
 import type { StartModel } from './start/startModel.ts';
-import { samePath } from './paths.ts';
+import type { ContextFetchPolicy } from './orchestrator/validateContextRequest.ts';
 import {
   configuredProviderIds,
   rawProvider,
@@ -93,6 +96,22 @@ function peer(): vscode.Extension<unknown> | undefined {
  */
 function userFacing(err: unknown): string {
   return isAnchorError(err) ? err.message : describeError(err);
+}
+
+/**
+ * 跨文件取件的边界（S9a）：按 `anchorExplain.fetchScope` 与工作区根构造策略。
+ *
+ * @anchor 三个值对应三种边界，**`off` 时 roots 为空**（连锚点目录都不给）——
+ *         那是 S1~S8 的行为，也是回退档。`same-dir` 只给锚点目录一个 root：
+ *         `resolveCandidatePaths` 会因此只产出同目录的候选，跨目录的请求直接被拒。
+ */
+function fetchPolicyFor(scope: 'related' | 'same-dir' | 'off', anchorFile: string, maxLines: number): ContextFetchPolicy {
+  if (scope === 'off') return { scope, roots: [], maxLines };
+  const roots =
+    scope === 'same-dir'
+      ? [dirnameOf(anchorFile)]
+      : (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+  return { scope, roots, maxLines };
 }
 
 export function registerCommands(context: vscode.ExtensionContext): void {
@@ -142,6 +161,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
             `${entry.request.type} ${JSON.stringify(entry.request.params)} — ${entry.request.reason}` +
             (entry.resultChars !== undefined ? `（${entry.resultChars} 字）` : ''),
         );
+        if (entry.accepted && typeof entry.request.params.path === 'string') {
+          // 第二道闸门（§3.3）的允许集合就靠这几行 —— 见 explain 里的 fetchedThisRun
+          if (!fetchedThisRun.some((p) => samePath(p, entry.request.params.path as string))) {
+            fetchedThisRun.push(entry.request.params.path);
+          }
+        }
         onPhase?.(
           entry.accepted
             ? `第 ${entry.round} 轮取件：${JSON.stringify(entry.request.params)} → ${entry.resultChars ?? 0} 字`
@@ -170,6 +195,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 用户就会再点一次（看起来像"要点两次"）。
    */
   let busyPhase: string | undefined;
+  /**
+   * **本次**取件真读过的文件（S9a）。第二道 §3.3 闸门用它当"允许集合"——
+   * 跨文件之后"不许漫游"的规则变成了"**你读过的文件才许引用**"。
+   */
+  let fetchedThisRun: string[] = [];
   /**
    * 最近一次捕获的锚点与范围。**只为 `Anchor: 显示状态` 而留**：
    * 真选区接上之后，"我选的是不是我以为的那段"变成了唯一无法从屏幕上直接看出来的事
@@ -505,6 +535,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       maxFetchRounds: cfg.maxFetchRounds,
       temperature: cfg.temperature,
       style: cfg.style,
+      fetchPolicy: isCodeLocation(anchor.location)
+        ? fetchPolicyFor(cfg.fetchScope, anchor.location.filePath, codeAdapter.capabilities.maxSpan)
+        : undefined,
+      candidateFiles: isCodeLocation(anchor.location)
+        ? await listRelatedFiles(anchor, anchor.extractedText ?? '')
+        : undefined,
       logger: loggerOf(),
     });
   }
@@ -512,6 +548,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   async function explain(anchor: Anchor): Promise<void> {
     stop();
     const gen = (generation += 1);
+    fetchedThisRun = [];
     status.showBusy('正在讲解…');
 
     /**
@@ -567,7 +604,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
           // 第二道闸：编排层内部已经过了一次 §3.3，这里再查一次。
           // 不是不信任它，而是"渲染层只消费校验过的数据"这条规矩不该有例外 ——
           // 编排层将来多一条产出路径（比如缓存命中），这里仍然拦得住。
-          const verdict = validateExplanation(produced, prepared, await makeOutline(prepared));
+          const verdict = validateExplanation(produced, prepared, await makeOutline(prepared), {
+            // 第二道闸门也得知道"这次读过哪些别的文件"（S9a）。集合从**取件日志**里收
+            // —— 那是唯一一处把"哪次取件被接受、读的是哪个文件"记下来的地方，
+            // 而且不必为了这件事去改编排器的接口。
+            allowedPaths: fetchedThisRun,
+          });
           if (!verdict.ok) {
             throw new AnchorError('SCHEMA_VIOLATION', `AI 输出未通过校验：${describeIssues(verdict.issues)}`, {
               issues: verdict.issues,

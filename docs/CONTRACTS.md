@@ -275,7 +275,8 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 
 1. `req.type` ∈ `adapter.capabilities.contextTypes`
 2. `page_range`：`start`/`end` 为整数，`1 ≤ start ≤ end ≤ pageCount`，`end - start + 1 ≤ maxSpan`
-3. `file`：`params.path` 必须等于 `anchor.location.filePath`（不允许模型漫游到别的文件）
+3. `file`：`params.path` **缺省 = 锚点文件**；给了路径则必须落在**允许范围**内（S9a 改写，见下），
+   且 `end - start + 1 ≤ maxLines`（S9a 新增，默认 60 行）
 4. 去重：与已取件区间重叠 → 不重复取，回灌「该区间已取过」+ 已有内容
 5. 频率：总取件次数 `≤ maxFetchRounds`（默认 3）
 
@@ -283,6 +284,24 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 **每次取件必须落日志**（见 §7）。
 
 #### §3.2 的实现约定（S3 定，都不改上表五条判据，只把边界说清楚）
+
+**S9a：规则 3 的"允许范围"（`anchorExplain.fetchScope`）**
+
+| `fetchScope` | 允许取的文件 |
+|---|---|
+| `related`（默认） | 工作区内任意文本文件；**排除** `.git/`、`node_modules/`、构建产物目录、`.env*`、`*.pem/*.key/*.p12/id_rsa*` 等（名字判断在闸门，体积/二进制判断在适配器） |
+| `same-dir` | 只允许锚点文件所在目录 |
+| `off` | 只允许锚点文件（= S1~S8 的行为，回退档） |
+
+**路径解析**：相对路径**先按锚点文件所在目录**解析，再按工作区根；绝对路径只做归一化；
+**落在所有 root 之外的候选一律丢掉**（闸门批准的就是适配器会读的 —— 不给自己留第二条路）。
+**两道闸门的分工**：名字与范围这类**形状**判断在 `validateContextRequest`（同步纯函数，可单测）；
+大小与二进制这类**内容**判断在适配器（那里才有字节）。
+
+**§3.3 的允许集合（S9a）**：`steps[].location.filePath` 可以是**锚点文件**或**本次真取过件的文件**
+（编排层从 `FetchedSpan` 收集，命令层从取件日志收集）—— 口径从"不许出去"变成
+"**出去过的地方才许写**"。别的文件的行号上界不由校验层判（它拿不到那些文件的行数），
+由渲染端夹住。
 
 | 情形 | 处置 | 为什么 |
 |---|---|---|
@@ -634,6 +653,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 
 | 配置 | 类型 | 默认 | 说明 |
 |---|---|---|---|
+| `anchorExplain.fetchScope` | `"related"` \| `"same-dir"` \| `"off"` | `"related"` | **S9a 新增（D66）**。允许读锚点文件之外哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖、构建产物目录**始终不读** |
 | `anchorExplain.style` | `"concise"` \| `"rigorous"` | `"concise"` | **S8 新增（D65）**。讲解风格：简约（说人话、少用术语）/ 严谨（术语可用，但要说清依据）。**两档都要求按"数据怎么流"组织步骤**，不是从上到下一行行念 |
 | `anchorExplain.temperature` | number | 未设置 | 透传给端点。留空就用端点的默认值 —— 不给默认值是刻意的：不同端点对 temperature 的合理取值不一样 |
 
@@ -718,7 +738,8 @@ function createContextRequestLogger(opts?: {
 }
 ```
 
-**注意：这个 schema 里没有 `path` 参数** —— 但 §3.2 规则 3 要检查 `params.path`。
+**注意（S9a 起）**：schema 里已经**声明了可选的 `path`**（见 §9.1 上面那段"§8 的 `path`"）——
+跨文件取件要靠它。
 两者靠两条实现约定接上（S3）：解析侧把自定义键**原样带过去**（不丢 `path`），
 校验侧把"没给 `path`"当成"就要锚点这个文件"。见 §3.2 的实现约定表。
 **不要为了"对齐"而给 schema 加 `path`**：§8 是冻结原文，且模型本来也没有别的文件可选。
@@ -726,6 +747,13 @@ function createContextRequestLogger(opts?: {
 ---
 
 ## §9 模块路径映射与落地行号
+
+### §8 的 `path`（S9a 加法扩展）
+
+§8 的 `properties` 原有 `request_type` / `start` / `end` / `reason` 四项。S9a 起工具**声明**一个可选的
+`path`（字符串）：写相对路径时按**锚点文件所在目录**解析，例如 `ring_buffer.h` 或 `include/ring_buffer.h`；
+不写 = 锚点文件本身。`required` 仍然是 `['request_type', 'reason']`（**没动**）。
+解析与边界判定全在 §3.2 的规则 3（纯函数，可单测）；适配器拿到的一定是**已归一化的绝对路径**。
 
 ### 9.1 已落地（F1 契约 / F2 骨架与替身 / S1 最小可视 / S2 真选区与确认 UI / S3 真 AI / S4~S7 线2 / S8 固定按钮与开始面板）——行号 = 实体定义所在行
 

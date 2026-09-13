@@ -149,11 +149,21 @@ function toolCallTurn() {
           name: 'fetch_context',
           arguments: JSON.stringify({
             request_type: 'file',
-            start: 1,
-            end: 5,
+            // 跨文件那次要读到**宏与结构体**（它们不在文件开头），其余情形随便一小段
+            start: fetchMode === 'related' ? 10 : 1,
+            end: fetchMode === 'related' ? 20 : 5,
             reason: '想先看看文件头部有哪些定义',
             // §8 的 schema 里没有 path，模型很可能自己加上 —— 这里刻意加上，好验证它被带到了校验那一步
-            path: fetchMode === 'roam' ? path.join(FIXTURES, 'sample-30p.pdf') : MAIN_C,
+            // S9a：`related` 模式下**读锚点文件之外的兄弟文件是合法的** —— 这里用相对路径，
+            // 好验证"先按锚点文件所在目录解析"那条规则。另外两个模式用来验拒绝路径。
+            path:
+              fetchMode === 'related'
+                ? 'ring_buffer.h'
+                : fetchMode === 'outside'
+                  ? 'C:/Windows/win.ini'
+                  : fetchMode === 'secret'
+                    ? '.env'
+                    : MAIN_C,
           }),
         },
       },
@@ -873,13 +883,39 @@ check(
 );
 check(outputLines.some((l) => l.includes('取件')), '取件落进了输出通道（§7 要求每次取件都记录）', outputLines.at(-1) ?? '');
 
-// 越界取件：模型去读别的文件 → 拒绝 + 回灌原因，但讲解仍然要走完（§3.2 + D29）
-fetchMode = 'roam';
+// ── S9a：跨文件取件的三条路径 ─────────────────────────────────────────────
+// ① 合法：读锚点文件**同目录**的兄弟文件（相对路径按锚点目录解析）—— 这是嵌入式最常见的那一下
+fetchMode = 'related';
 fetchCalls.length = 0;
 await registered.get('anchorExplain.capture')?.();
-const roamTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
-check(/请求被拒绝/.test(String(roamTool?.content ?? '')), '漫游到别的文件被拒，原因是回灌而不是抛错', String(roamTool?.content ?? '').slice(0, 60));
-check(/只允许取锚点所在的文件/.test(String(roamTool?.content ?? '')), '拒绝原因说清了是哪条规则');
+const relatedTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
+const relatedContent = String(relatedTool?.content ?? '');
+check(!/请求被拒绝/.test(relatedContent), '跨文件读**相关文件**是放行的（不再是"漫游"）', relatedContent.slice(0, 60));
+check(
+  relatedContent.includes('ring_buffer.h') && relatedContent.includes('RB_CAPACITY'),
+  '真把兄弟文件的**内容与行号**取回来了（宏/结构体就在这种文件里）',
+  relatedContent.split('\n').slice(0, 2).join(' / '),
+);
+check(
+  outputLines.some((l) => l.includes('取件') && l.includes('ring_buffer.h') && l.includes('start')),
+  '取件日志里有**文件与行范围**（截图问题 3.4：AI 的背后操作要看得见）',
+  outputLines.at(-1) ?? '',
+);
+
+// ② 工作区之外：拒
+fetchMode = 'outside';
+fetchCalls.length = 0;
+await registered.get('anchorExplain.capture')?.();
+const outsideTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
+check(/请求被拒绝/.test(String(outsideTool?.content ?? '')), '工作区之外的文件被拒，且原因是回灌而不是抛错');
+check(/不在允许的范围内/.test(String(outsideTool?.content ?? '')), '拒绝原因说清了边界在哪');
+
+// ③ 密钥类：拒（模型能读工作区任意文件之后，这一条是必须的）
+fetchMode = 'secret';
+fetchCalls.length = 0;
+await registered.get('anchorExplain.capture')?.();
+const secretTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
+check(/按约定不读/.test(String(secretTool?.content ?? '')), '密钥类文件按约定不读（`.env` 也在射程内，必须挡住）');
 check(webviews[0].webview.posted.at(-1)?.type === 'session:update', '被拒之后整次讲解仍然继续（不是整段失败）');
 check(outputLines.some((l) => l.includes('拒绝')), '被拒的取件也落了日志（被拒原因正是要看的）');
 

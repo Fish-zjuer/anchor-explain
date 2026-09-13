@@ -11,6 +11,7 @@
 
 import { DEFAULT_STYLE, coerceStyle } from './prompts/index.ts';
 import type { ExplainStyle } from './prompts/index.ts';
+import type { FetchScope } from './orchestrator/validateContextRequest.ts';
 
 /** §6 的 `providers[id]`。`apiKey` 允许留空 —— 那表示"去 SecretStorage 取"。 */
 export interface ProviderSettings {
@@ -30,6 +31,11 @@ export interface AnchorConfig {
   preferSecretStorage: boolean;
   /** 讲解风格（D65）。默认 `concise`（简约）：用户第一版的反馈是"不要那么多名词什么的" */
   style: ExplainStyle;
+  /**
+   * 跨文件取件的范围（S9a）。默认 `related`：嵌入式里宏/结构体/调用者散在各文件，
+   * 只看锚点文件讲不出"数据从哪来、给谁用"（用户的原话）。
+   */
+  fetchScope: FetchScope;
   temperature?: number;
 }
 
@@ -110,6 +116,8 @@ export interface RawConfigInputs {
   temperature?: unknown;
   /** `anchorExplain.style` 的原始值（可空） */
   style?: unknown;
+  /** `anchorExplain.fetchScope` 的原始值（可空） */
+  fetchScope?: unknown;
 }
 
 export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
@@ -128,9 +136,17 @@ export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
     preferSecretStorage: raw.preferSecretStorage !== false,
     // 风格非法值退化成默认档，不报错：设置里写错一个词不该让讲解不可用
     style: coerceStyle(raw.style),
+    fetchScope: coerceFetchScope(raw.fetchScope),
   };
   if (temperature !== undefined) config.temperature = temperature;
   return config;
+}
+
+export const DEFAULT_FETCH_SCOPE: FetchScope = 'related';
+
+/** 只有三个合法值；写错一个词不该让讲解不可用，一律退化成默认档。 */
+export function coerceFetchScope(raw: unknown): FetchScope {
+  return raw === 'off' || raw === 'same-dir' || raw === 'related' ? raw : DEFAULT_FETCH_SCOPE;
 }
 
 /** 配置齐不齐，一句话说清。`Anchor: 显示状态` 与"未配置"的报错共用这句。 */
@@ -139,7 +155,7 @@ export function describeConfig(config: AnchorConfig): string {
     return `没有可用的 provider（activeProvider = "${config.providerId}"）。请在设置里填 anchorExplain.providers。`;
   }
   const vision = config.provider.tier2Model ? `，视觉档 ${config.provider.tier2Model}` : '';
-  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次；风格 ${config.style}`;
+  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次；风格 ${config.style}；取件范围 ${config.fetchScope}`;
 }
 
 /**

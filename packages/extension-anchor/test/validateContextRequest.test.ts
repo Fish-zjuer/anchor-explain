@@ -126,19 +126,24 @@ test('规则 3：没给 path 等于"就要锚点这个文件"，放行时补上�
 });
 
 test('规则 3 补：行上界（§3.2 原文只冻结了 path，行边界是 S3 的实现约定）', () => {
+  // 注意 span 要在单次 60 行以内，否则先撞上"一次最多取几行"那条（S9a 新规则）
   assert.equal(
-    validateContextRequest(fileReq({ path: CODE_FILE, start: 1, end: 75 }), codeAnchor(), state()).accepted,
+    validateContextRequest(fileReq({ path: CODE_FILE, start: 20, end: 75 }), codeAnchor(), state()).accepted,
     true,
     '恰好到末行应放行',
   );
   assert.equal(
-    validateContextRequest(fileReq({ path: CODE_FILE, start: 1, end: 76 }), codeAnchor(), state()).accepted,
+    validateContextRequest(fileReq({ path: CODE_FILE, start: 20, end: 76 }), codeAnchor(), state()).accepted,
     false,
     '越过末行应拒绝',
   );
-  // 行数取不到（null）→ 跳过上界检查，而不是跳过整条校验
+  // S9a：单次行数上限（防"把这个文件整个给我"）
+  const tooMany = validateContextRequest(fileReq({ path: CODE_FILE, start: 1, end: 61 }), codeAnchor(), state());
+  assert.equal(tooMany.accepted, false);
+  assert.match(tooMany.accepted === false ? tooMany.reason : '', /一次最多取 60 行/);
+  // 行数取不到（null）→ 跳过**上界**检查，而不是跳过整条校验（span 仍受 60 行限制）
   assert.equal(
-    validateContextRequest(fileReq({ path: CODE_FILE, start: 1, end: 9999 }), codeAnchor(), state({ documentLineCount: null })).accepted,
+    validateContextRequest(fileReq({ path: CODE_FILE, start: 1, end: 50 }), codeAnchor(), state({ documentLineCount: null })).accepted,
     true,
   );
 });
@@ -203,4 +208,86 @@ test('start / end 缺失或非正整数一律拒绝，且拒绝原因里带上�
   const r = validateContextRequest(fileReq({ path: CODE_FILE }), codeAnchor(), state());
   assert.equal(r.accepted, false);
   assert.match(r.accepted === false ? r.reason : '', /start=undefined/);
+});
+
+// ─────────────────────────────────────────────────────────────
+// S9a：跨文件取件的三条边界（related / same-dir / off）与黑名单
+// ─────────────────────────────────────────────────────────────
+
+const RELATED = { scope: 'related' as const, roots: ['C:/repo'], maxLines: 60 };
+
+test('S9a related：允许读工作区里的**另一个文件**，并且 path 被归一成绝对路径', () => {
+  const r = validateContextRequest(
+    fileReq({ path: 'ring_buffer.h', start: 1, end: 20 }),
+    codeAnchor(),
+    state({ policy: RELATED }),
+  );
+  assert.equal(r.accepted, true);
+  // 相对路径按**锚点文件所在目录**解析（`C:\repo\test\fixtures` + `ring_buffer.h`）
+  assert.equal(
+    r.accepted === true ? r.request.params.path : null,
+    'C:/repo/test/fixtures/ring_buffer.h',
+  );
+});
+
+test('S9a related：工作区外的路径、以及密钥/依赖/构建产物一律拒（并说清是哪一类）', () => {
+  const cases: [string, RegExp][] = [
+    ['C:/elsewhere/x.h', /不在允许的范围内/],
+    ['../../../etc/passwd', /不在允许的范围内/],
+    ['.env', /按约定不读/],
+    ['node_modules/foo/index.js', /不在允许的范围内|按约定不读/],
+    ['../../.ssh/id_rsa', /不在允许的范围内|按约定不读/],
+  ];
+  for (const [path, expected] of cases) {
+    const r = validateContextRequest(
+      fileReq({ path, start: 1, end: 5 }),
+      codeAnchor(),
+      state({ policy: RELATED }),
+    );
+    assert.equal(r.accepted, false, path);
+    assert.match(r.accepted === false ? r.reason : '', expected, path);
+  }
+});
+
+test('S9a same-dir：只允许锚点所在目录（跨目录的直接拒）', () => {
+  const policy = { scope: 'same-dir' as const, roots: ['C:/repo/test/fixtures'], maxLines: 60 };
+  assert.equal(
+    validateContextRequest(fileReq({ path: 'ring_buffer.h', start: 1, end: 5 }), codeAnchor(), state({ policy }))
+      .accepted,
+    true,
+    '同目录应放行',
+  );
+  // 跨目录：连候选都产不出来（root 就是锚点目录），所以理由是"不在允许范围内"——
+  // 这正是同目录模式想要的效果：`../inc/...` 这种写法在这里一定走不通
+  const out = validateContextRequest(
+    fileReq({ path: '../inc/rb.h', start: 1, end: 5 }),
+    codeAnchor(),
+    state({ policy }),
+  );
+  assert.equal(out.accepted, false);
+  assert.match(out.accepted === false ? out.reason : '', /不在允许的范围内/);
+});
+
+test('S9a off：策略缺省就是 off，行为与 S1~S8 完全一致（回退档）', () => {
+  const roam = validateContextRequest(
+    fileReq({ path: 'C:/repo/other.c', start: 1, end: 5 }),
+    codeAnchor(),
+    state(),
+  );
+  assert.equal(roam.accepted, false);
+  assert.match(roam.accepted === false ? roam.reason : '', /只允许取锚点所在的文件/);
+});
+
+test('S9a 去重按**解析后的文件**比对：同一个文件换个写法也绕不过去重', () => {
+  const fetched: FetchedSpan[] = [
+    { type: 'file', path: 'C:/repo/test/fixtures/ring_buffer.h', start: 1, end: 20, content: '旧内容' },
+  ];
+  const again = validateContextRequest(
+    fileReq({ path: 'ring_buffer.h', start: 5, end: 10 }),
+    codeAnchor(),
+    state({ policy: RELATED, fetched }),
+  );
+  assert.equal(again.accepted, false, '同一个文件（不同写法）的区间重叠应判重复');
+  assert.match(again.accepted === false ? again.reason : '', /已经取过了/);
+  assert.equal(again.accepted === false ? again.content : '', '旧内容', '并把上次的内容回灌');
 });

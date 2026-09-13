@@ -32,6 +32,16 @@ import { basenameOf, countTextLines } from '../paths.ts';
  */
 export type CaptureScope = 'selection' | 'whole-file';
 
+/**
+ * 取件时单文件的大小上限（S9a）。超过就只回一句"太大"，不把内容交出去。
+ *
+ * @anchor 诚实记一笔：**文件仍然被读进内存了一次**才判的大小（`FileSystemPort` 现在
+ *         没有 stat，为了这一条去加端口方法会牵动 core/ports + 两个实现 + 假端口）。
+ *         在一次讲解最多 `maxFetchRounds`（默认 3）次读取的前提下，这个代价可以接受；
+ *         真要预检，往 `FileSystemPort` 加一个 `size()` 即可。
+ */
+const MAX_TEXT_CHARS = 512 * 1024;
+
 export interface CodeAdapter {
   readonly type: 'code';
   readonly capabilities: AdapterCapabilities;
@@ -74,7 +84,8 @@ export function createCodeAdapter(deps: CodeAdapterDeps): CodeAdapter {
 
   return {
     type: 'code',
-    capabilities: { contextTypes: ['file'], maxSpan: 5 },
+    // `maxSpan` 对 `file` 的语义是**一次最多几行**（S9a 起校验层真的会读它）
+    capabilities: { contextTypes: ['file'], maxSpan: 60 },
 
     async capture(scope: CaptureScope = 'selection'): Promise<Anchor> {
       const picked = await take(scope);

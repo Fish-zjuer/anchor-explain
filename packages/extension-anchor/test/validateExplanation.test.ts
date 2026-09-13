@@ -111,7 +111,8 @@ test('拒绝：模型漫游到别的文件', () => {
   const verdict = validateExplanation(raw, codeAnchor(), { documentLineCount: DOC_LINES });
   assert.equal(verdict.ok, false);
   if (verdict.ok) return;
-  assert.match(describeIssues(verdict.issues), /不允许漫游到别的文件/);
+  // S9a 起口径变了：不是"不许出去"，而是"**出去过的地方才许写**"
+  assert.match(describeIssues(verdict.issues), /这个文件没读过，不能引用/);
 });
 
 test('拒绝：行号越界 / 区间反了 / 非整数', () => {
@@ -244,4 +245,53 @@ test('文档行数取不到（null）时跳过上界检查，但其余校验照�
   const negative = codeResult();
   (negative.steps as Record<string, unknown>[])[0]!.location = { filePath: FILE_PATH, lineStart: -1, lineEnd: 5 };
   assert.equal(validateExplanation(negative, codeAnchor(), { documentLineCount: null }).ok, false);
+});
+
+// ─────────────────────────────────────────────────────────────
+// S9a：允许集合（锚点 ∪ 取过件的文件）
+// ─────────────────────────────────────────────────────────────
+
+test('S9a：取过件的文件可以被引用；没取过的仍然拒', () => {
+  const anchor = {
+    sourceType: 'code' as const,
+    sourceId: 'sha1:x',
+    sourceName: 'main.c',
+    location: { filePath: '/repo/src/main.c', lineStart: 40, lineEnd: 48 },
+  };
+  const other = '/repo/src/ring_buffer.h';
+  const raw = {
+    summary: '从环里取值',
+    confidence: 0.8,
+    steps: [
+      {
+        location: { filePath: other, lineStart: 12, lineEnd: 18 },
+        text: '取值前先判空',
+      },
+    ],
+  };
+
+  // 没读过的文件：拒
+  const without = validateExplanation(raw, anchor, { documentLineCount: 100 });
+  assert.equal(without.ok, false);
+  assert.match(describeIssues(without.issues), /这个文件没读过/);
+
+  // 读过的文件：放行，而且 location 被原样保留
+  const withAllowed = validateExplanation(raw, anchor, { documentLineCount: 100 }, {
+    allowedPaths: ['/repo/src/ring_buffer.h'],
+  });
+  assert.equal(withAllowed.ok, true);
+  const stepLoc = withAllowed.ok === true ? withAllowed.result.steps[0]?.location : undefined;
+  assert.ok(stepLoc !== undefined && isCodeLocation(stepLoc), '重建出来的 location 应当是代码位置');
+  assert.equal(stepLoc !== undefined && isCodeLocation(stepLoc) ? stepLoc.filePath : null, other);
+
+  // 行上界只对锚点文件成立：别的文件写 9999 行不会被"文档总行数"判掉（渲染端会夹住）
+  const farLine = {
+    ...raw,
+    steps: [{ location: { filePath: other, lineStart: 9990, lineEnd: 9999 }, text: 'x' }],
+  };
+  assert.equal(
+    validateExplanation(farLine, anchor, { documentLineCount: 100 }, { allowedPaths: [other] }).ok,
+    true,
+    '别的文件的行上界不该用锚点文件的行数来判',
+  );
 });

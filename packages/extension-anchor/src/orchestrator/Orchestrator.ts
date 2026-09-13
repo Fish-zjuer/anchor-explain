@@ -30,7 +30,8 @@ import { describeIssues, validateExplanation } from './validateExplanation.ts';
 import type { ExplanationOutline } from './validateExplanation.ts';
 import type { ModelChoice, ModelRouteInput } from './ModelRouter.ts';
 import { openAITools, parseContextRequest } from './toolSchema.ts';
-import { validateContextRequest } from './validateContextRequest.ts';
+import { RESTRICTED_POLICY, validateContextRequest } from './validateContextRequest.ts';
+import type { ContextFetchPolicy } from './validateContextRequest.ts';
 import type { ContextFetchState, FetchedSpan } from './validateContextRequest.ts';
 import type { ChatMessage, ChatProvider, ToolCall } from './providers/types.ts';
 
@@ -49,6 +50,13 @@ export interface OrchestratorDeps {
   /** §3.3 的 `ctx`（文档总行数 / 总页数）。取不到就返回 `{}`，校验会跳过对应上界 */
   makeOutline: (anchor: Anchor) => Promise<ExplanationOutline>;
   maxFetchRounds: number;
+  /**
+   * 跨文件取件的边界（S9a）。**不传 = 只允许锚点文件**（`RESTRICTED_POLICY`）——
+   * 产品默认是 `related`，由命令层按 `anchorExplain.fetchScope` 构造。
+   */
+  fetchPolicy?: ContextFetchPolicy;
+  /** 给模型的"可能相关的文件"清单（S9a）。只是提示，不影响取件的合法性判断 */
+  candidateFiles?: readonly string[];
   temperature?: number;
   /** 讲解风格（D65）。缺省 = `prompts` 的默认档 */
   style?: ExplainStyle;
@@ -86,11 +94,23 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
     });
   }
 
+  /**
+   * 本次**真取过件**的文件（S9a）。§3.3 用它放行"步骤落在别的文件"——
+   * 允许集合 = 锚点文件 ∪ 这个集合，**模型没读过的文件它不许引用**。
+   * （这就是"不许漫游"在跨文件时代的样子：不是不许出去，是**出去过的地方才许写**。）
+   */
+  const fetchedPaths = (fetched: readonly FetchedSpan[]): string[] =>
+    [...new Set(fetched.map((f) => f.path).filter((p): p is string => p !== null))];
+
   return async (anchor: Anchor): Promise<ExplanationResult> => {
     const outline = await deps.makeOutline(anchor);
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildSystemPrompt(deps.style) },
-      { role: 'user', content: buildUserPrompt(anchor) },
+      // 跨文件开关由**策略**推出（不另开一个 deps 字段，免得两处说法可能不一致）
+      {
+        role: 'system',
+        content: buildSystemPrompt(deps.style, { crossFile: (deps.fetchPolicy?.scope ?? 'off') !== 'off' }),
+      },
+      { role: 'user', content: buildUserPrompt(anchor, { candidates: deps.candidateFiles }) },
     ];
 
     const fetched: FetchedSpan[] = [];
@@ -101,7 +121,9 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
 
     /** §3.3 闸门 + 规则 5 的一次修复重试 */
     async function validateOrRepair(model: string, candidate: string): Promise<ExplanationResult> {
-      const first = validateExplanation(candidate, anchor, outline);
+      const first = validateExplanation(candidate, anchor, outline, {
+        allowedPaths: fetchedPaths(fetched),
+      });
       if (first.ok) return first.result;
 
       const repaired = await say(model, [
@@ -112,7 +134,9 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
 
       // 修复那一轮如果又要工具，直接按"仍不合规"处理：§3.3 只给一次重试机会，
       // 而这里要的是一份能渲染的 JSON，不是再来一轮取件。
-      const second = validateExplanation(repaired.content, anchor, outline);
+      const second = validateExplanation(repaired.content, anchor, outline, {
+        allowedPaths: fetchedPaths(fetched),
+      });
       if (second.ok) return second.result;
 
       throw new AnchorError(
@@ -191,6 +215,7 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
       for (const call of reply.toolCalls) {
         const result = await handleToolCall(call, {
           capabilities: deps.adapter.capabilities,
+          policy: deps.fetchPolicy ?? RESTRICTED_POLICY,
           pageCount: outline.pageCount ?? null,
           documentLineCount: outline.documentLineCount ?? null,
           fetched,

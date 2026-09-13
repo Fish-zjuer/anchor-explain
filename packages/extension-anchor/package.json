@@ -247,6 +247,21 @@
           "minimum": 0,
           "description": "AI 请求额外上下文的次数上限。超过之后取件请求会被拒绝，并让它基于现有信息作答。"
         },
+        "anchorExplain.fetchScope": {
+          "type": "string",
+          "enum": [
+            "related",
+            "same-dir",
+            "off"
+          ],
+          "default": "related",
+          "enumDescriptions": [
+            "相关文件（默认）：可以读工作区里跟这一块有关的其他文件 —— 宏、结构体、调用者常常不在同一个文件里。",
+            "同目录：只读锚点文件所在目录里的文件。",
+            "关闭：只读锚点所在的文件（跨文件讲解之前的行为）。"
+          ],
+          "markdownDescription": "允许 AI 读**锚点文件之外**哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖（`node_modules`）、构建产物目录始终不读。"
+        },
         "anchorExplain.style": {
           "type": "string",
           "enum": [
