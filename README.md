@@ -12,10 +12,14 @@
 
 ## 现在能跑什么
 
-**S7 阶段：计划内的切片全部做完（F0/F1/F2 + S1~S7）。**
+**S8 阶段：计划内的切片（F0/F1/F2 + S1~S7）全部做完，S8 是看完欢迎页后加的一片（固定按钮 + 开始界面）。**
 线1 接真实 AI + 取件；线2 能框选 PDF 并把位置交给线1 讲解、点击侧边栏滚到对应页；
 线1 还能无头读 PDF 的文字层（取件与 `extractedText`）。
 在 Anchor 的 PDF 视图里 `Ctrl+Alt+S` 拖一个矩形 → 位置变成锚点交给线1 讲解。
+
+**入口有四个，实现只有一处**：左侧活动栏那个 Anchor 图标、「开始」面板上的按钮、
+欢迎页「演练」里的「开始使用 Anchor」卡片、`Ctrl+Alt+A` —— 全都只是把已有命令调一遍。
+面板上写着"能做什么、缺什么、现在到哪一步"，**键位一个都没动**。
 
 **线1**： 打开 `main.c`、**选中一段**、按 `Ctrl+Shift+A`，
 先弹一个确认（「讲解这段 / 整个文件」，只放光标时改为提示 + 一个按钮），
@@ -43,7 +47,7 @@ packages/core                  @anchor/core —— 类型契约 / ports / 纯函
 packages/extension-anchor      线1 代码编辑器扩展（ID anchor.anchor-explain）
 packages/extension-anchor-pdf  线2 PDF 扩展（fork，Apache-2.0；改动见该包 MODIFICATIONS.md）
 scripts/make-fixture-pdf.mjs   生成 30 页验收样本 PDF
-scripts/smoke-extension.mjs    产物冒烟：能加载 / 命令注册与声明对齐 / webview 资源在不在 / 两个替身都已退出产物
+scripts/smoke-extension.mjs    产物冒烟：能加载 / 命令注册与声明对齐 / 视图与图标在不在 / webview 资源在不在 / 两个替身都已退出产物 / 真跑一遍开始面板的宿主侧
 scripts/smoke-walkthrough.mjs  链路冒烟：capture 从真选区跑到 decoration，跑真编排循环（取件/拒绝/上限、画哪几行、文件未变）
 scripts/smoke-pdf-extension.mjs 线2 产物冒烟：不劫持（priority:option）/ 改名改干净 / 命令真能打开
 scripts/def-lines.mjs          一次性工具：生成 CONTRACTS §9.1 的行号表
@@ -59,8 +63,8 @@ pnpm fixtures     # 重新生成 test/fixtures/sample-30p.pdf（零依赖，已�
 pnpm build        # esbuild 打包扩展，产物落在各自 packages/<包名>/dist/extension.cjs
 pnpm watch        # 同上，watch 模式；F5 的 preLaunchTask 用的就是这个
 pnpm typecheck    # tsc --noEmit，只做类型检查，不出产物
-pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 133 + pdf 12
-pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（33 项断言）
+pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 161 + pdf 12
+pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（58 项断言）
 pnpm smoke:chain  # 链路冒烟：跑一次完整讲解（真编排循环，只有 fetch 是桩）（115 项断言）
 pnpm smoke:pdf    # 线2 产物冒烟：不劫持 / 改名 / **框选整条链路**（67 项断言）
 pnpm check        # 上面最后六件事串起来：typecheck → test → build → smoke → smoke:chain → smoke:pdf
@@ -93,7 +97,7 @@ pnpm check        # 上面最后六件事串起来：typecheck → test → buil
 |---|---|
 | `AGENTS.md` | 工作协议：切片纪律、读文件预算、报告格式 |
 | `docs/STATE.md` | 当前切片 + **下次第一件事**（续接锚点） |
-| `docs/SLICES.md` | F1/F2 + S1~S7 切片计划，含硬门与每片的回退点 |
+| `docs/SLICES.md` | F1/F2 + S1~S8 切片计划，含硬门与每片的回退点 |
 | `docs/CONTRACTS.md` | 接口契约，改类型必须同步这里 |
 | `docs/DECISIONS.md` | 决策记录，只追加不删除 |
 | `docs/ARCHITECTURE.md` | 四层架构 + 双 package 拓扑 + 数据流 |

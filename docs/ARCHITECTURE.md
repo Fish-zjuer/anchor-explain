@@ -28,9 +28,10 @@
 │                          │         │                              │
 │  webview (pdf.js viewer) │         │  commands / playback         │
 │   └ 注入 anchor-select.js│         │  sidebar (原生 DOM)          │
-│         │ postMessage    │         │  orchestrator / prompts      │
-│         ▼                │         │  adapters                    │
-│  host (tsup 构建)        │         │  vscode/ports (真实现)        │
+│         │ postMessage    │         │  start  (活动栏「开始」面板)  │
+│         ▼                │         │  orchestrator / prompts      │
+│  host (tsup 构建)        │         │  adapters                    │
+│                          │         │  vscode/ports (真实现)        │
 └──────────┬───────────────┘         └──────────┬───────────────────┘
            │  executeCommand                    │
            │  'anchorExplain.explainAnchor'     │  executeCommand
@@ -48,6 +49,8 @@
   **用户的默认 PDF 打开方式不受影响**；想用我们这套走命令面板的 `Anchor: 用 Anchor 打开 PDF`。
   改动逐条在 `packages/extension-anchor-pdf/MODIFICATIONS.md`（D53）。
 - **跨扩展只走 `executeCommand`**（单向、不依赖返回值）：ext-B → ext-A 交 Anchor；ext-A 侧边栏 → ext-B 请求滚动定位。
+- **ext-A 自己有三个界面面**（S8 起）：编辑器里的 decoration（`playback/`）、讲解侧边栏（`sidebar/`，宿主建的面板）、
+  **开始面板（`start/`，用户建的活动栏视图）**。三者的共同点是只渲染、不发命令 —— 谁发命令谁承担"能不能发"的判断。
 - 为什么 fork 必须独立 package：它有**自己的 `package.json` 与 `tsup` 构建**，还要保留上游的 `patches/`、`assets/pdf.js/` 工作流。
 - 为什么 core 是独立 package：两个扩展都要用它，且 fork 复用 `normalizeBBox`（`DECISIONS.md` D20）。
 
@@ -72,7 +75,8 @@
                        │
         ┌──────────────┴──────────────────────────┐
         │ extension-anchor/src/vscode/ports/       │  ← 全项目唯一 import 'vscode' 的 adapter 支撑
-        │ playback/ · sidebar/ · commands.ts       │  ← 渲染层（也是 VS Code 专属）
+        │ playback/ · sidebar/ · start/            │  ← 渲染层（也是 VS Code 专属）
+        │ commands.ts（装配 + 命令）                │
         └──────────────────────────────────────────┘
 ```
 
@@ -181,6 +185,34 @@ CodeAdapter.capture()
 `PDFAdapter.fetchContext({type:'page_range', start:22, end:24})` 在**扩展宿主 Node 侧**用 `pdfjs-dist` legacy **无头**读取附近页文字层，**不依赖 webview**。
 → 返回带 `--- 第 N 页 ---` 页头的文本，超长按预算截断；文字层为空（扫描件）时走注入的 `ImageRendererPort` 兜底，未注入则纯文本降级。
 （`DECISIONS.md` D4）
+
+### 4.4 入口：固定按钮与开始面板（S8）
+
+```
+活动栏图标（assets/anchor.svg，一直挂着）
+   │ 点开
+   ▼ views.anchor[0] = { type: webview, id: 'anchorExplain.start' }
+   ▼ start/StartViewProvider.resolveWebviewView(view)
+        ├─ view.webview.html = renderStartHtml(csp)      ← 样式/脚本内联，CSP 最严一档
+        └─ 收到 { start:ready } → makeModel()（contracts §5.5）
+                                  ├─ status.chords()        ← 用户实际绑的键（与状态栏同源）
+                                  ├─ readAnchorConfig()     ← §6 配置
+                                  ├─ peer() 装没装线2
+                                  ├─ captureSummary()       ← describe.ts（与「显示状态」同一句）
+                                  └─ session 快照
+             buildStartModel(input) → StartModel           ← 纯函数（有 13 条单测）
+             postMessage { start:model, model }            ← 推快照，不推事件流
+   │ 用户点某个按钮
+   ▼ postMessage { start:run, id }                          ← **只回传 id**
+   ▼ runStartAction(id) → findStartAction(id)               ← 宿主查表，查不到就丢
+        ├─ requires 'peer' 且线2 没装 → 明确提示，不执行（那条命令根本不存在）
+        ├─ requires 'session' 且没会话 → 明确提示，不执行（goto 本来会静默返回）
+        └─ executeCommand(<§4.1 里已声明的命令>)             ← 与快捷键、命令面板同一条路
+```
+
+**四处入口，一处实现**：活动栏视图 / 欢迎页「演练」卡片 / `Ctrl+Alt+A` / 命令面板，
+最终都落到 §4.1 的命令上。面板自己**不实现任何一件事** —— 这就是"固定按钮不该是第二套逻辑"
+在架构上的落点（`DECISIONS.md` D57）。
 
 ---
 

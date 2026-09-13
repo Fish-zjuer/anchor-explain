@@ -8,13 +8,12 @@
 
 ## 现在到哪了
 
-**S3：线1 接真实 AI**。八个 + 一个命令全部可用，**链路里已经没有任何替身**：
+**S8：固定按钮 + 开始界面**。线1 的命令全部可用，**链路里没有任何替身**：
 真选区 → 真适配器 → 真编排循环（带取件）→ 真校验 → 真渲染。
 
-S3 相比 S2 的变化：**讲解内容不再写死了** —— 真的调你配的模型端点，
-信息不够时它自己请求额外上下文（最多 `maxFetchRounds` 次），输出过校验闸门才渲染。
-
-代价是**多一步配置**（只做一次）：填 `providers` + 存一把 API Key。见下面的「第 0.5 步」。
+S8 新增的是一**个入口**，不是一条新链路：活动栏左侧多一个 Anchor 图标，点开是「开始」面板 ——
+面板上写着"能做什么、缺什么、现在到哪一步"，每个按钮**只是把已有命令调一遍**。
+**原来的键位一个都没动**，面板只是第三条（其实是第四条）路。见下面的「第 3 步」。
 
 | 命令 ID | 命令面板里显示 | 默认键（`when` 见 `package.json`） |
 |---|---|---|
@@ -24,6 +23,7 @@ S3 相比 S2 的变化：**讲解内容不再写死了** —— 真的调你配�
 | `anchorExplain.stop` | `Anchor: 退出讲解` | `Esc`（带 `!inputFocus`） |
 | `anchorExplain.goto` | `Anchor: 跳到指定步` | `Ctrl+Alt+W` |
 | `anchorExplain.playPause` | `Anchor: 播放或暂停` | `Ctrl+Shift+Space` |
+| `anchorExplain.showStart` | `Anchor: 打开开始界面` | `Ctrl+Alt+A`（带 `!inputFocus`，**S8 新增**） |
 | `anchorExplain.explainAnchor` | `Anchor: 讲解外部锚点` | —（跨扩展入口，S6 由线2 调用） |
 | `anchorExplain.showState` | `Anchor: 显示状态` | —（自检：选区 / 上次捕获 / **模型配置** / 状态栏） |
 | `anchorExplain.setApiKey` | `Anchor: 设置 API Key（存进 SecretStorage）` | —（**S3 新增**） |
@@ -56,12 +56,51 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 
 **想看 AI 到底取了几次件、被拒的理由是什么** → 输出面板选「**Anchor**」通道。
 
+### 固定按钮与开始界面（S8）
+
+**四处在，一件事。**
+
+| 入口 | 怎么进 |
+|---|---|
+| **活动栏图标**（最显眼） | 左侧活动栏最下面多一个 Anchor 图标，点开就是「**开始**」面板 |
+| 快捷键 | `Ctrl+Alt+A`（mac `Cmd+Alt+A`） |
+| 命令面板 | `Anchor: 打开开始界面` |
+| **欢迎页的「演练」** | 欢迎页（`Help: Welcome`）右侧「演练」里有一张「**开始使用 Anchor**」卡片，四步 |
+
+面板上**每一条**都只是"把已有命令调一遍"—— 它自己是空的：
+
+| 面板上看到 | 其实就是 |
+|---|---|
+| 「讲解选中的代码」+ 一个键位徽章 | `anchorExplain.capture`。**徽章显示的是你自己绑的键**（改过 `keybindings.json` 就显示你那个；解绑了就不显示键） |
+| 「设置 API Key」 | `anchorExplain.setApiKey` |
+| 「显示状态（自检）」 | `anchorExplain.showState` |
+| 「用 Anchor 打开 PDF」 | `anchorPdf.openInAnchorViewer`（**线2 装没装**决定它灰不灰） |
+| 「框选 PDF 区域」 | `anchorPdf.selectRegion`，键位徽章是线2 的 `Ctrl+Alt+S` |
+| 「跳到指定步」 | `anchorExplain.goto`（没有进行中的讲解时是灰的） |
+
+面板下半部分的「**现在**」四行是**此刻的真实状态**：模型（就是 `显示状态` 报的那一句）、
+线2 装没装、上次捕获的是哪一段、讲解走到第几步。
+**灰掉的按钮会说清缺什么**（"还没有配 `anchorExplain.providers`（要有 baseUrl 与 tier1Model）"），
+不会只灰着不解释。
+
+> **改了键位，面板会跟着变**：它读的是你自己的 `keybindings.json`（与状态栏同一份解析），
+> 读不到才回退默认。**它不会显示一个你没绑的键。**
+
+> **演练卡片里那几步的字是可以点的**（`command:` 链接）。若点了没反应，用活动栏图标那条路 ——
+> 两者通向同一批命令，另外三个入口不受影响。
+
 ## 源码入口表
 
 | 文件 | 职责 |
 |---|---|
 | `src/extension.ts` | activate → `registerCommands`，入口保持极薄 |
-| `src/commands.ts` | §4.1 九个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel。**这里已经没有任何替身** |
+| `src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **开始面板的装配与 `runStartAction`（S8）**。**这里已经没有任何替身** |
+| `src/describe.ts` | **S8 新增**。"上次捕获：main.c 第 40-48 行（选区）"这句人话的**唯一**格式化处：`Anchor: 显示状态` 与开始面板共用 |
+| `src/start/startModel.ts` | **S8 新增**。开始面板的**内容模型**：动作表（每个动作只指向一条已声明的命令）+ 状态→面板的纯映射。零 vscode 依赖，有单测 |
+| `src/start/StartViewProvider.ts` | **S8 新增**。活动栏「开始」视图的宿主侧：握手 → 推快照 → 收 `start:run` → 转给命令层。**视图没被打开过就是空操作** |
+| `src/start/ui/{startStyles,startClientScript,startHtml}.ts` | **S8 新增**。开始面板的 webview 资源（同样内联）；客户端脚本**只渲染与派发**，一条业务判断都没有 |
+| `assets/anchor.svg` | **S8 新增**。活动栏那个固定按钮的图标（24×24 单色）。路径写错时 VS Code 只是不显示，`pnpm smoke` 会去查它在不在 |
+| `media/walkthrough/*.md` | **S8 新增**。欢迎页「演练」卡片四步的正文（`contributes.walkthroughs` 的 `media.markdown`） |
 | `src/adapters/CodeAdapter.ts` | 代码来源适配器：`capture(scope?)` 把「选区 / 整文件」变成 `Anchor`；`fetchContext` 按行取件（带行号）。**零 vscode 依赖** |
 | `src/adapters/PDFAdapter.ts` + `adapters/pdf/*` | **S7 新增**。PDF 无头取件：`fetchContext` 按页取（带页头）、`pageCount`、`textInBBox`；文字层归一化 / `bbox→文本` / 有界 LRU 缓存 / pdf.js legacy 真实现。**零 vscode 依赖** |
 | `THIRD_PARTY_NOTICES.md` | **S7 新增**。打包 `pdfjs-dist`（Apache-2.0）的声明 |
@@ -74,14 +113,14 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 | `src/prompts/index.ts` | system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） |
 | `src/config.ts` | §6 配置的**纯映射**（vscode-free，可单测） |
 | `src/vscode/configSource.ts` | 设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 |
-| `src/protocol.ts` | §5 消息协议 + 两处边界守卫（webview 来的、其他扩展来的） |
+| `src/protocol.ts` | §5 消息协议 + **三处**边界守卫（侧边栏 webview 来的、开始面板来的、其他扩展来的）+ **状态词表 `STATE_WORD`（S8 从状态栏上移过来）** |
 | `src/paths.ts` | 路径归一/比较/显示名/行数（四条链路共用，vscode-free） |
 | `src/playback/WalkthroughSession.ts` | 会话状态机（拍游标/播放/staleness，vscode-free） |
 | `src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策（vscode-free） |
 | `src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；只读不写文档 |
 | `src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 |
 | `src/sidebar/statusBar.ts` | 状态栏提示（键位读用户实际绑定、staleness 提示） |
-| `src/sidebar/keybindingResolve.ts` | 键位表 + JSONC 解析 + 显示格式化（vscode-free） |
+| `src/sidebar/keybindingResolve.ts` | 键位表（**S8 起两张：线1 + 线2**，各有各的镜像锁）+ JSONC 解析 + 显示格式化（vscode-free） |
 | `src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**内联进产物**；客户端脚本不参与类型检查 |
 | `src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（五个方法全部是真的，没有覆盖层） |
 | `src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` |
@@ -225,6 +264,10 @@ pnpm devhost
 | 高亮位置不对 | 模型自己选的 location，可能选歪 | 不是接线问题（越界会被判掉，选歪判不出来）。输出面板「Anchor」能看到它取过什么 |
 | 面板里有讲解文字，但编辑器里**没有**高亮 | 目标文件路径没解析到 —— 宿主的工作区既不是 `test/fixtures` 也不是仓库根 | 用方式 B 起宿主（它带的目录参数就是对的） |
 | 找不到状态栏提示 | 未定论 | 运行 `Anchor: 显示状态`，它会报出状态栏项是否显示、文本是什么 |
+| **左侧活动栏没有 Anchor 图标** | 产物是旧的（S8 之前），或图标文件没进扩展目录 | 回仓库根 `pnpm build` 再起宿主。图标路径写错时 VS Code **只是不显示、不报错**，所以 `pnpm smoke` 专门查了它在不在 |
+| **点开图标面板一片空白** | webview 的 HTML 没生成出来（客户端脚本被字符串问题破坏） | `pnpm test` 里 `startUi` 那几条就是查这个的；若它们绿着，请看 `Developer: Open Webview Developer Tools` 的控制台 |
+| **面板上的某个动作点了没反应** | 它是灰的（前置条件不满足） | 看按钮下面那行字：它会说清缺什么（模型没配 / 线2 没装 / 没有进行中的讲解） |
+| **欢迎页「演练」里没有那张卡片** | 扩展没被载入，或 walkthrough 声明有问题 | 先确认 `Anchor:` 命令在（见上一行）；卡片内容在 `package.json` 的 `contributes.walkthroughs`，四步正文在 `media/walkthrough/` |
 | 高亮有，但 `main.c` 被挤得看不见 | 面板开在第 2 列 | 拖分栏，或把面板拖到侧边栏 |
 | 想重来一次 | 上一次的框还在 | 触发一次新讲解即可（会先收掉上一次） |
 
@@ -253,12 +296,14 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（133 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射、会话状态机、配色决策、键位解析 |
-| 产物冒烟（33 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；webview 资源在产物里；**两个替身都已从产物退出** |
+| 单测（161 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
+| 产物冒烟（58 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示） |
 | 链路冒烟（115 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
 
 这三层都只对**最外层边界**（`vscode` 模块）打桩，桩之外全是真代码。
-它们**都不替代 F5**：配色好不好看、流转顺不顺，只有肉眼看才算数。
+它们**都不替代 F5**：配色好不好看、流转顺不顺、面板点下去什么反应，只有肉眼看才算数。
+**开始面板的 DOM 行为没有被自动化覆盖**（客户端脚本是字符串常量，`pnpm test` 执行不到它）——
+只把"字符串被反引号/`${` 破坏导致白屏"这类问题变成了断言。
 
 ## 边界
 
@@ -266,3 +311,7 @@ pnpm smoke:chain      # 单独的链路冒烟
 - 不改用户文件：高亮一律是 decoration，不是编辑（链路冒烟会断言 `applyEdit` 从未被调用）
 - 命令的 `title` **只写动作**（如 `显示状态`），分类由 `category: "Anchor"` 提供，
   面板里显示成 `Anchor: 显示状态`。别在 `title` 里再写一遍 `Anchor:`，会重复
+- **开始面板不实现任何东西**（S8）：它的每条动作只指向一条已声明的命令。
+  加动作 = `src/start/startModel.ts` 的 `START_ACTIONS` 加一行 + `package.json` 里声明那条命令；
+  漏了声明会有单测红（那条锁会去查**所属扩展**的 `contributes.commands`）。
+  面板的 webview **只回传动作 id**，能执行什么由宿主查表决定 —— 别改成"面板指定命令"

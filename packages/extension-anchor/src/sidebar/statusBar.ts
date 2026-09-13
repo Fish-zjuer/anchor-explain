@@ -10,6 +10,7 @@
 
 import * as vscode from 'vscode';
 import type { WalkthroughSnapshot } from '../playback/WalkthroughSession.ts';
+import { STATE_WORD } from '../protocol.ts';
 import type { WalkthroughState } from '../protocol.ts';
 import {
   defaultChords,
@@ -48,14 +49,9 @@ const STATE_ICON: Record<WalkthroughState, string> = {
   error: '$(error)',
 };
 
-const STATE_WORD: Record<WalkthroughState, string> = {
-  idle: '已结束',
-  running: '讲解中',
-  playing: '播放中',
-  paused: '已暂停',
-  done: '已讲完',
-  error: '出错',
-};
+// 状态词不在这里：它挪到了 `protocol.ts`（贴着 `WalkthroughState` 放），
+// 因为开始面板要说同一句话 —— 两处各写一张表，改一处就会分家。上面的图标表
+// 只有状态栏用，所以留在原地。
 
 /** 解绑时**只去掉键、不去掉动作**（§5.4）：用户仍该知道"退出"这件事存在。 */
 function withKey(chord: ResolvedChord, action: string): string {

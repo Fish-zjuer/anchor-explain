@@ -11,10 +11,10 @@
 
 ## 当前切片
 
-**S7（PDF `page_range` 取件）— 完成，tag `slice-S7`。**
-**计划内的全部切片（F0/F1/F2 + S1~S7）到此做完。**
+**S8（固定按钮 + 开始界面）— 完成，tag `slice-S8`。**
+**计划内的 F0/F1/F2 + S1~S7 全部做完，S8 是用户在看欢迎页时点名加的一片，也已做完。**
 
-剩下的只有**四件用户实操确认**（下面「下次第一件事」），没有待做的代码。
+剩下的只有**五件用户实操确认**（下面「下次第一件事」），没有待做的代码。
 
 ## 已完成切片
 
@@ -30,13 +30,17 @@
 | S5 | 线2 注入式框选 overlay：像素→归一化换算（有单测）+ `anchorPdf.selectRegion` | `slice-S5` | 2026-09-13 |
 | S6 | 线2 框选 → 线1 侧边栏讲解 + 点击滚动定位（**只滚，不画框**） | `slice-S6` | 2026-09-13 |
 | S7 | PDF `page_range` 取件：无头 pdf.js + `bbox→文本` + 有界 LRU + `PDFLocation.filePath` | `slice-S7` | 2026-09-13 |
+| S8 | **固定按钮（活动栏）+ 开始界面**（webview 面板 + 欢迎页演练卡片 + `Ctrl+Alt+A`），三处入口通向同一批命令 | `slice-S8` | 2026-09-13 |
 
 **线1（代码编辑器）的功能面到此完整**：真选区 → 真适配器 → 真 AI（带取件）→ 真校验 → 真渲染。
 **产物里已经没有任何替身。**
 
+S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡片 / `Ctrl+Alt+A`），实现只有一处**
+（都只是 `executeCommand` 一条已声明的命令）。面板自己不做任何事 —— 这是刻意的。
+
 ## 下次第一件事
 
-**没有待做的代码了。** 只有四件**用户实操**确认（互不依赖，谁先都行）：
+**没有待做的代码了。** 只有五件**用户实操**确认（互不依赖，谁先都行）：
 
 | # | 切片 | 要做什么 | 要看什么 |
 |---|---|---|---|
@@ -44,9 +48,14 @@
 | 2 | S4 | `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures` → `Anchor: 用 Anchor 打开 PDF` | 能打开；**直接双击 PDF 仍是原来的打开方式**（不劫持）；设置里能搜到 `anchorPdf.*` |
 | 3 | S5 | 在 Anchor 的 PDF 视图里 `Ctrl+Alt+S` 拖一个矩形 | 跟手；**抬手后屏幕上不留东西**；拖到页外有提示；跨页拖判给盖得多的那一页 |
 | 4 | S6 | 框选之后看侧边栏，点某一步上的「第 N 页」 | PDF **滚到那一页**（不是画框）；编辑器里一个框都不该出现 |
+| 5 | S8 | `pnpm build` 后按 F5 → **看左侧活动栏有没有 Anchor 图标** → 点开「开始」面板 | 面板里「讲解选中的代码」显示的键是你**自己绑的那个**；点「显示状态」有反应；没配模型时「设置 API Key」是灰的且**说清缺什么**；`Ctrl+Alt+A` 能呼出它；**欢迎页的「演练」里有「开始使用 Anchor」**（那四步里的字点下去应当能触发命令） |
 
-四件的详细步骤与"看不到反应查这里"的对照表在
+五件的详细步骤与"看不到反应查这里"的对照表在
 `packages/extension-anchor/README.md` 与 `packages/extension-anchor-pdf/README.md`。
+
+**S8 那件要特别看的两处**：活动栏图标（**图标路径写错时 VS Code 只是不显示，不报错**，
+所以值得亲眼确认一次）与演练卡片里的 `command:` 链接（那是文档约定，不是类型保证 ——
+点了没反应请如实说，另外两个入口不受影响）。
 
 **`detect()` 明确不做了**（不是延期）：选适配器的依据是锚点自己的 `sourceType`，
 "当前环境适不适用"在我们这儿没有唯一答案。见 D56 与 `CONTRACTS` §3.1。
@@ -86,8 +95,8 @@
 13. **改 `test/fixtures/main.c` 第 40-48 行** → 必须同步 `fakes/fakeEditorPort.ts` 的 `FAKE_SELECTION_TEXT`、`fakes/fakeProvider.ts` 的脚本行号，**以及 `scripts/smoke-walkthrough.mjs` 里的 `EXPLANATION_JSON`**（S3 起链路冒烟的"模型输出"是它）。`test/fakes.test.ts` 有耦合锁拦前两个。
 14. **`@types/vscode` 必须精确等于 `engines.vscode` 的**下界**（现为 `1.90.0`，不带 `^`）；`engines.vscode` 本身是范围 `^1.90.0`。** 不变式是"类型版本 = 范围下界"，不是"两个字段字符串相同"。见 `CONTRACTS.md` §9.5 / D39。
 15. **仓库内文本一律 LF**（根 `.gitattributes` 钉死）。本机 `core.autocrlf=true`。见 D40。
-16. **全仓测试数**：core 28 + ext 133 + pdf 12 = **173**（11 个测试文件，全部 vscode-free；线2 那个包另外还跑上游的 pdf.js 不变式守卫）。
-17. **两个冒烟脚本分工不同**：`pnpm smoke`（**结构**：产物能加载、声明与注册对齐、webview 资源在不在、没有写文件的 API、**两个替身都已退出产物**）与 `pnpm smoke:chain`（**行为**：`capture` 从真选区跑到 decoration，**S3 起跑真编排循环**——只有 `globalThis.fetch` 是桩）。断言条数：**33 + 115**，外加线2 的 `smoke:pdf` **67**。三者都**不替代 F5**。
+16. **全仓测试数**：core 28 + ext 161 + pdf 12 = **201**（13 个测试文件，全部 vscode-free；线2 那个包另外还跑上游的 pdf.js 不变式守卫）。
+17. **三个冒烟脚本分工不同**：`pnpm smoke`（**结构**：产物能加载、声明与注册对齐、webview 资源在不在、没有写文件的 API、**两个替身都已退出产物**，外加 **S8 起真跑一遍开始面板的宿主侧**）与 `pnpm smoke:chain`（**行为**：`capture` 从真选区跑到 decoration，**S3 起跑真编排循环**——只有 `globalThis.fetch` 是桩）与 `pnpm smoke:pdf`（线2）。断言条数：**58 + 115 + 67**。三者都**不替代 F5**。
 18. **`commands.ts` 里没有任何替身了**（S1 有两处，S2 删假选区，S3 删假 AI）。新加替身要能说清"为什么只能在最外层边界"。
 19. **侧边栏 CSS/客户端脚本是 TS 里的字符串常量**（内联进 webview，见 D42）。改 UI 必须同时想到：客户端脚本**不参与类型检查**，且 `ui/clientScript.ts` 里有一份 4 行的 `locationLabel` 副本。
 20. **`decorationPlan.ts` 会过滤掉所有非 `CodeLocation`** —— 这是"PDF 上不出现任何高亮框"的结构性保证。
@@ -125,6 +134,12 @@
 52. **`rect.ts` 的 `intersectRects` 有三个消费者**（线2 的"落在哪一页"、"裁到页内"、线1 的"bbox 命中哪些文字块"）：它在 `@anchor/core`，**不相交返回 null 而不是零面积矩形** —— 后者会让"命中比例"变成除零。别在下游各写一份。
 53. **打包第三方代码必须带署名**（D56 末段)：`pdfjsSource.ts` 顶部那条 `/*! ... */` 是**唯一**留在产物里的署名（esbuild 只保留 `/*!` 开头的注释），`smoke` 有断言守着。线1 产物因此从 468KB 涨到 **4.36MB**（pdf.js 本身就大；`pdfjs-dist` 是 ESM-only，CommonJS 产物没法 `require` 外部加载，所以只能打包）。
 54. **`extractedText` 要在进模型之前补上**（D56 第 6 条）：PDF 锚点的 `bbox` 是地址，那一块里的文字才是模型第一批该看到的东西（`commands.ts` 的 `withPdfText`）。补失败一律静默忽略（扫描件没有文字层是正常情况）。
+55. **固定按钮有四处入口、一处实现**（D57 第 1~2 条）：活动栏图标 / 面板 / 演练卡片 / `Ctrl+Alt+A`，全都只是 `executeCommand` 一条已声明的命令。**加一个动作 = `START_ACTIONS` 加一行 + `package.json` 里声明那条命令**（漏了声明有锁会红）。面板里不要写任何业务判断 —— 那不是风格问题，是这一片被验收的那件事。
+56. **`start:run` 只回传 id**（D57 第 3 条）：`parseStartMessage` **只查形状**，成员资格由宿主 `findStartAction` 查。把成员资格塞进守卫，宿主那侧的查表就变成永远为真的死代码（`test/protocol.test.ts` 有一条锁钉着）。
+57. **面板推快照、不推事件流**（D57 第 4 条）：**视图没被打开过时 `refresh()` 是空操作**，不许给它加"重放缓冲"——那是侧边栏（宿主建面板）才需要的东西。
+58. **键位表是两张，各有各的镜像锁**（D57 第 6 条）：线1 `WALKTHROUGH_CHORDS` 对线1 的 `package.json`，线2 `LINE2_CHORDS` 对线2 的 `package.json`。面板显示线2 的键时也走同一套解析 —— **不许写死默认键**（那是替用户断言一件我们不知道的事）。
+59. **同一句话只有一处**（D57 第 7~8 条）：状态词在 `protocol.ts` 的 `STATE_WORD`（状态栏与面板共用），"上次捕获"在 `describe.ts` 的 `captureSummary`（`Anchor: 显示状态` 与面板共用）。改文案时只改那一处。
+60. **开始面板的客户端脚本与侧边栏同两条约束**：不许出现反引号与 `${`（否则是一次白屏）。**S8 起这是断言**（`test/startUi.test.ts` 遍历四份内联字符串），不再只是注释。
 
 ## 待补 docs
 
@@ -132,13 +147,17 @@
 
 ## 已知缺口（不算 docs 缺失，但要记着）
 
-1. **侧边栏客户端脚本没有自动化覆盖**：`ui/clientScript.ts` 是字符串常量，单测碰不到它；
-   **排版**可以用 `pnpm preview:sidebar` 自己看（D50），**交互**（按钮禁用、`▸` 跟随、事件委托）仍只能靠 F5。
+1. **两个 webview 的客户端脚本都没有自动化覆盖**：`ui/clientScript.ts` 与
+   `start/ui/startClientScript.ts` 都是字符串常量，单测碰不到它们的 **DOM 行为**；
+   **排版**可以用 `pnpm preview:sidebar` 自己看（D50），**交互**（按钮禁用、`▸` 跟随、
+   事件委托、面板的按钮可点性）仍只能靠 F5。S8 只把"字符串被反引号/`${` 破坏"这一类
+   白屏问题变成了断言（`test/startUi.test.ts`），没有覆盖 DOM。
 2. **状态栏提示的落点未定**：`Anchor: 显示状态` 会报它的 `shown` 与 `text`。
 3. **`primary` 与 `definition` 两档底色相同**，只差边线颜色/粗细，区分度是待评审的手感项。
 4. **`playPause` 只有键位、侧边栏里没有按钮**：§5.3 的 `SidebarToHost` 里没有 `ui:playPause`。
+   （开始面板也没有它：`START_ACTIONS` 里没有 playPause，因为"s 面板是入口，不是遥控器"。）
 5. **§7 的 `ToolTrace` 面板没做**：取件日志现在落 OutputChannel「Anchor」（D52）。
-6. **`CodeAdapter.detect()` 没落**：归 S7（出现第二个 adapter 时才有真假之别）。
+6. **`detect()` 明确不做**（D56 末段）：§3.1 表里那一列判据降级为文档。**不要再"延期"它。**
 7. **`wantsImage` 只有"锚点自带截图"这一个触发条件**：`ModelRouter` 的两条判据有单测，
    但"模型自己说要看图"这条路径线1 走不到（S5 的 PDF 才有截图）。
 8. **线2 没有进 F5 的 launch 配置**：`.vscode/launch.json` 只载入线1。
@@ -147,12 +166,17 @@
 9. **手敲 `code --extensionDevelopmentPath=...` 时不会自动构建**。`pnpm devhost` 已经修成
    "先 `pnpm build` 再起宿主"了（S3 顺带），F5 有 `preLaunchTask`，但手敲那条命令没有 ——
    拿旧产物测新代码会让排查跑偏（这一条已经坑过一次）。
-10. **线2 的框选还没做**：现在只能用我们的视图**看** PDF，不能框选（S5/S6）。
-11. **上游 vendored pdf.js 里的 `PDF.js viewer` 字样没有改**：那是 pdf.js 自己的品牌，
+10. **上游 vendored pdf.js 里的 `PDF.js viewer` 字样没有改**：那是 pdf.js 自己的品牌，
     属于 vendored 依赖的一部分，不在"移除上游品牌"（publisher/displayName）的范围里。
     改它就要动 `assets/`，而那是明令不许碰的。
+11. **演练卡片的 `command:` 链接没有被任何自动化验过**（D57 第 10 条）：它是 markdown 里的
+    文档约定，`smoke` 只能查到"四份 markdown 都在"。**点了没反应不是别的坏了** ——
+    另外两个入口（活动栏图标、`Ctrl+Alt+A`）与命令本身都不受影响。
+12. **开始面板没有排版预览**（D50 那种）：只有侧边栏有 `pnpm preview:sidebar`。
+    要看面板长什么样，起 F5 点活动栏那个图标。
 
 ## 最后更新
 
-2026-09-13，**S7 收工 —— 计划内全部切片（F0/F1/F2 + S1~S7）做完**。
-只剩四件用户实操确认（S3 配 key / S4 开 PDF / S5 拖拽 / S6 点位置标签）。
+2026-09-13，**S8 收工 —— 固定按钮 + 开始界面**（用户点名加的一片，非原计划）。
+计划内的 F0/F1/F2 + S1~S7 也早已全部做完。
+只剩**五件用户实操确认**（S3 配 key / S4 开 PDF / S5 拖拽 / S6 点位置标签 / S8 看活动栏图标与开始面板）。

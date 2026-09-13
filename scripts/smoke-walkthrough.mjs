@@ -302,6 +302,10 @@ const vscodeStub = {
     }),
     openTextDocument: () => Promise.resolve(editor.document),
     showTextDocument: () => Promise.resolve(editor),
+    // S8：活动栏里的「开始」视图。这条冒烟跑的是"捕获→讲解→高亮"那条链路，
+    // 面板的宿主侧行为由 `smoke-extension.mjs` 真跑（那边会拿到 provider 并驱动它）。
+    // 这里只需要"注册不炸"——多写一份驱动只会变成两处都要改的重复。
+    registerWebviewViewProvider: () => ({ dispose() {} }),
     createTextEditorDecorationType(options) {
       const type = { options, dispose() {} };
       decorationTypes.push(type);
@@ -378,6 +382,8 @@ const vscodeStub = {
       return Promise.resolve(true);
     },
     onDidChangeTextDocument: () => ({ dispose() {} }),
+    // S8：开始面板显示"模型"那一行，改设置要让它立刻变（这里不需要触发，只要不炸）
+    onDidChangeConfiguration: () => ({ dispose() {} }),
     // 把回调留下来：第 6 节要手动触发"讲解期间文件被关掉"这条回归路径
     onDidCloseTextDocument: (cb) => {
       onCloseDocument = cb;
@@ -390,7 +396,11 @@ const vscodeStub = {
   },
 
   // S6：线2 装没装，会改变"点侧边栏定位"那一跳的行为
-  extensions: { getExtension: (id) => (peerPdfInstalled && id === 'anchor.anchor-pdf' ? { id } : undefined) },
+  // S8：开始面板还要在装/卸线2 时刷新
+  extensions: {
+    getExtension: (id) => (peerPdfInstalled && id === 'anchor.anchor-pdf' ? { id } : undefined),
+    onDidChange: () => ({ dispose() {} }),
+  },
 };
 
 const require = createRequire(import.meta.url);

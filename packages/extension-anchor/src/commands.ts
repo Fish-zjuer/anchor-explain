@@ -36,6 +36,7 @@ import { openPdfJsSource } from './adapters/pdf/pdfjsSource.ts';
 import { primaryLocationOf } from './playback/decorationPlan.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
 import { describeConfig } from './config.ts';
+import { captureSummary } from './describe.ts';
 import { createOrchestrator } from './orchestrator/Orchestrator.ts';
 import { createModelRouter } from './orchestrator/ModelRouter.ts';
 import { createOpenAICompatibleProvider } from './orchestrator/providers/openAICompatible.ts';
@@ -47,6 +48,9 @@ import type { WalkthroughSnapshot } from './playback/WalkthroughSession.ts';
 import { SidebarPanel } from './sidebar/SidebarPanel.ts';
 import type { SidebarHandlers } from './sidebar/SidebarPanel.ts';
 import { createStatusBar } from './sidebar/statusBar.ts';
+import { StartViewProvider } from './start/StartViewProvider.ts';
+import { buildStartModel, findStartAction } from './start/startModel.ts';
+import type { StartModel } from './start/startModel.ts';
 import { samePath } from './paths.ts';
 import { configuredProviderIds, readAnchorConfig, storeApiKey } from './vscode/configSource.ts';
 import { createEditorPort } from './vscode/ports/editorPort.ts';
@@ -54,6 +58,15 @@ import { countLines, createFileSystemPort } from './vscode/ports/fileSystemPort.
 
 /** 线2 的扩展 ID（D27）。对端缺失时必须明确提示，不静默失败。 */
 const PDF_EXTENSION_ID = 'anchor.anchor-pdf';
+
+/**
+ * 线2 装没装。三处问的是同一个问题（`revealStep` / `runStartAction` / `showState`），
+ * 所以只留一个问法 —— 三处各写一遍 `vscode.extensions.getExtension(...)` 的那种写法，
+ * 第一次改 ID 时就会漏掉一处。
+ */
+function peer(): vscode.Extension<unknown> | undefined {
+  return vscode.extensions.getExtension(PDF_EXTENSION_ID);
+}
 
 export function registerCommands(context: vscode.ExtensionContext): void {
   const fsPort: FileSystemPort = createFileSystemPort();
@@ -103,10 +116,17 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   let player: CodeWalkthroughPlayer | undefined;
   let sidebar: SidebarPanel | undefined;
+  let start: StartViewProvider | undefined;
   let session: WalkthroughSession | undefined;
   let unsubscribe: (() => void) | undefined;
   /** 每次 explain() 领一个号：慢的那次回来时若号已过期，就丢弃它的结果（见 explain） */
   let generation = 0;
+  /**
+   * 开始面板上一次推到 webview 的"会话维度"的指纹（见 refreshStartOn）。
+   * 面板显示的是快照，而快照的其余维度（模型/对端/上次捕获）变化都走**低频**路径，
+   * 只有会话维度是逐点扫描时每拍都变的 —— 只有它需要去重。
+   */
+  let startKey: string | undefined;
   /**
    * 最近一次捕获的锚点与范围。**只为 `Anchor: 显示状态` 而留**：
    * 真选区接上之后，"我选的是不是我以为的那段"变成了唯一无法从屏幕上直接看出来的事
@@ -149,7 +169,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
     if (isPDFLocation(step.location)) {
       const { page } = step.location;
-      if (!vscode.extensions.getExtension(PDF_EXTENSION_ID)) {
+      if (peer() === undefined) {
         // §5.1：对端缺失时明确提示，不静默失败
         void vscode.window.showWarningMessage(
           'Anchor：没有安装线2（anchor.anchor-pdf），无法把 PDF 滚到这一页。',
@@ -227,6 +247,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     isolated('状态栏', () => {
       status.update(snapshot);
     });
+    // 开始面板也吃这条快照，但它只显示"第几步"，所以按会话维度去重（见 refreshStartOn）
+    refreshStartOn(`${snapshot.state}|${snapshot.index}/${snapshot.total}|${snapshot.stale}`);
   }
 
   function startSession(result: ExplanationResult): void {
@@ -262,6 +284,97 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       // 面板不清空：讲解文字留着，用户还能回看。侧边栏据此显示"已结束"。
       sidebar?.post({ type: 'session:end' });
     });
+    refreshStartOn('idle');
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // 开始面板（活动栏那个固定按钮，S8）
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * 面板要显示的一切（§5.5）。**现算**，不缓存：模型配置、对端有没有装、
+   * 上次捕获的是哪一段、讲解走到第几步 —— 这四件事随时会变，缓存一份就得回答
+   * "谁负责让它失效"，而现算的代价只是读一次设置。
+   */
+  async function makeStartModel(): Promise<StartModel> {
+    const cfg = await readAnchorConfig(context);
+    const snapshot = session?.snapshot;
+    const lastLine = lastCapture ? captureSummary(lastCapture.anchor, lastCapture.scope) : null;
+
+    return buildStartModel({
+      chords: status.chords(),
+      providerReady: cfg.provider !== null,
+      providerSummary: describeConfig(cfg),
+      peerInstalled: peer() !== undefined,
+      captureSummary: lastLine,
+      session: snapshot
+        ? { index: snapshot.index, total: snapshot.total, state: snapshot.state, stale: snapshot.stale }
+        : null,
+    });
+  }
+
+  /** 状态变了就推一份。**视图没开过是空操作**，所以可以随便调。 */
+  function refreshStart(): void {
+    void start?.refresh();
+  }
+
+  /**
+   * 只在"面板显示的东西真的变了"时推。
+   *
+   * @anchor 为什么非要有这个去重：会话游标是**拍**不是**步**（D48）——
+   *         一个 5 步的讲解会走十几二十拍，每拍都会 `emit`。而推一次面板要重读设置
+   *         与 SecretStorage（后者是异步 IPC）。不去重的话，讲解过程中会为了
+   *         一个没变过的「第 2/5 步」反复问 20 次密钥存储。
+   */
+  function refreshStartOn(key: string): void {
+    if (key === startKey) return;
+    startKey = key;
+    refreshStart();
+  }
+
+  /**
+   * 开始面板上的一次点击。**id → 命令的唯一解析处**（§5.5）。
+   *
+   * @anchor 面板里灰掉一个按钮与这里再判一次**不是重复**，是两层不同的东西：
+   *   - 前者是**提示**：让用户不必点下去才知道缺什么
+   *   - 后者是**执行前的判断**：webview 是不可信输入，它喊"我要跑 goto"的时候，
+   *     会话可能刚好结束了 —— 它看到的那个状态已经是上一刻的
+   *
+   * 另外两条守卫是命令自己**没法**提供的：
+   *   - `peer`：线2 没装时那条命令**根本不存在**，`executeCommand` 会抛"命令未找到"，
+   *     用户看到的是一个 VS Code 的报错框，而不是"你没装线2"
+   *   - `session`：`goto` 在没有会话时是**静默返回**的，那违反"不静默失败"
+   * （`provider` 那条不需要额外守卫：`Anchor: 设置 API Key` 自己会讲清缺什么。）
+   */
+  async function runStartAction(id: string): Promise<void> {
+    const action = findStartAction(id);
+    if (!action) return; // 表里没有的 id：不是我们的按钮，丢掉
+
+    if (action.requires === 'peer' && peer() === undefined) {
+      void vscode.window.showWarningMessage('Anchor：没有安装线2（anchor.anchor-pdf），这条命令用不了。');
+      return;
+    }
+    if (action.requires === 'session' && !session) {
+      void vscode.window.showWarningMessage('Anchor：现在没有进行中的讲解。');
+      return;
+    }
+
+    await vscode.commands.executeCommand(action.command);
+  }
+
+  /**
+   * 固定按钮的"快捷键那一份"：把活动栏里那个容器聚焦出来。
+   *
+   * `<viewId>.focus` 是 VS Code 按视图 id 自动生成的命令 —— 但那是**约定**，
+   * 所以留一条退路：退回聚焦整个容器（容器 id 是我们自己在 package.json 里声明的）。
+   * 退路只是为了"按了没反应"不至于成为唯一结果，不是我们在赌哪个能用。
+   */
+  async function showStart(): Promise<void> {
+    try {
+      await vscode.commands.executeCommand(`${StartViewProvider.viewId}.focus`);
+    } catch {
+      await vscode.commands.executeCommand('workbench.view.extension.anchor');
+    }
   }
 
   /**
@@ -433,6 +546,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     }
 
     lastCapture = { anchor, scope };
+    refreshStart();
     await explain(anchor);
   }
 
@@ -526,19 +640,15 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       parts.push('没有活动的代码编辑器');
     }
 
-    const peer = vscode.extensions.getExtension(PDF_EXTENSION_ID);
-    parts.push(`对端 anchor-pdf：${peer ? '已安装' : '未安装'}`);
+    const peerInstalled = peer() !== undefined;
+    parts.push(`对端 anchor-pdf：${peerInstalled ? '已安装' : '未安装'}`);
 
     // 真选区接上之后，"我刚才那一按到底讲了哪一段"屏幕上再也看不出来
     // （高亮画在哪由讲解内容决定，不由选区决定）。所以这里单独报一次。
-    if (lastCapture && isCodeLocation(lastCapture.anchor.location)) {
-      const how = lastCapture.scope === 'whole-file' ? '整个文件' : '选区';
-      parts.push(
-        `上次捕获：${lastCapture.anchor.sourceName} ${locationLabel(lastCapture.anchor.location)}（${how}）`,
-      );
-    } else {
-      parts.push('还没有捕获过');
-    }
+    // 这句与开始面板显示的是**同一句** —— 格式化在 `describe.ts` 里只有一处。
+    parts.push(
+      lastCapture ? `上次捕获：${captureSummary(lastCapture.anchor, lastCapture.scope)}` : '还没有捕获过',
+    );
 
     parts.push(`模型：${describeConfig(await readAnchorConfig(context))}`);
 
@@ -557,6 +667,10 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     void vscode.window.showInformationMessage(`Anchor：${line}`);
   }
 
+  // 固定按钮（活动栏容器 + 里面的「开始」视图）。注册本身只是"挂个号"，
+  // 视图要等用户点开才存在 —— 所以 `start` 是懒的（见 refreshStart）。
+  start = StartViewProvider.register(context, { onRun: (id) => void runStartAction(id) }, makeStartModel);
+
   context.subscriptions.push(
     vscode.commands.registerCommand('anchorExplain.capture', capture),
     vscode.commands.registerCommand('anchorExplain.explainAnchor', explainAnchor),
@@ -565,8 +679,16 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.stop', stop),
     vscode.commands.registerCommand('anchorExplain.goto', goto),
     vscode.commands.registerCommand('anchorExplain.playPause', playPause),
+    vscode.commands.registerCommand('anchorExplain.showStart', showStart),
     vscode.commands.registerCommand('anchorExplain.showState', showState),
     vscode.commands.registerCommand('anchorExplain.setApiKey', setApiKey),
+
+    // 开始面板显示的四件事里，有两件不经过 emit：模型配置（改设置）与对端（装/卸线2）。
+    // 不订阅它们的话，面板会一直显示打开那一刻的旧话。
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('anchorExplain')) refreshStart();
+    }),
+    vscode.extensions.onDidChange(() => refreshStart()),
 
     // staleness：讲解期间文档被改动 → 标记失效，由状态栏如实告诉用户，而不是继续画错位的框
     vscode.workspace.onDidChangeTextDocument((e) => {

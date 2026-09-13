@@ -18,11 +18,11 @@
 | S1 | 线1 最小可视：F5 → main.c → FakeProvider 写死 3 step → 高亮流转 → ESC 清除 | **用户实操确认** | 完成 `slice-S1`（用户四轮实测反馈后通过） |
 | S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 | 完成 `slice-S2` |
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | 代码与自动化完成 `slice-S3`，**待用户配 key 实操** |
-| S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | — |
 | S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | 代码与自动化完成 `slice-S4`，**待用户实操** |
 | S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | 代码与自动化完成 `slice-S5`，**待用户实操** |
 | S6 | PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位） | 自动化 + 用户实操 | 代码与自动化完成 `slice-S6`，**待用户实操** |
-| S7 | PDF 取件（page_range 取附近页文字） | 自动化 | 完成 `slice-S7`（全部切片做完） |
+| S7 | PDF 取件（page_range 取附近页文字） | 自动化 | 完成 `slice-S7` |
+| S8 | 固定按钮（活动栏）+ 开始界面（面板与演练卡片），**快捷键一个都不动** | 自动化 + 用户实操 | 代码与自动化完成 `slice-S8`，**待用户实操** |
 
 ## 硬性约束
 
@@ -438,4 +438,60 @@ S7 点名的两条验收都在：`fetchContext({type:'page_range', start:22, end
 - **范围**：`src/adapters/PDFAdapter.ts`、`src/adapters/pdf/{PDFSource.ts, pdfDocumentCache.ts, pageTextIndex.ts, textSearch.ts}`
 - **验收标准**：自动化 —— 30 页 fixture 上 `bbox → 文本` 命中第 23 页且跨行补换行；`fetchContext({type:'page_range', start:22, end:24})` 返回带 `--- 第 N 页 ---` 页头的文本。
 - **回退点**：`slice-S6`
-- **状态**：完成（`slice-S7`）。**全部切片到此做完**，见交付总览。
+- **状态**：完成（`slice-S7`）。
+
+### S8 落地结果（2026-09-13，tag `slice-S8`）
+
+**这一片的来由与上一轮不同**：不是计划里的，是用户看了欢迎页之后点名要的
+（"做一个固定按钮，点一下呼出一个界面，先做一个开始界面，把逻辑放在里面，快捷键还是要的"）。
+用户同时给了一句评判标准："做切片就是为了这个，把逻辑组织起来，而不是糊在一起"。**那就照着这句做。**
+
+| 声明范围内 | 落地 |
+|---|---|
+| `package.json` | 新增 `viewsContainers.activitybar`（容器 `anchor`）+ `views`（`anchorExplain.start`，`type: webview`）+ 命令 `anchorExplain.showStart` + 键位 `ctrl+alt+a` + **`contributes.walkthroughs`（四步）** |
+| `assets/anchor.svg` | **新增**。固定按钮的图标（24×24 单色）。**路径写错 VS Code 只是不显示**，所以冒烟去查文件 |
+| `media/walkthrough/*.md` | **新增四份**。演练四步的正文（`command:` 链接直接调命令） |
+| `src/start/startModel.ts` | **新增**。面板的内容模型：动作表 + 状态→面板的纯映射。**面板里没有一条业务判断** |
+| `src/start/StartViewProvider.ts` | **新增**。视图的宿主侧（握手 / 推快照 / 收 id / 转命令）。**视图没开过 = 空操作** |
+| `src/start/ui/start{Styles,ClientScript,Html}.ts` | **新增**。内联的样式与客户端脚本（只渲染与派发，与侧边栏同一套做法） |
+| `src/protocol.ts` | §5.5 三个消息 + `parseStartMessage`；**`STATE_WORD` 从 `statusBar.ts` 上移到这里** |
+| `src/describe.ts` | **新增**。`captureSummary` —— "上次捕获"那句人话的唯一格式化处 |
+| `src/sidebar/keybindingResolve.ts` | 加 `showStart`；**线2 的键位单独一张 `LINE2_CHORDS`**（面板要显示线2 的框选键） |
+| `src/commands.ts` | 装配面板 + `showStart` + `runStartAction`（**id → 命令的唯一解析处**）+ 五处刷新时机；`peer()` 收敛三处调用 |
+| **未在范围内但顺手做掉的** | ① `Anchor: 显示状态` 的"上次捕获"改用 `describe.ts`（并修掉 PDF 锚点被 `isCodeLocation` 挡掉那处不对称）；② `smoke-walkthrough.mjs` 的桩补三个方法（面板注册不炸即可，驱动放在产物冒烟里） |
+
+**"不糊在一起"是怎么被验的**（这是这一片真正的交付物）：
+
+1. **面板里没有可糊的地方** —— 内容全在纯函数 `buildStartModel` 里算（13 条单测），
+   客户端脚本只把模型画成 DOM 并回传 `start:run`
+2. **按钮不实现任何东西** —— 每个动作只指向一条命令，且有一条耦合锁断言那条命令
+   **在它所属扩展的** `contributes.commands` 里声明过
+3. **webview 说不清"要执行什么"** —— 它只回传 id，宿主查表决定能不能执行；
+   守卫只查形状（有一条锁专门钉"成员资格不在守卫里"）
+4. **同一句话只有一处** —— 状态词（`STATE_WORD`）与"上次捕获"（`captureSummary`）都是这样
+5. **宿主侧真跑过一遍** —— `pnpm smoke` 里造一个假视图驱动 `resolveWebviewView`，
+   走完 `start:ready → 模型 → start:run`，含"表里没有的 id 不执行""没装线2 时明确提示"
+
+**自动化验收结果**：`pnpm check` 全绿 —— **201 测**（core 28 + ext 161 + pdf 12）
++ `pnpm smoke` **58 项** + `pnpm smoke:chain` 115 项 + `pnpm smoke:pdf` 67 项
++ 上游的 pdf.js 不变式守卫。
+
+**验收靠**：自动化 + **用户实操**（面板长什么样、按钮点下去什么反应，只有人能判）。
+另外**演练卡片那一步需要用户特别看一眼**：`command:` 链接是文档约定而不是类型保证，
+若点了没反应，请如实反馈 —— 另外两个入口不受影响。
+
+## S8 固定按钮与开始界面
+
+- **目标**：给整个产品一个**固定的门厅** —— 活动栏一个图标，点开是「开始」面板
+  （能开始什么、缺什么、现在到哪一步），欢迎页再放一张「演练」卡片。
+  **键位一个都不动**：面板是第三条入口，不是替代品。
+- **范围**：`package.json`（视图容器 / 视图 / 命令 / 键位 / 演练）、`assets/anchor.svg`、
+  `media/walkthrough/*.md`、`src/start/*`、`src/protocol.ts`（§5.5）、`src/describe.ts`、
+  `src/sidebar/keybindingResolve.ts`（线2 键位）、`src/commands.ts`（装配与刷新）
+- **验收标准**：自动化（201 测 + 三个冒烟）+ 用户实操 ——
+  点活动栏图标能出面板；面板上「讲解选中的代码」显示的是**你自己绑的键**；
+  点「显示状态」有反应；`Ctrl+Alt+A` 能把它呼出来；没配模型/没装线2 时对应按钮是灰的**且说清缺什么**；
+  欢迎页的「演练」里有「开始使用 Anchor」这张卡。
+- **回退点**：`slice-S7`（这一片是纯加法：删掉 `viewsContainers`/`views`/`walkthroughs` 三段声明
+  与 `showStart` 那条命令/键位，产物即回到 S7 的行为）
+- **状态**：完成（`slice-S8`）。

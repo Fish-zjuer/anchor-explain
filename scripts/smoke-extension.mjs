@@ -44,6 +44,7 @@ const messages = [];
 const registered = new Map();
 const statusBarItems = [];
 const executedCommands = [];
+const webviewViews = [];
 let activeTextEditor;
 let peerInstalled = false;
 
@@ -64,6 +65,13 @@ const vscodeStub = {
     showErrorMessage(msg) {
       messages.push(msg);
       return Promise.resolve(undefined);
+    },
+    // S8：活动栏那个固定按钮里的视图。VS Code 只在用户点开时才调 resolveWebviewView，
+    // 所以这里也**先记下来**，由下面的断言自己去调 —— 那正是"最外层边界打桩，
+    // 里面全真"的做法：面板的宿主侧逻辑（握手、转发、守卫）都是真跑一遍的。
+    registerWebviewViewProvider(id, provider, options) {
+      webviewViews.push({ id, provider, options });
+      return { dispose() {} };
     },
     createStatusBarItem() {
       const item = {
@@ -123,10 +131,18 @@ const vscodeStub = {
     onDidCloseTextDocument() {
       return { dispose() {} };
     },
+    // S8：开始面板显示"模型"那一行，改设置要让它立刻变
+    onDidChangeConfiguration() {
+      return { dispose() {} };
+    },
   },
   extensions: {
     getExtension(id) {
       return peerInstalled && id === PEER_ID ? { id } : undefined;
+    },
+    // S8：开始面板显示"线2 装没装"，装卸线2 要让它立刻变
+    onDidChange() {
+      return { dispose() {} };
     },
   },
 };
@@ -210,6 +226,150 @@ check(bundleText.includes('ui:ready'), 'webview 启动握手（ui:ready）进了
 check(bundleText.includes("default-src 'none'"), '侧边栏 CSP 进了产物');
 check(bundleText.includes('anchorExplain.walkthroughActive'), 'context key 名进了产物（键位 when 生效的前提）');
 check(bundleText.includes('anchorExplain.sessionOpen'), 'sessionOpen 也在产物里（ESC 在 done 之后仍有效的前提，D46）');
+
+// ---- S8 固定按钮（活动栏）+ 开始面板 ---------------------------------------
+// 这个切片的四件事都属于"看起来做了其实没做"：图标路径写错（图标静默消失）、
+// 视图没声明、视图开了但扩展没被激活、面板点了没反应。没有一件会自己报错。
+const container = pkg.contributes.viewsContainers?.activitybar?.[0];
+const viewId = pkg.contributes.views?.anchor?.[0]?.id;
+
+check(container?.id === 'anchor', '声明了活动栏容器（固定按钮的落点）', container?.title ?? '(无)');
+check(typeof container?.icon === 'string' && container.icon.endsWith('.svg'), '容器图标是 svg', container?.icon ?? '(无)');
+
+const iconPath = join(PKG_DIR, container?.icon ?? '(无)');
+check(existsSync(iconPath), '图标文件真的在（路径写错时 VS Code 只是不显示，不会报错）');
+check(
+  existsSync(iconPath) && readFileSync(iconPath, 'utf8').includes('viewBox="0 0 24 24"'),
+  '图标是 24×24（活动栏图标的规定尺寸）',
+);
+check(
+  pkg.activationEvents.includes(`onView:${viewId}`),
+  'activationEvents 里有 onView:（否则点开视图时面板可能起不来）',
+);
+check(
+  webviewViews.length === 1 && webviewViews[0].id === viewId,
+  '声明的视图 id 与注册的 provider 一致',
+  `声明 ${viewId} / 注册 ${webviewViews.map((v) => v.id).join(', ') || '(无)'}`,
+);
+check(
+  webviewViews[0]?.options?.webviewOptions?.retainContextWhenHidden === true,
+  '视图保留 DOM（在活动栏里切走再切回不必等重画）',
+);
+
+// 演练卡片（欢迎页上的「开始使用 Anchor」）：四步的 markdown 都得在，否则点开是空页
+const walkthroughSteps = pkg.contributes.walkthroughs?.[0]?.steps ?? [];
+check(walkthroughSteps.length === 4, '演练有四步', `${walkthroughSteps.length} 步`);
+const missingDocs = walkthroughSteps
+  .map((step) => step.media?.markdown)
+  .filter((rel) => typeof rel !== 'string' || !existsSync(join(PKG_DIR, rel)));
+check(missingDocs.length === 0, '演练每一步的 markdown 都在', missingDocs.join(', ') || '四份都在');
+check(bundleText.includes('start:model'), '开始面板的消息协议进了产物（握手/模型/动作三件）');
+
+// 开始面板的宿主侧**真跑一遍**：外层（vscode 模块）是桩，面板自己的逻辑全是真的
+const posted = [];
+let receiveFromPanel;
+const fakeView = {
+  webview: {
+    cspSource: 'vscode-resource://smoke',
+    options: undefined,
+    html: '',
+    onDidReceiveMessage(fn) {
+      receiveFromPanel = fn;
+      return { dispose() {} };
+    },
+    postMessage(message) {
+      posted.push(message);
+      return Promise.resolve(true);
+    },
+  },
+  onDidDispose() {
+    return { dispose() {} };
+  },
+};
+
+const waitFor = async (predicate, ms = 300) => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return predicate();
+};
+
+webviewViews[0]?.provider.resolveWebviewView(fakeView);
+check(
+  typeof fakeView.webview.html === 'string' && fakeView.webview.html.includes("default-src 'none'"),
+  '开始面板的 HTML 生成了，且 CSP 取的是最严那一档',
+);
+check(typeof receiveFromPanel === 'function', '面板 ready / run 的入口挂上了');
+
+// 握手 → 宿主推一份模型
+receiveFromPanel?.({ type: 'start:ready' });
+await waitFor(() => posted.length > 0);
+const startModel = posted.at(-1)?.model;
+check(posted.at(-1)?.type === 'start:model' && startModel !== undefined, '握手后宿主推了一份开始面板模型');
+check(startModel?.status?.length === 4, '模型里有四条状态（模型 / 线2 / 上次捕获 / 讲解）');
+check(
+  startModel?.sections?.some((section) => section.actions.some((a) => a.id === 'capture' && a.chord === 'Ctrl+Shift+A')),
+  '面板显示的键位是"用户实际绑的那个"（冒烟里读不到 keybindings.json，走的是回退默认那条真实分支）',
+);
+check(startModel?.openChord === 'Ctrl+Alt+A', '面板顶部知道怎么再打开自己');
+
+// 点一个动作 → 真的执行了那条命令
+receiveFromPanel?.({ type: 'start:run', id: 'capture' });
+check(
+  await waitFor(() => executedCommands.some((c) => c.id === 'anchorExplain.capture')),
+  '点「讲解选中的代码」→ 执行的是那条命令（面板只是指路，命令是唯一实现）',
+);
+
+// 表里没有的 id：什么都不做（webview 是不可信输入）
+const executedBefore = executedCommands.length;
+receiveFromPanel?.({ type: 'start:run', id: '并不是我们的动作' });
+await new Promise((resolve) => setTimeout(resolve, 20));
+check(executedCommands.length === executedBefore, '面板回传表里没有的 id 时，一条命令都不执行');
+
+// 缺前置条件：明确提示 + 不执行（goto 在没有会话时本来是静默返回的）
+const gotoBefore = executedCommands.length;
+const warnedBefore = messages.length;
+receiveFromPanel?.({ type: 'start:run', id: 'goto' });
+await waitFor(() => messages.length > warnedBefore);
+check(
+  messages.length === warnedBefore + 1 && (messages.at(-1) ?? '').includes('没有进行中的讲解'),
+  '没有会话时点「跳到指定步」：说清为什么，而不是静默什么都不发生',
+  messages.at(-1) ?? '(无)',
+);
+check(executedCommands.length === gotoBefore, '……并且没有真的去执行 goto');
+
+// 线2 没装：面板照实说，点了也明确提示（那条命令**根本不存在**，不能让它抛"命令未找到"）
+peerInstalled = false;
+const beforePeerRefresh = posted.length;
+receiveFromPanel?.({ type: 'start:ready' });
+await waitFor(() => posted.length > beforePeerRefresh);
+const peerModel = posted.at(-1)?.model;
+check(peerModel?.status?.[1]?.tone === 'warn', '线2 缺失时状态行是警示色（不是悄悄留白）');
+check(
+  peerModel?.sections?.some((section) => section.actions.some((a) => a.id === 'selectRegion' && !a.enabled)),
+  '线2 缺失时「框选 PDF 区域」是灰的',
+);
+
+const peerBefore = executedCommands.length;
+const peerWarnedBefore = messages.length;
+receiveFromPanel?.({ type: 'start:run', id: 'selectRegion' });
+await waitFor(() => messages.length > peerWarnedBefore);
+check(
+  messages.length === peerWarnedBefore + 1 && (messages.at(-1) ?? '').includes('anchor.anchor-pdf'),
+  '线2 缺失时点了它：明确说没装，而不是抛一个 VS Code 的"命令未找到"',
+  messages.at(-1) ?? '(无)',
+);
+check(executedCommands.length === peerBefore, '……并且没有真的去执行那条不存在的命令');
+peerInstalled = true;
+
+// .vscodeignore：图标与演练的 markdown 必须打进 .vsix，否则装了扩展也是个没有图标的按钮
+const extIgnoreText = readFileSync(join(PKG_DIR, '.vscodeignore'), 'utf8');
+check(
+  !extIgnoreText.includes('assets/') && !extIgnoreText.includes('media/'),
+  '.vscodeignore 没把 assets/ 或 media/ 排除（打 .vsix 时它们要跟着走）',
+);
 
 // ---- S2 接线的硬判据：假选区必须**从产物里整体消失** ----------------------
 // S2 删掉的是 `commands.ts` 里 `createFakeEditorPort(...)` 那行覆盖。删干净了没有，

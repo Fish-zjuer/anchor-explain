@@ -336,6 +336,7 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `anchorExplain.goto` | 跳到指定步 | `ctrl+alt+w` | `anchorExplain.walkthroughActive` |
 | `anchorExplain.playPause` | 播放 / 暂停 | `ctrl+shift+space` | `anchorExplain.walkthroughActive` |
 | `anchorExplain.explainAnchor` | 接受外部 Anchor 并起讲解（跨扩展入口） | — | — |
+| `anchorExplain.showStart` | 打开开始界面（把活动栏的「开始」视图聚焦出来，**S8 新增**） | `ctrl+alt+a` / `cmd+alt+a` | `!inputFocus` |
 | `anchorExplain.showState` | 显示当前状态（F2 的骨架验证命令） | — | — |
 | `anchorExplain.setApiKey` | 把某个 provider 的 API Key 存进 `SecretStorage`（**S3 新增**） | — | — |
 | `anchorPdf.openInAnchorViewer` | 用 Anchor 的 PDF 视图打开 | — | — |
@@ -355,8 +356,11 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 两侧的值都写在 `contributes.keybindings` 的 `key` / `mac` 里，并由
 `test/keybindingResolve.test.ts` 的耦合锁与 `WALKTHROUGH_CHORDS` 逐字比对。
 
-**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 8 个 ext-A 命令；
+**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 10 个 ext-A 命令；
 `scripts/smoke-extension.mjs` 有一条锁断言「`package.json` 声明的命令 == 实际注册的命令」。
+
+**`showStart` 的 `when: !inputFocus`（S8）**：与 `stop` 同一个立场（D11）——"打开开始界面"
+这件事没有急到要在一个输入框里抢下 `Ctrl+Alt+A`。
 
 **`title` / `category` 约定（F2 冻结）**：命令的 `title` **只写动作**（如 `显示状态`），
 分类统一由 `category: "Anchor"` 提供，命令面板里显示为 `Anchor: 显示状态`。
@@ -554,6 +558,43 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
   用户报过"找不到状态栏提示"，而"看不见"有两种可能（没显示 / 显示了但没找到），
   只有把这两个值读出来才能分辨。
 
+### §5.5 ext-A 内部：宿主 ↔ 开始面板 webview（S8）
+
+**入口有三处，通向同一批命令**（这也是"固定按钮"的全部内容）：
+
+| 入口 | 形态 | 声明处 |
+|---|---|---|
+| 活动栏图标 | `viewsContainers.activitybar` 的 `anchor` 容器，图标 `assets/anchor.svg` | `package.json` |
+| 面板本身 | 容器里的 `views` → `{ type: "webview", id: "anchorExplain.start", name: "开始" }` | `package.json` + `start/StartViewProvider.ts` |
+| 欢迎页「演练」卡片 | `contributes.walkthroughs` 的 `start`（四步，正文在 `media/walkthrough/*.md`） | `package.json` + `media/` |
+
+再加一条快捷键 `anchorExplain.showStart`（`ctrl+alt+a` / `cmd+alt+a`，见 §4.1）。
+**四处都不实现任何东西**：面板与演练里的按钮最终都走 §4.1 的命令。
+
+**消息（冻结）**：
+
+| 方向 | 消息 | 说明 |
+|---|---|---|
+| 面板 → 宿主 | `{ type: 'start:ready' }` | 握手。宿主收到才推第一份模型（面板可能比宿主晚很多才被打开） |
+| 面板 → 宿主 | `{ type: 'start:run', id }` | **只回传动作 id，不回传命令 ID** |
+| 宿主 → 面板 | `{ type: 'start:model', model }` | 整份快照，见 `start/startModel.ts` 的 `StartModel` |
+
+**三条不许改回去的约定**：
+
+1. **`start:run` 只带 id**。webview 是不可信输入；若它能指定"执行哪个命令"，它就能执行任意命令。
+   宿主用 `findStartAction(id)` 查 `START_ACTIONS`，查不到就丢 —— **能执行什么由宿主决定**。
+   `parseStartMessage` 因此**只查形状、不查成员资格**（守卫管"能不能读"，业务管"能不能做"）。
+2. **推的是快照，不是事件流**。侧边栏要重放缓冲（§5.3），开始面板不要：它显示"现在是什么情况"，
+   后一份天然覆盖前一份。视图没被打开过时 `refresh()` 是**空操作**，下次 `ready` 现算一份。
+3. **面板里的业务判断为零**。`start/startModel.ts` 把"状态 → 该显示什么"算完（含"灰掉时说什么"），
+   客户端脚本只渲染与派发。灰掉是**提示**，宿主执行前还会**再判一次**（两层，不是重复）。
+
+**为什么键位表要分两张（S8）**：面板上「框选 PDF 区域」显示的是**线2 的键**
+（`ctrl+alt+s`，声明在线2 的 `package.json` 里，且只在 `activeCustomEditorId == 'anchorPdf.view'` 时生效）。
+它和线1 的键一样可能被用户改掉，所以走同一套解析 —— `LINE2_CHORDS` +
+`test/keybindingResolve.test.ts` 里那条对线2 `package.json` 的镜像锁。
+**显示一个写死的默认键，就是替用户断言一件我们并不知道的事**（D10 对线2 同样成立）。
+
 ---
 
 ## §6 配置项（冻结）
@@ -662,7 +703,7 @@ function createContextRequestLogger(opts?: {
 
 ## §9 模块路径映射与落地行号
 
-### 9.1 已落地（F1 契约 / F2 骨架与替身 / S1 最小可视 / S2 真选区与确认 UI / S3 真 AI）——行号 = 实体定义所在行
+### 9.1 已落地（F1 契约 / F2 骨架与替身 / S1 最小可视 / S2 真选区与确认 UI / S3 真 AI / S4~S7 线2 / S8 固定按钮与开始面板）——行号 = 实体定义所在行
 
 | 路径 | 职责 | 关键实体行号 |
 |---|---|---|
@@ -689,25 +730,31 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/prompts/index.ts` | **S3 落地**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:24 `buildSystemPrompt`:40 `describeAnchor`:67 `buildUserPrompt`:81 `buildRepairPrompt`:102 |
 | `packages/extension-anchor/src/config.ts` | **S3 落地**。§6 配置的**纯映射**（可单测），vscode 读取在 `vscode/configSource.ts` | `ProviderSettings`:13 `AnchorConfig`:22 `DEFAULT_MAX_FETCH_ROUNDS`:31 `apiKeySecretName`:37 `resolveProvider`:63 `clampRounds`:88 `resolveConfig`:108 `describeConfig`:128 |
 | `packages/extension-anchor/src/vscode/configSource.ts` | **S3 落地**。设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 | `readAnchorConfig`:20 `storeApiKey`:49 `configuredProviderIds`:71 |
-| `packages/extension-anchor/src/commands.ts` | §4.1 九个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel。**S3 起没有任何替身** | `registerCommands`:46 `askWhatToExplain`:297 `capture`:322 |
-| `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 两处边界守卫 | `WalkthroughState`:19 `HostToSidebar`:35 `SidebarToHost`:54 `HostToSelect`:66 `SelectToHost`:71 `isAnchorLike`:102 `parseSidebarMessage`:131 |
+| `packages/extension-anchor/src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **S8 的开始面板装配与 `showStart`**。**S3 起没有任何替身** | `registerCommands`:71 `askWhatToExplain`:504 `capture`:529（S8 新增的 `makeStartModel` / `runStartAction` / `showStart` 在文件后段） |
+| `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 三处边界守卫 + **S8 起状态词表（`STATE_WORD`）也在这里**（贴着 `WalkthroughState` 放，状态栏与开始面板共说一句话） | `WalkthroughState`:20 `STATE_WORD`:30 `HostToSidebar`:53 `SidebarToHost`:72 `HostToSelect`:84 `SelectToHost`:89 `HostToStart`:113 `StartToHost`:123 `isAnchorLike`:145 `parseSidebarMessage`:174 `parseStartMessage`:200 |
 | `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**） | `ValidationIssue`:35 `ExplanationOutline`:42 `ExplanationValidation`:49 `coerceEmphasis`:66 `parseMaybeJson`:76 `validateExplanation`:299 `describeIssues`:336 || `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
 | `packages/extension-anchor/src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策 | `DecorationSpec`:25 `EMPHASES`:32 `FALLBACK_EMPHASIS`:34 `planForBeat`:40 `primaryLocationOf`:60 |
 | `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档** | `CodeWalkthroughPlayer`:83 |
 | `packages/extension-anchor/src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 | `SidebarHandlers`:17 `SidebarPanel`:28 |
-| `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（读用户实际绑定，并**交给侧边栏复用**）+ `probe()` 自检 | `StatusBarHandle`:23 `createStatusBar`:65 |
-| `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表 + JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:13 `WalkthroughChordSpec`:15 `WALKTHROUGH_CHORDS`:27 `ResolvedChord`:76 `ResolvedChords`:77 `KeyBindingEntry`:79 `defaultChords`:86 `keybindingsPathFrom`:99 `stripJsonc`:116 `parseKeybindings`:175 `resolveChords`:191 `formatChord`:258 |
+| `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（读用户实际绑定，并**交给侧边栏复用**）+ `probe()` 自检。**S8 起状态词来自 `protocol.ts`**，这里只剩图标表 | `StatusBarHandle`:24 `createStatusBar`:61 |
+| `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表（**S8 起两张：线1 的 `WALKTHROUGH_CHORDS` + 线2 的 `LINE2_CHORDS`，各有各的镜像锁**）+ JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:19 `WalkthroughChordSpec`:21 `WALKTHROUGH_CHORDS`:36 `LINE2_CHORDS`:105 `ResolvedChord`:119 `ResolvedChords`:120 `KeyBindingEntry`:122 `defaultChords`:129 `keybindingsPathFrom`:142 `stripJsonc`:159 `parseKeybindings`:218 `resolveChords`:234 `formatChord`:301 |
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
+| `packages/extension-anchor/src/describe.ts` | **S8 新增**。「说给用户听的一句话」的唯一格式化处：`Anchor: 显示状态` 与开始面板共用，两处不许各写一份 | `captureSummary`:22 |
+| `packages/extension-anchor/src/start/startModel.ts` | **S8 新增**。开始面板的内容模型：动作表（**每个动作只指向一条已声明的命令**）+ 状态→面板的纯映射。零 vscode 依赖，因此面板里没有一条业务判断 | `StartActionSpec`:27 `START_ACTIONS`:58 `findStartAction`:111 `StartModel`:139 `buildStartModel`:175 |
+| `packages/extension-anchor/src/start/StartViewProvider.ts` | **S8 新增**。活动栏里「开始」视图的宿主侧：握手 / 推模型 / 收 `start:run` / 转给命令层。**视图没被打开过就是空操作** | `StartViewHandlers`:23 `StartViewProvider`:30 |
+| `packages/extension-anchor/src/start/ui/start{Styles,ClientScript,Html}.ts` | **S8 新增**。开始面板的 webview 资源，同样全部内联；客户端脚本**只渲染与派发** | `START_STYLES`:10 `START_CLIENT_SCRIPT`:18 `renderStartHtml`:15 |
+| `packages/extension-anchor/assets/anchor.svg` | **S8 新增**。活动栏那个固定按钮的图标（24×24）。路径写错时 VS Code 只是不显示，所以 `smoke` 会去查文件在不在 | — |
+| `packages/extension-anchor/media/walkthrough/*.md` | **S8 新增**。欢迎页「演练」卡片四步的正文（`contributes.walkthroughs` 的 `media.markdown`） | `setup.md` / `capture.md` / `flow.md` / `pdf.md` |
 | `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（**S2 起五个方法全部是真的**，没有覆盖层） | `createEditorPort`:25 |
 | `packages/extension-anchor/src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` | `createFileSystemPort`:12 `countLines`:38 |
-| `packages/extension-anchor/test/*.test.ts`（11 个，133 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter` | — |
+| `packages/extension-anchor/test/*.test.ts`（13 个，161 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter`，**S8 加 `startModel` / `startUi` / `describe`** | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
-| `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器 | — |
+| `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器。**S8 起产物冒烟也真跑一遍开始面板的宿主侧**（拿到 provider 驱动它） | — |
 | `packages/extension-anchor-pdf/`（整树） | 线2：`mathematic-inc/vscode-pdf` 的 fork（**Apache-2.0**）。改动逐条见本包 `MODIFICATIONS.md` | `src/extension.ts`：`openInAnchorViewer`:45 `activate`:75 `deactivate`:85；`src/pdf-viewer-provider.ts`：`PDFViewerProvider`:99（`viewType = "anchorPdf.view"`） |
 | `packages/extension-anchor-pdf/src/anchor/rectToNormalizedBBox.ts` | **S5 新增**。像素矩形 → 「第几页 + 归一化 bbox」的**全部**换算（注入脚本一行业务数学都不做，就是为了让这门换算有单测） | `PixelRect`:17 `PageRect`:24 `intersectRects`:35 `pickDominantPage`:52 `rectToNormalizedBBox`:77 `resolveSelection`:91 |
 | `packages/extension-anchor-pdf/src/anchor/bridge.ts` | **S5 新增**。§5.2 两个联合类型的 TS 落地 + 边界守卫（注入脚本的输出和 AI 输出一样不可信） | `HostToSelect`:17 `CapturedGeometry`:33 `SelectToHost`:40 `parseSelectMessage`:92 |
-| `packages/extension-anchor-pdf/src/anchor/captureAnchor.ts` | **S5 新增**。框选 → `Anchor`（线2 版的 `CodeAdapter.capture()`） | `CaptureInput`:15 `buildPdfAnchor`:28 `describePdfAnchor`:49 |
+| `packages/extension-anchor-pdf/src/anchor/captureAnchor.ts` | **S5 新增**。框选 → `Anchor`（线2 版的 `CodeAdapter.capture()`） | `CaptureInput`:15 `buildPdfAnchor`:28 `describePdfAnchor`:52 |
 | `packages/extension-anchor-pdf/media/anchor-select.js` | **S5 新增**。注入式框选 overlay。**不是 TS、不参与类型检查、不进 bundle**（运行时从扩展目录读）。只做"跟手的事"：画橡皮筋、报像素几何 | — |
 | `packages/core/src/paths.ts` | **S5 新增**。路径归一/比较/显示名/行数 —— 从线1 的 `paths.ts` 搬上来，因为线2 也要用了 | `normPath`:13 `samePath`:17 `basenameOf`:27 `countTextLines`:37 |
 | `packages/extension-anchor-pdf/{assets,patches}/` | **上游 vendored 源码，必须提交、绝不 ignore**（根 `.gitignore` 里有专门注释；`dist/` 也因此写成 `packages/*/dist/`） | `assets/pdf.js/`（23MB）、`patches/pdf.js.patch` |
@@ -727,7 +774,9 @@ function createContextRequestLogger(opts?: {
 | 路径 | 职责 | 落地切片 |
 |---|---|---|
 | `detect()`（两条线的适配器） | **不打算落**，理由见 §3.1 上方那张表 | 不做 |
-| `packages/extension-anchor-pdf/`（整树） | 线2 fork | S4 |
+
+（S4 起线2 整树已落在 §9.1 里；S7 之后计划内的切片只剩"没有"——**S8 又把开始界面加了进来**，
+它也已在 §9.1。）
 
 ### 9.3 已知结构债
 
@@ -802,6 +851,13 @@ webview 的 HTML/客户端脚本活到了产物里。
 S3 之后还多守四件：apiKey 确实取自 SecretStorage、§8 的工具定义确实发出去了、
 取件内容以 `role=tool` 回灌且带行号、越界的取件被拒之后**整次讲解仍然继续**。
 
+**S8 起产物冒烟还会把开始面板的宿主侧真跑一遍**：它拿 `registerWebviewViewProvider` 收到的
+provider，自己造一个假视图调 `resolveWebviewView`，然后走 `start:ready` → 模型 →
+`start:run` 的完整来回（含"表里没有的 id 不执行""缺线2 时明确提示而不是抛命令未找到"）。
+面板的宿主侧逻辑因此不是靠 F5 才发现问题的。
+
+**断言条数（当前）**：`pnpm smoke` **58** 项、`pnpm smoke:chain` **115** 项、`pnpm smoke:pdf` **67** 项。
+
 `pnpm check` 把它们排在 `build` 之后。**F5 仍然不可省**：配色好不好看、流转顺不顺是手感评审，
 `pnpm smoke:chain` 只能保证"画对了行、用对了档、退出清干净"。
 
@@ -810,6 +866,8 @@ HTML 落到 `.tmp-preview/` 并起一个只读静态服务，浏览器打开即�
 它复用产物里同一份 `renderSidebarHtml` + `styles.ts` + `clientScript.ts`，
 只把 `acquireVsCodeApi` 换成桩。**它不验行为**（交互仍靠 F5），但把"改完先自己看一眼"
 这件事从"按一次 F5"降成"刷一下浏览器"，是本项目里唯一能自查 UI 排版的手段。
+**开始面板没有预览**（S8）：要看它长什么样，起 F5 点活动栏那个图标 ——
+已知缺口 12 记着这件事。
 
 ---
 

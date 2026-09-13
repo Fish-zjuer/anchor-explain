@@ -23,10 +23,75 @@
     "onCommand:anchorExplain.stop",
     "onCommand:anchorExplain.goto",
     "onCommand:anchorExplain.playPause",
+    "onCommand:anchorExplain.showStart",
     "onCommand:anchorExplain.showState",
-    "onCommand:anchorExplain.setApiKey"
+    "onCommand:anchorExplain.setApiKey",
+    "onView:anchorExplain.start"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "anchor",
+          "title": "Anchor",
+          "icon": "assets/anchor.svg"
+        }
+      ]
+    },
+    "views": {
+      "anchor": [
+        {
+          "type": "webview",
+          "id": "anchorExplain.start",
+          "name": "开始"
+        }
+      ]
+    },
+    "walkthroughs": [
+      {
+        "id": "start",
+        "title": "开始使用 Anchor",
+        "description": "把一段代码或一块 PDF 区域变成带地址的锚点：AI 讲解，并逐点高亮流转。",
+        "steps": [
+          {
+            "id": "setup",
+            "title": "配一个模型端点",
+            "description": "填 baseUrl 与模型名，再把 API Key 存进 SecretStorage（不进 settings.json）。\n[设置 API Key](command:anchorExplain.setApiKey)\n[显示当前配置](command:anchorExplain.showState)",
+            "media": {
+              "markdown": "media/walkthrough/setup.md"
+            },
+            "completionEvents": ["onCommand:anchorExplain.setApiKey"]
+          },
+          {
+            "id": "capture",
+            "title": "讲解选中的代码",
+            "description": "在编辑器里选中一段，按快捷键，或从活动栏的「开始」面板点。\n[打开开始面板](command:anchorExplain.showStart)",
+            "media": {
+              "markdown": "media/walkthrough/capture.md"
+            },
+            "completionEvents": ["onCommand:anchorExplain.capture"]
+          },
+          {
+            "id": "flow",
+            "title": "跟着讲解流转",
+            "description": "讲解是一步一步的：先铺整段的范围，再逐个逻辑点扫过去。\n[显示状态](command:anchorExplain.showState)",
+            "media": {
+              "markdown": "media/walkthrough/flow.md"
+            },
+            "completionEvents": ["onCommand:anchorExplain.next"]
+          },
+          {
+            "id": "pdf",
+            "title": "框选一块 PDF（线2）",
+            "description": "PDF 上不画任何高亮框：框选出来的位置只用来定位与取件。\n[用 Anchor 打开 PDF](command:anchorPdf.openInAnchorViewer)",
+            "media": {
+              "markdown": "media/walkthrough/pdf.md"
+            },
+            "completionEvents": ["onCommand:anchorPdf.selectRegion"]
+          }
+        ]
+      }
+    ],
     "commands": [
       {
         "command": "anchorExplain.capture",
@@ -64,6 +129,11 @@
         "category": "Anchor"
       },
       {
+        "command": "anchorExplain.showStart",
+        "title": "打开开始界面",
+        "category": "Anchor"
+      },
+      {
         "command": "anchorExplain.showState",
         "title": "显示状态",
         "category": "Anchor"
@@ -80,6 +150,12 @@
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "anchorExplain.showStart",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a",
+        "when": "!inputFocus"
       },
       {
         "command": "anchorExplain.next",

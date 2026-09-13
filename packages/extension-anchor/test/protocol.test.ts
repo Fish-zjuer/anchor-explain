@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isAnchorLike, parseSidebarMessage } from '../src/protocol.ts';
+import { STATE_WORD, isAnchorLike, parseSidebarMessage, parseStartMessage } from '../src/protocol.ts';
 
 test('isAnchorLike：合法的代码锚点放行', () => {
   assert.equal(
@@ -99,4 +99,41 @@ test('parseSidebarMessage：未知类型与非对象一律返回 null', () => {
   for (const raw of [null, 'ui:next', 7, [], {}, { type: 'ui:evil' }, { noType: true }]) {
     assert.equal(parseSidebarMessage(raw), null, JSON.stringify(raw));
   }
+});
+
+test('parseStartMessage：ready 放行，run 要非空 id', () => {
+  assert.deepEqual(parseStartMessage({ type: 'start:ready' }), { type: 'start:ready' });
+  assert.deepEqual(parseStartMessage({ type: 'start:run', id: 'capture' }), {
+    type: 'start:run',
+    id: 'capture',
+  });
+
+  for (const id of ['', null, undefined, 7, {}, []]) {
+    assert.equal(parseStartMessage({ type: 'start:run', id }), null, `id=${JSON.stringify(id)}`);
+  }
+});
+
+test('parseStartMessage：未知类型与非对象一律返回 null', () => {
+  for (const raw of [null, 'start:run', 7, [], {}, { type: 'start:evil' }, { noType: true }]) {
+    assert.equal(parseStartMessage(raw), null, JSON.stringify(raw));
+  }
+});
+
+test('parseStartMessage：**只查形状，不查 id 认不认识**（成员资格是宿主查表的活）', () => {
+  // 这条是"守卫管能不能读、业务管能不能做"这条分工的锁：
+  // 若有人把"id 必须在 START_ACTIONS 里"塞进守卫，这里会红 —— 而那会让
+  // 宿主那侧的 `findStartAction` 变成一段永远为真的死代码。
+  assert.deepEqual(parseStartMessage({ type: 'start:run', id: '并不是我们的动作' }), {
+    type: 'start:run',
+    id: '并不是我们的动作',
+  });
+});
+
+test('STATE_WORD 是 WalkthroughState 的满射（加状态时漏了词会在这里红）', () => {
+  const states = ['idle', 'running', 'playing', 'paused', 'done', 'error'] as const;
+  for (const state of states) {
+    assert.equal(typeof STATE_WORD[state], 'string', state);
+    assert.notEqual(STATE_WORD[state], '', state);
+  }
+  assert.equal(Object.keys(STATE_WORD).length, states.length, '状态词表与状态联合类型的条数不一致');
 });

@@ -14,9 +14,27 @@
 
 import { coerceBBox, isCodeLocation, isPDFLocation, isValidBBox } from '@anchor/core';
 import type { Anchor, ContextRequestLogEntry, ExplanationResult, Location } from '@anchor/core';
+import type { StartModel } from './start/startModel.ts';
 
 /** §5.3 会话状态。`done`/`error` 都会让 `anchorExplain.walkthroughActive` 落回 false（§4.2）。 */
 export type WalkthroughState = 'idle' | 'running' | 'playing' | 'paused' | 'done' | 'error';
+
+/**
+ * 状态 → 中文词。**只此一份**：状态栏（`sidebar/statusBar.ts`）与开始面板
+ * （`start/startModel.ts`）说的是同一句话，两处各写一张表早晚会分家。
+ *
+ * 放在这里而不是 UI 文件里的理由：它是 `WalkthroughState` 这个联合类型的**满射**，
+ * 与类型定义贴着放，加一个状态时不可能只改一处还能编译通过
+ * （`test/startModel.test.ts` 有一条锁遍历六个状态断言都有词）。
+ */
+export const STATE_WORD: Record<WalkthroughState, string> = {
+  idle: '已结束',
+  running: '讲解中',
+  playing: '播放中',
+  paused: '已暂停',
+  done: '已讲完',
+  error: '出错',
+};
 
 // ─────────────────────────────────────────────────────────────
 // §5.3 ext-A 内部：宿主 ↔ 侧边栏 webview
@@ -80,6 +98,31 @@ export type SelectToHost =
   | { type: 'anchor:cancelled' };
 
 // ─────────────────────────────────────────────────────────────
+// §5.5 ext-A 内部：宿主 ↔ 开始面板 webview（S8）
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 宿主 → 开始面板。**整份模型一次推过去**，不像侧边栏那样逐条重放。
+ *
+ * @anchor 为什么这个面板不需要重放缓冲：侧边栏是**事件流**（会话一步步走，每拍都要推），
+ *         而开始面板是**状态快照**（"现在是什么情况"）—— 后一条天然覆盖前一条，
+ *         所以客户端一 ready，宿主现算一份发过去就够了（`start/StartViewProvider.ts`）。
+ *         形状也不是 §5.3 那种 `session:update` 的字段拼装，而是**渲染所需的一切**都在
+ *         `StartModel` 里：面板端因此没有"从 result 自己推算下一步"这种业务判断。
+ */
+export type HostToStart = { type: 'start:model'; model: StartModel };
+
+/**
+ * 开始面板 → 宿主。
+ *
+ * `start:run` 只回传**动作 id**，不回传命令 ID —— 这是刻意的：
+ * webview 是外部输入，如果它能指定"执行哪个命令"，那它就能执行任意命令。
+ * 宿主拿 id 去 `START_ACTIONS` 里查（`start/startModel.ts` 的 `findStartAction`），
+ * 查不到就丢；能执行什么是**宿主**决定的，不是面板决定的。
+ */
+export type StartToHost = { type: 'start:ready' } | { type: 'start:run'; id: string };
+
+// ─────────────────────────────────────────────────────────────
 // 守卫
 // ─────────────────────────────────────────────────────────────
 
@@ -141,6 +184,28 @@ export function parseSidebarMessage(raw: unknown): SidebarToHost | null {
       const index = raw.index;
       if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) return null;
       return { type: raw.type, index };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * §5.5 宿主侧守卫。与 `parseSidebarMessage` 同一条规矩：不认识的形状一律 null。
+ *
+ * **这里只查形状，不查"id 认不认识"** —— 成员资格是宿主拿 `START_ACTIONS` 查的
+ * （见 `StartToHost` 的注释）。守卫管"这消息能不能读"，业务管"这动作能不能做"，
+ * 两件事分开，所以 `id` 只要是非空字符串就放行。
+ */
+export function parseStartMessage(raw: unknown): StartToHost | null {
+  if (!isRecord(raw) || typeof raw.type !== 'string') return null;
+  switch (raw.type) {
+    case 'start:ready':
+      return { type: 'start:ready' };
+    case 'start:run': {
+      const id = raw.id;
+      if (typeof id !== 'string' || id === '') return null;
+      return { type: 'start:run', id };
     }
     default:
       return null;

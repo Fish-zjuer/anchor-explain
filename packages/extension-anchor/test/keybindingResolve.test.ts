@@ -1,8 +1,9 @@
 /**
  * 键位解析的单测（D10：VS Code 没有公开 API 能查"最终生效的键位"，只能自己读 keybindings.json）。
  *
- * 最后一条是**耦合锁**：`package.json` 的 `contributes.keybindings` 与
- * `keybindingResolve.ts` 的 `WALKTHROUGH_CHORDS` 必须逐字一致 —— 否则状态栏会显示一个
+ * 最后两条是**耦合锁**：`package.json` 的 `contributes.keybindings` 与
+ * `keybindingResolve.ts` 的 `WALKTHROUGH_CHORDS` 必须逐字一致（线2 那半边是
+ * `LINE2_CHORDS` 对线2 的 package.json）—— 否则状态栏/开始面板会显示一个
  * 用户按下去没反应的键，而且不会报任何错。
  */
 
@@ -10,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  LINE2_CHORDS,
   WALKTHROUGH_CHORDS,
   defaultChords,
   formatChord,
@@ -124,14 +126,42 @@ test('耦合锁：package.json 的 contributes.keybindings 与 WALKTHROUGH_CHORD
 
 test('耦合锁：状态栏用的默认键位与 §4.1 冻结值一致', () => {
   // §4.1 的 `默认键` 列：ctrl+shift+a / alt+] / alt+[ / escape / ctrl+alt+w / ctrl+shift+space
+  // ＋ S8 的 showStart（开始界面）与 selectRegion（线2 的框选，写在线2 的 package.json 里）
   assert.deepEqual(defaultChords(false), {
     capture: 'ctrl+shift+a',
+    showStart: 'ctrl+alt+a',
     next: 'alt+]',
     prev: 'alt+[',
     stop: 'escape',
     goto: 'ctrl+alt+w',
     playPause: 'ctrl+shift+space',
+    selectRegion: 'ctrl+alt+s',
   });
+});
+
+test('耦合锁：线2 的默认键位与它自己 package.json 的声明逐字一致（S8）', () => {
+  // 开始面板上那个「框选 PDF 区域」会显示这个键。它写在线2 的 package.json 里，
+  // 于是"面板显示的键位"与"线2 实际绑的键"是两份数据 —— 这条锁让它们不能分家。
+  const pkg = JSON.parse(
+    readFileSync(new URL('../../extension-anchor-pdf/package.json', import.meta.url), 'utf8'),
+  ) as { contributes: { keybindings: { command: string; key: string; mac?: string; when?: string }[] } };
+
+  const declared = pkg.contributes.keybindings;
+  assert.equal(declared.length, LINE2_CHORDS.length, '线2 的键位条数不一致');
+
+  for (const spec of LINE2_CHORDS) {
+    const found = declared.find((k) => k.command === spec.command);
+    assert.ok(found, `线2 的 package.json 里缺 ${spec.command} 的默认键位`);
+    assert.equal(found.key, spec.key, `${spec.command} 的 key 不一致`);
+    assert.equal(found.mac, spec.mac, `${spec.command} 的 mac 不一致`);
+    assert.equal(found.when, spec.when, `${spec.command} 的 when 不一致`);
+  }
+});
+
+test('两张键位表的 id 合起来正好覆盖 ChordId（漏一条会表现为"面板不显示键"）', () => {
+  const ids = [...WALKTHROUGH_CHORDS, ...LINE2_CHORDS].map((spec) => spec.id);
+  assert.equal(new Set(ids).size, ids.length, '有重复 id，后一条会覆盖前一条');
+  assert.deepEqual([...ids].sort(), Object.keys(defaultChords(false)).sort());
 });
 
 test('耦合锁：`when` 的语义分工（改错会让某个键变哑）', () => {

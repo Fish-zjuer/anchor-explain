@@ -10,7 +10,13 @@
  * 这里判不出来 —— 那就如实回退到默认键位，而不是瞎猜。状态栏文案宁可保守也不骗人。
  */
 
-export type ChordId = 'capture' | 'next' | 'prev' | 'stop' | 'goto' | 'playPause';
+/**
+ * 全仓所有"我们给了默认键"的动作。线1 六个 + 开始界面 + 线2 的框选（S8）。
+ *
+ * `selectRegion` 是**线2 的键位**，默认键写在线2 的 `package.json` 里，
+ * 但它也是用户可能改掉的东西，所以走同一套解析 —— 面板显示的键位因此不许和线2 的声明分家。
+ */
+export type ChordId = 'capture' | 'next' | 'prev' | 'stop' | 'goto' | 'playPause' | 'showStart' | 'selectRegion';
 
 export interface WalkthroughChordSpec {
   id: ChordId;
@@ -23,7 +29,10 @@ export interface WalkthroughChordSpec {
   when: string;
 }
 
-/** 这张表是 `package.json` 里 `contributes.keybindings` 的镜像；`test/keybindingResolve.test.ts` 有一条锁比对两者。 */
+/**
+ * **线1** 的键位表。它是 `packages/extension-anchor/package.json` 里 `contributes.keybindings`
+ * 的镜像；`test/keybindingResolve.test.ts` 有一条锁逐字比对两者。
+ */
 export const WALKTHROUGH_CHORDS: readonly WalkthroughChordSpec[] = [
   {
     id: 'capture',
@@ -31,6 +40,15 @@ export const WALKTHROUGH_CHORDS: readonly WalkthroughChordSpec[] = [
     key: 'ctrl+shift+a',
     mac: 'cmd+shift+a',
     when: 'editorTextFocus',
+  },
+  {
+    // S8：固定按钮对应的那条键。`!inputFocus` 与 stop 同一个立场 ——
+    // 打开开始界面这件事没有急到要在一个输入框里抢下 Ctrl+Alt+A（D11）。
+    id: 'showStart',
+    command: 'anchorExplain.showStart',
+    key: 'ctrl+alt+a',
+    mac: 'cmd+alt+a',
+    when: '!inputFocus',
   },
   {
     id: 'next',
@@ -72,6 +90,31 @@ export const WALKTHROUGH_CHORDS: readonly WalkthroughChordSpec[] = [
   },
 ];
 
+/**
+ * **线2** 的键位表（S8）。镜像对象是 `packages/extension-anchor-pdf/package.json`。
+ *
+ * @anchor 为什么线1 要去读线2 的键位：开始面板是**整个产品**的门厅，上面写着
+ *         「框选 PDF 区域」这个动作 —— 而线2 的默认键（`ctrl+alt+s`，且只在
+ *         `activeCustomEditorId == 'anchorPdf.view'` 时生效）和线1 一样可能被用户改掉。
+ *         面板要么显示用户实际绑的键，要么什么都不显示；显示一个写死的默认键
+ *         就是**替用户断言一件我们并不知道的事**（D10 的立场对线2 同样成立）。
+ *
+ * 两张表**分开**而不是合成一张：它们各有各的镜像锁，合成一张会让"哪一行对不上"
+ * 变成一个需要二次判断的问题（`test/keybindingResolve.test.ts` 两条锁分别断言）。
+ */
+export const LINE2_CHORDS: readonly WalkthroughChordSpec[] = [
+  {
+    id: 'selectRegion',
+    command: 'anchorPdf.selectRegion',
+    key: 'ctrl+alt+s',
+    mac: 'cmd+alt+s',
+    when: "activeCustomEditorId == 'anchorPdf.view'",
+  },
+];
+
+/** 解析时两张表一起走：用户改的是"哪个键"，与它属于线1 还是线2 无关。 */
+const ALL_CHORDS: readonly WalkthroughChordSpec[] = [...WALKTHROUGH_CHORDS, ...LINE2_CHORDS];
+
 /** `null` = 用户已解绑（或绑成了空串）。状态栏遇到 `null` 就只显示动作、不显示键。 */
 export type ResolvedChord = string | null;
 export type ResolvedChords = Record<ChordId, ResolvedChord>;
@@ -85,7 +128,7 @@ export interface KeyBindingEntry {
 
 export function defaultChords(isMac: boolean): ResolvedChords {
   const out = {} as Record<ChordId, ResolvedChord>;
-  for (const spec of WALKTHROUGH_CHORDS) out[spec.id] = isMac ? spec.mac : spec.key;
+  for (const spec of ALL_CHORDS) out[spec.id] = isMac ? spec.mac : spec.key;
   return out;
 }
 
@@ -191,7 +234,7 @@ export function parseKeybindings(text: string): readonly KeyBindingEntry[] {
 export function resolveChords(entries: readonly KeyBindingEntry[], isMac: boolean): ResolvedChords {
   const out = defaultChords(isMac);
 
-  for (const spec of WALKTHROUGH_CHORDS) {
+  for (const spec of ALL_CHORDS) {
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const entry = entries[i]!;
       const command = entry.command;
