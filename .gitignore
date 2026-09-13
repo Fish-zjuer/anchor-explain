@@ -16,6 +16,9 @@ out/
 *.log
 *.tsbuildinfo
 
+# 侧边栏排版预览的产物（scripts/preview-sidebar.mjs 生成，随时可重建）
+.tmp-preview/
+
 # 操作系统
 .DS_Store
 Thumbs.db

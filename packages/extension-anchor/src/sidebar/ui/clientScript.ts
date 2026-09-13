@@ -63,9 +63,10 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     meta.appendChild(mk("span", "badge", "第 " + (index + 1) + "/" + result.steps.length + " 步"));
     if (typeof pointIndex === "number" && pointIndex >= 0) {
       var points = (result.steps[index].highlights || []).length;
-      meta.appendChild(mk("span", "badge", "第 " + (pointIndex + 1) + "/" + points + " 个逻辑点"));
+      // live：当前这一刻的位置，给它上色，其余徽章保持安静
+      meta.appendChild(mk("span", "badge live", "正在扫第 " + (pointIndex + 1) + "/" + points + " 个逻辑点"));
     } else {
-      meta.appendChild(mk("span", "badge", "整块"));
+      meta.appendChild(mk("span", "badge live", "正在看整段"));
     }
     var pct = Math.round((typeof result.confidence === "number" ? result.confidence : 0) * 100);
     meta.appendChild(mk("span", "badge", "可信度 " + pct + "%"));
@@ -74,7 +75,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   }
 
   function buildStep(step, i, current, pointIndex) {
-    var li = mk("li", "step" + (i === current ? " current" : i < current ? " dim" : ""));
+    // 压暗交给 CSS 的 .step:not(.current)：之前和之后的步骤一视同仁，
+    // 否则"还没讲到的"会和当前步一样亮，屏幕上就没有焦点可言
+    var li = mk("li", "step" + (i === current ? " current" : ""));
     li.setAttribute("data-act", "goto");
     li.setAttribute("data-index", String(i));
 
@@ -99,10 +102,12 @@ export const SIDEBAR_CLIENT_SCRIPT = `
         // 只有"当前这一步"才谈得上"正在扫第几个点"；其它步的行不参与高亮
         var scanning = i === current && k === pointIndex;
         var row = mk("li", scanning ? "scanning" : null);
-        if (scanning) row.appendChild(mk("span", "scan-mark", "▸"));
+        // 标记槽每行都占同样宽（空行也是空字符串），否则 ▸ 会把那一行整体顶右，标签列就错开了
+        row.appendChild(mk("span", "mark", scanning ? "▸" : ""));
         var emphasis = h.emphasis || "primary";
         row.appendChild(mk("span", "tag tag-" + emphasis, EMPHASIS_LABEL[emphasis] || emphasis));
         row.appendChild(mk("span", "narration", h.narration + " [" + locText(h.location) + "]"));
+        if (scanning) row.id = "anchor-scanning";
         ul.appendChild(row);
       }
       li.appendChild(ul);
@@ -189,6 +194,14 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     if (snapshot.ended) root.appendChild(mk("p", "ended", "讲解已结束。重新选中一段再发起即可。"));
     root.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
     root.appendChild(buildTrace());
+
+    // render() 每次都重建整个 DOM，容器高度归零后 scrollTop 会被夹回顶部 ——
+    // 不补这一下，用户每按一次"下一步"都会被弹回面板最上面，看不到正在讲的那一行。
+    // block:"nearest" 只在目标不可见时才滚动，所以不会打扰正在读的人。
+    var scanning = document.getElementById("anchor-scanning");
+    if (scanning && typeof scanning.scrollIntoView === "function") {
+      scanning.scrollIntoView({ block: "nearest" });
+    }
   }
 
   document.body.addEventListener("click", function (ev) {

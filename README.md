@@ -58,6 +58,8 @@ pnpm check        # 上面最后五件事串起来：typecheck → test → buil
 命令面板里另有 `Anchor: 显示状态` 可看骨架接线是否正常。
 
 **F5 不灵、或者你根本没在用 VS Code**：`pnpm devhost` 是一条等价命令（不用 F5、不用调试器）。
+**改侧边栏排版**用 `pnpm preview:sidebar`：把真实生成的侧边栏 HTML 起在本地服务上，
+浏览器打开就能看，不用起 VS Code（D50）。
 **第一次上手请照 [`packages/extension-anchor/README.md`](packages/extension-anchor/README.md)
 的「从零到看见荧光笔」走一遍** —— 那里有逐步操作、预期结果，和一张"看不到反应查这里"的对照表。
 

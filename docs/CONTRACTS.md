@@ -536,7 +536,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/test/{validateExplanation,WalkthroughSession,decorationPlan,keybindingResolve,protocol}.test.ts` | 线1 单测（58 条，`node --test`，全部 vscode-free） | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
-| `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；行号表的一次性生成器 | — |
+| `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器 | — |
 | `test/fixtures/{main.c, sample-30p.pdf}`（根） | `main.c` 第 40-48 行是假选区目标；PDF 是 S5~S7 的样本 | — |
 | `package.json` / `pnpm-workspace.yaml` / `tsconfig.base.json`（根） | workspace 与依赖声明、共用 TS 基线、pnpm 11 的 `allowBuilds` 放行（见 §9.3） | — |
 | `.gitignore` / `.gitattributes`（根） | 忽略规则与**换行符纪律**（后者是 `fakes.test.ts` 耦合锁的前提，见 §9.3） | — |
@@ -616,6 +616,12 @@ webview 的 HTML/客户端脚本活到了产物里。
 
 `pnpm check` 把它们排在 `build` 之后。**F5 仍然不可省**：配色好不好看、流转顺不顺是手感评审，
 `pnpm smoke:chain` 只能保证"画对了行、用对了档、退出清干净"。
+
+**排版预览**：`pnpm preview:sidebar`（`scripts/preview-sidebar.mjs`，D50）把**真实生成**的侧边栏
+HTML 落到 `.tmp-preview/` 并起一个只读静态服务，浏览器打开即可看排版 ——
+它复用产物里同一份 `renderSidebarHtml` + `styles.ts` + `clientScript.ts`，
+只把 `acquireVsCodeApi` 换成桩。**它不验行为**（交互仍靠 F5），但把"改完先自己看一眼"
+这件事从"按一次 F5"降成"刷一下浏览器"，是本项目里唯一能自查 UI 排版的手段。
 
 ---
 

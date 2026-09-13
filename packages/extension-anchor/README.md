@@ -176,10 +176,15 @@ pnpm devhost
 pnpm install          # 在仓库根执行
 pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（见上）
+pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 58 条
+pnpm test             # 在根执行：core 28 条 + 本包 65 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
+
+> **改侧边栏排版先跑 `pnpm preview:sidebar`**：它把**真实生成**的 HTML 落到 `.tmp-preview/`
+> 并起一个只读服务，浏览器打开就能看。排版的取舍只能靠眼睛判，而这个办法不用起 VS Code ——
+> 改完先自己看一眼，比让你按一次 F5 便宜得多。它**不验交互**（按钮、按键仍要靠 F5）。
 
 ## 测试分三层
 

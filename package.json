@@ -15,6 +15,7 @@
     "test": "pnpm -r --if-present test",
     "fixtures": "node scripts/make-fixture-pdf.mjs",
     "devhost": "code --extensionDevelopmentPath=packages/extension-anchor test/fixtures",
+    "preview:sidebar": "node scripts/preview-sidebar.mjs --serve",
     "smoke": "node scripts/smoke-extension.mjs",
     "smoke:chain": "node scripts/smoke-walkthrough.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke && pnpm smoke:chain"

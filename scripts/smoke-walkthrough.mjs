@@ -286,6 +286,20 @@ check(
   webviews[0].webview.html.includes('ANCHOR_CHORDS') && webviews[0].webview.html.includes('"next":"alt+]"'),
   '用户实际键位被内联进 webview（面板有焦点时客户端自己派发，D47）',
 );
+// 排版的两条对齐纪律 + 一条层级纪律（D50）：这几条脚本判不了观感，但能判"东西有没有到产物里"
+const html = webviews[0].webview.html;
+check(
+  html.includes('--anchor-tag-w') && html.includes('--anchor-gutter-w'),
+  '标签列与标记槽的固定宽进了产物（否则讲解文字左边缘会逐行错开）',
+);
+check(
+  html.includes('"mark"') || html.includes("'mark'"),
+  '每一行子高亮都带固定宽的标记槽（▸ 不再把那一行顶右）',
+);
+check(
+  html.includes('.step:not(.current)') || html.includes('anchor-scanning'),
+  '非当前步压暗 + 扫描行锚点都在产物里（"突出点"靠这两条）',
+);
 
 // 第 1 步：整块 40-42，**只有一个点被点亮**（第一拍 = 只铺底色）
 check(
