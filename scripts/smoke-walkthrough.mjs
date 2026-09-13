@@ -268,12 +268,17 @@ const editor = {
 let closed = false;
 let disposedThrow = false;
 
+/** D64：进度的 report 文案（链式冒烟会断言"模型在跑的时候屏幕上真有东西"） */
+const progressReports = [];
+const progressOptions = [];
+
 const vscodeStub = {
   Position,
   Range,
   ThemeColor,
   MarkdownString,
   StatusBarAlignment: { Left: 1, Right: 2 },
+  ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
   // 取值与 @types/vscode@1.90.0 的 index.d.ts 一致：OpenOpen=0、ClosedClosed=1。
   // 写反过一次（ClosedClosed: 0），那等于把"编辑时框不撑到新行"这条契约在测试里反转成相反语义。
   DecorationRangeBehavior: { OpenOpen: 0, ClosedClosed: 1, OpenClosed: 2, ClosedOpen: 3 },
@@ -283,6 +288,14 @@ const vscodeStub = {
   Uri: { file: (p) => ({ scheme: 'file', fsPath: p }) },
 
   window: {
+    // D64：讲解进度挂在通知上（状态栏可能被用户关掉）。桩把每次 report 记下来，测例断言它
+    withProgress: async (options, task) => {
+      progressOptions.push(options);
+      return task(
+        { report: (m) => progressReports.push(m.message) },
+        { onCancellationRequested: () => ({ dispose() {} }) },
+      );
+    },
     visibleTextEditors: [editor],
     activeTextEditor: editor,
     showInformationMessage: (m) => (messages.push(['info', m]), Promise.resolve(undefined)),
@@ -957,6 +970,21 @@ receiveFromWebview?.({ type: 'ui:revealStep', index: 0 });
 await flush();
 check(!executed.some((c) => c.id === 'anchorPdf.revealPage'), '代码锚点**不**去调线2（不然会在 PDF 里瞎滚）');
 check(reveals.length > 0, '代码锚点走的是编辑器里的定位（revealRange）', `${reveals.length} 次`);
+
+// ---- D64：讲解期间屏幕上必须有东西在动（用户报的是"点两次才有反应"） -----------------
+// 状态栏可以被用户关掉（真的关了：workbench.statusBar.visible=false），所以进度必须也挂在通知上，
+// 而且**取件那一段也要变成进度** —— 它在等磁盘/等解析，是最容易被误认为"卡住了"的时刻。
+check(progressOptions.some((o) => o.location === 15 && o.cancellable === true), '进度挂在通知上，且可取消');
+check(
+  progressReports.some((m) => m.includes('正在请求模型')),
+  '报告了"正在请求模型…"（模型在后台跑的时候，屏幕上得有字）',
+  progressReports.join(' | ').slice(0, 160),
+);
+check(
+  progressReports.some((m) => m.includes('取件')),
+  '取件那一段也变成了进度（AI 的"背后操作"要看得见）',
+  progressReports.filter((m) => m.includes('取件')).join(' | '),
+);
 
 // ---- 收尾 -----------------------------------------------------------------
 Module._load = originalLoad;

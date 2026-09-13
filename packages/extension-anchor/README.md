@@ -352,7 +352,7 @@ pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（会先 build，见上）
 pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 170 条 + 线2 12 条
+pnpm test             # 在根执行：core 28 条 + 本包 171 条 + 线2 12 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
 
@@ -364,9 +364,9 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（170 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
+| 单测（171 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
 | 产物冒烟（73 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示 → 「配置模型端点」「打开设置」都真的落到命令上） |
-| 链路冒烟（115 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
+| 链路冒烟（118 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
 
 这三层都只对**最外层边界**（`vscode` 模块）打桩，桩之外全是真代码。
 它们**都不替代 F5**：配色好不好看、流转顺不顺、面板点下去什么反应，只有肉眼看才算数。

@@ -187,3 +187,17 @@ test('findStartAction：表里有就有、没有就是 undefined（宿主据此�
   assert.equal(findStartAction('随便什么东西'), undefined);
   assert.equal(findStartAction(''), undefined);
 });
+
+test('讲解进行中时，面板那一行显示**阶段**而不是"没有进行中的讲解"（D64）', () => {
+  // 用户报的两件事其实是同一个病：模型在背后跑十几秒，屏幕上毫无动静 → 他以为没反应，又点了一次。
+  const model = buildStartModel(input({ busy: '正在请求模型…' }));
+  const line = model.status.find((item) => item.label === '讲解');
+  assert.equal(line?.value, '正在请求模型…');
+  assert.equal(line?.tone, 'ok');
+
+  // 阶段压过旧的会话状态：正在跑新的讲解时，别显示上一轮的"第 2/5 步"
+  const both = buildStartModel(
+    input({ busy: '第 1 轮取件：{"type":"file"} → 12 字', session: { index: 1, total: 5, state: 'done', stale: false } }),
+  );
+  assert.equal(both.status.find((i) => i.label === '讲解')?.value, '第 1 轮取件：{"type":"file"} → 12 字');
+});

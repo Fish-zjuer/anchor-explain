@@ -178,6 +178,11 @@ export interface StartModelInput {
   readonly peerInstalled: boolean;
   /** `captureSummary(...)` 的结果；`null` = 还没捕获过 */
   readonly captureSummary: string | null;
+  /**
+   * 正在进行的阶段（D64），例如"正在请求模型…"。有值就压过会话那一行 ——
+   * **模型在背后跑的时候，屏幕上必须有东西在动**，否则用户会以为没反应而再点一次。
+   */
+  readonly busy?: string;
   readonly session: {
     readonly index: number;
     readonly total: number;
@@ -243,10 +248,12 @@ export function buildStartModel(input: StartModelInput): StartModel {
     },
     {
       label: '讲解',
-      value: session
-        ? `第 ${session.index + 1}/${session.total} 步 · ${STATE_WORD[session.state]}${session.stale ? ' · 文件已改动' : ''}`
-        : '没有进行中的讲解',
-      tone: session ? 'ok' : 'muted',
+      value: input.busy
+        ? input.busy
+        : session
+          ? `第 ${session.index + 1}/${session.total} 步 · ${STATE_WORD[session.state]}${session.stale ? ' · 文件已改动' : ''}`
+          : '没有进行中的讲解',
+      tone: input.busy ? 'ok' : session ? 'ok' : 'muted',
     },
   ];
 

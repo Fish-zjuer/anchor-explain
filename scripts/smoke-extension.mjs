@@ -50,15 +50,27 @@ const inputAnswers = [];
 let warningAnswer;
 /** 设置写入的记录（`Anchor: 配置模型端点` 会写它 —— 这条要验） */
 const settingsWrites = [];
+/** D64：进度的 report 文案 */
+const progressReports = [];
+const progressOptions = [];
 let activeTextEditor;
 let peerInstalled = false;
 
 const vscodeStub = {
   StatusBarAlignment: { Left: 1, Right: 2 },
+  ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
   // S8：`Anchor: 配置模型端点` 用 `ConfigurationTarget.Global` 写用户设置。
   // 漏了它的话 `update()` 会抛 TypeError，而那正好又是一次"点了没反应" —— 桩必须齐。
   ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
   window: {
+    // D64：讲解进度挂在通知上（状态栏可能被用户关掉）。桩把每次 report 记下来，测例断言它
+    withProgress: async (options, task) => {
+      progressOptions.push(options);
+      return task(
+        { report: (m) => progressReports.push(m.message) },
+        { onCancellationRequested: () => ({ dispose() {} }) },
+      );
+    },
     get activeTextEditor() {
       return activeTextEditor;
     },

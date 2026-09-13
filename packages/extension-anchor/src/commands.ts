@@ -125,8 +125,13 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 取件日志的落点（§7 要求每个 `ContextRequest` 都记录，含被拒的）。
    * 侧边栏的 ToolTrace 面板还没做（不在任何切片范围内），所以先落到输出通道 ——
    * 排查"模型为什么讲歪了"时，这张表是唯一能看的东西。
+   *
+   * **同一份记录还要喂给进度**（D64）：用户的原话是"AI 的操作在背后看不到会有焦虑感"，
+   * 而取件正是最该被看见的那一段 —— 它在等磁盘/等解析，屏幕上却毫无动静。
    */
   let output: vscode.OutputChannel | undefined;
+  /** 当前这次讲解的进度回调。`explain` 期间有值，结束就清掉（避免下一轮误用）。 */
+  let onPhase: ((message: string) => void) | undefined;
   const loggerOf = (): ContextRequestLogger => {
     output ??= vscode.window.createOutputChannel('Anchor');
     return createContextRequestLogger({
@@ -136,6 +141,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
           `[${new Date(entry.at).toLocaleTimeString()}] 第 ${entry.round} 轮 ${verdict} ` +
             `${entry.request.type} ${JSON.stringify(entry.request.params)} — ${entry.request.reason}` +
             (entry.resultChars !== undefined ? `（${entry.resultChars} 字）` : ''),
+        );
+        onPhase?.(
+          entry.accepted
+            ? `第 ${entry.round} 轮取件：${JSON.stringify(entry.request.params)} → ${entry.resultChars ?? 0} 字`
+            : `第 ${entry.round} 轮取件被拒（${entry.rejectReason ?? ''}）—— 让它基于现有信息作答`,
         );
       },
     });
@@ -154,6 +164,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 只有会话维度是逐点扫描时每拍都变的 —— 只有它需要去重。
    */
   let startKey: string | undefined;
+  /**
+   * 这次讲解走到哪一步了（D64）。**只在与用户在的地方显示**：开始面板上那一行
+   * "讲解：正在请求模型…"。没有它，模型在背后跑十几秒，屏幕上毫无动静 ——
+   * 用户就会再点一次（看起来像"要点两次"）。
+   */
+  let busyPhase: string | undefined;
   /**
    * 最近一次捕获的锚点与范围。**只为 `Anchor: 显示状态` 而留**：
    * 真选区接上之后，"我选的是不是我以为的那段"变成了唯一无法从屏幕上直接看出来的事
@@ -334,6 +350,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       providerSummary: describeConfig(cfg),
       peerInstalled: peer() !== undefined,
       captureSummary: lastLine,
+      busy: busyPhase,
       session: snapshot
         ? { index: snapshot.index, total: snapshot.total, state: snapshot.state, stale: snapshot.stale }
         : null,
@@ -496,34 +513,87 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const gen = (generation += 1);
     status.showBusy('正在讲解…');
 
-    let result: ExplanationResult;
-    try {
-      const prepared = await withPdfText(anchor);
-      const provider = await makeProvider(prepared);
-      const produced = await provider(prepared);
-      // 期间用户又发起了一次：这次的结果已经过期，直接丢掉。
-      // 没有这道闸，先发后到的那次会把 UI 拽回旧讲解（真 AI 下必然遇到）。
-      if (gen !== generation) return;
+    /**
+     * 进度**必须挂在通知上**，不能只挂状态栏（D64）。
+     *
+     * @anchor 用户的原话："AI 的操作在背后看不到会有焦虑感"，而且他的 VS Code 把状态栏关了
+     *         （`workbench.statusBar.visible: false`）—— 我们唯一的进度提示因此**根本不可见**。
+     *         于是"点一次没反应、点第二次才行"：他没在点第二次，他是在**再点一次碰运气**，
+     *         而那个时候第一次的请求刚好回来了。
+     *
+     * 三处一起给：状态栏（有人看）/ 通知（一定看得见，还能取消）/ 开始面板（他就是在那儿点的）。
+     */
+    let cancelled = false;
+    let result: ExplanationResult | undefined;
 
-      // 第二道闸：编排层内部已经过了一次 §3.3，这里再查一次。
-      // 不是不信任它，而是"渲染层只消费校验过的数据"这条规矩不该有例外 ——
-      // 编排层将来多一条产出路径（比如缓存命中），这里仍然拦得住。
-      const verdict = validateExplanation(produced, prepared, await makeOutline(prepared));
-      if (!verdict.ok) {
-        throw new AnchorError('SCHEMA_VIOLATION', `AI 输出未通过校验：${describeIssues(verdict.issues)}`, {
-          issues: verdict.issues,
+    const setPhase = (message: string): void => {
+      busyPhase = message;
+      refreshStart(); // 他就是在这块面板上点的按钮 —— 进度必须在那儿看得见
+    };
+
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Anchor：正在讲解', cancellable: true },
+      async (progress, token) => {
+        token.onCancellationRequested(() => {
+          cancelled = true;
         });
-      }
-      result = verdict.result;
-    } catch (err) {
-      if (gen !== generation) return;
-      status.hide();
-      setActive(false);
-      setContextKey('anchorExplain.sessionOpen', false);
-      void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
+        const report = (message: string): void => {
+          progress.report({ message });
+          setPhase(message);
+        };
+
+        try {
+          report('正在准备锚点…');
+          const prepared = await withPdfText(anchor);
+
+          report('正在读模型配置…');
+          onPhase = report; // 取件记录也变成进度（第 N 轮取件 / 被拒）
+          const provider = await makeProvider(prepared);
+
+          report('正在请求模型…');
+          const produced = await provider(prepared);
+          onPhase = undefined;
+
+          // 期间用户又发起了一次：这次的结果已经过期，直接丢掉。
+          // 没有这道闸，先发后到的那次会把 UI 拽回旧讲解（真 AI 下必然遇到）。
+          if (gen !== generation) return;
+          if (cancelled) {
+            void vscode.window.showInformationMessage('Anchor：已取消。');
+            return;
+          }
+
+          report('模型已回，正在校验输出…');
+          // 第二道闸：编排层内部已经过了一次 §3.3，这里再查一次。
+          // 不是不信任它，而是"渲染层只消费校验过的数据"这条规矩不该有例外 ——
+          // 编排层将来多一条产出路径（比如缓存命中），这里仍然拦得住。
+          const verdict = validateExplanation(produced, prepared, await makeOutline(prepared));
+          if (!verdict.ok) {
+            throw new AnchorError('SCHEMA_VIOLATION', `AI 输出未通过校验：${describeIssues(verdict.issues)}`, {
+              issues: verdict.issues,
+            });
+          }
+          result = verdict.result;
+        } catch (err) {
+          if (gen !== generation) return;
+          status.hide();
+          setActive(false);
+          setContextKey('anchorExplain.sessionOpen', false);
+          void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
+        } finally {
+          onPhase = undefined;
+        }
+      },
+    );
+
+    // **「讲解失败」与「渲染失败」在这里被分开**（D49）：只有 provider / 校验的失败才算讲解失败；
+    // 一旦有了合法的 `ExplanationResult`，`startSession` 就在 try **之外**调用 ——
+    // 否则渲染面的一次异常会走进 catch，把好不容易拿到的讲解当成失败丢掉。
+    if (!result) {
+      busyPhase = undefined;
+      refreshStart();
       return;
     }
-
+    busyPhase = undefined;
     startSession(result);
   }
 
