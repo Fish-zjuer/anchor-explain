@@ -16,19 +16,100 @@
   ],
   "main": "./dist/extension.cjs",
   "activationEvents": [
+    "onCommand:anchorExplain.capture",
+    "onCommand:anchorExplain.explainAnchor",
+    "onCommand:anchorExplain.next",
+    "onCommand:anchorExplain.prev",
+    "onCommand:anchorExplain.stop",
+    "onCommand:anchorExplain.goto",
+    "onCommand:anchorExplain.playPause",
     "onCommand:anchorExplain.showState"
   ],
   "contributes": {
     "commands": [
       {
+        "command": "anchorExplain.capture",
+        "title": "捕获选区并讲解",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.explainAnchor",
+        "title": "讲解外部锚点",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.next",
+        "title": "下一步",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.prev",
+        "title": "上一步",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.stop",
+        "title": "退出讲解",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.goto",
+        "title": "跳到指定步",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.playPause",
+        "title": "播放或暂停",
+        "category": "Anchor"
+      },
+      {
         "command": "anchorExplain.showState",
         "title": "显示状态",
         "category": "Anchor"
       }
+    ],
+    "keybindings": [
+      {
+        "command": "anchorExplain.capture",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "anchorExplain.next",
+        "key": "alt+]",
+        "mac": "alt+]",
+        "when": "anchorExplain.walkthroughActive"
+      },
+      {
+        "command": "anchorExplain.prev",
+        "key": "alt+[",
+        "mac": "alt+[",
+        "when": "anchorExplain.walkthroughActive"
+      },
+      {
+        "command": "anchorExplain.stop",
+        "key": "escape",
+        "mac": "escape",
+        "when": "anchorExplain.sessionOpen && !inputFocus"
+      },
+      {
+        "command": "anchorExplain.goto",
+        "key": "ctrl+alt+w",
+        "mac": "cmd+alt+w",
+        "when": "anchorExplain.walkthroughActive"
+      },
+      {
+        "command": "anchorExplain.playPause",
+        "key": "ctrl+shift+space",
+        "mac": "cmd+shift+space",
+        "when": "anchorExplain.walkthroughActive"
+      }
     ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
     "@anchor/core": "workspace:*"

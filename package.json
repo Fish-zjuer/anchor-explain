@@ -15,7 +15,8 @@
     "test": "pnpm -r --if-present test",
     "fixtures": "node scripts/make-fixture-pdf.mjs",
     "smoke": "node scripts/smoke-extension.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
+    "smoke:chain": "node scripts/smoke-walkthrough.mjs",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke && pnpm smoke:chain"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

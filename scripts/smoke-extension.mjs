@@ -5,23 +5,32 @@
  * "假货只允许出现在最外层边界"）。除此之外全是真的：真产物、真 require、
  * 真的走 `activate` → `registerCommand` → 命令回调。
  *
- * 它守住三件事，任何一件坏了都在 CI/命令层面立刻可见，不用靠 F5 肉眼看：
+ * 它守住四件事，任何一件坏了都在命令层面立刻可见，不用靠 F5 肉眼看：
  *   1. 产物是合法 CommonJS（宿主的 require 不吃 ESM 入口）
- *   2. activate 确实注册了命令
+ *   2. activate 确实注册了命令，且**与 package.json 声明的命令逐一对齐**
+ *      （声明了没注册 → 用户点了报"命令未找到"；注册了没声明 → 命令面板里看不见）
  *   3. 命令回调能跑通，且 `@anchor/core` 真的被 bundle 进去了（不是只"编译通过"）
+ *   4. 侧边栏 webview 的 HTML/客户端脚本确实活到了产物里（它们是字符串常量，
+ *      打包器一旦把它们当死代码去掉，F5 时才会表现为"面板一片空白"）
  *
  * 用法：node scripts/smoke-extension.mjs
  */
 
 import Module from 'node:module';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BUNDLE = path.join(ROOT, 'packages', 'extension-anchor', 'dist', 'extension.cjs');
-const EXPECTED_COMMAND = 'anchorExplain.showState';
+const PKG_DIR = path.join(ROOT, 'packages', 'extension-anchor');
+const BUNDLE = path.join(PKG_DIR, 'dist', 'extension.cjs');
+const SHOW_STATE = 'anchorExplain.showState';
 const PEER_ID = 'anchor.anchor-pdf';
+
+const pkg = JSON.parse(readFileSync(path.join(PKG_DIR, 'package.json'), 'utf8'));
+const declaredCommands = pkg.contributes.commands.map((c) => c.command);
+const declaredKeybindings = pkg.contributes.keybindings;
 
 const failures = [];
 const check = (ok, label, detail = '') => {
@@ -32,10 +41,13 @@ const check = (ok, label, detail = '') => {
 // ---- 桩：vscode 模块 -------------------------------------------------------
 const messages = [];
 const registered = new Map();
+const statusBarItems = [];
+const executedCommands = [];
 let activeTextEditor;
 let peerInstalled = false;
 
 const vscodeStub = {
+  StatusBarAlignment: { Left: 1, Right: 2 },
   window: {
     get activeTextEditor() {
       return activeTextEditor;
@@ -44,16 +56,59 @@ const vscodeStub = {
       messages.push(msg);
       return Promise.resolve(undefined);
     },
+    showWarningMessage(msg) {
+      messages.push(msg);
+      return Promise.resolve(undefined);
+    },
+    showErrorMessage(msg) {
+      messages.push(msg);
+      return Promise.resolve(undefined);
+    },
+    createStatusBarItem() {
+      const item = {
+        text: '',
+        tooltip: undefined,
+        command: undefined,
+        shown: false,
+        show() {
+          item.shown = true;
+        },
+        hide() {
+          item.shown = false;
+        },
+        dispose() {},
+      };
+      statusBarItems.push(item);
+      return item;
+    },
   },
   commands: {
     registerCommand(id, handler) {
       registered.set(id, handler);
       return { dispose() {} };
     },
+    executeCommand(id, ...args) {
+      executedCommands.push({ id, args });
+      return Promise.resolve(undefined);
+    },
   },
   workspace: {
     asRelativePath(uri) {
       return uri.fsPath;
+    },
+    // 状态栏会读一次用户的 keybindings.json。这里让它 reject（文件就是不存在），
+    // 走的正是"读不到就回退默认键位"那条真实分支。
+    fs: {
+      readFile() {
+        return Promise.reject(new Error('ENOENT: keybindings.json'));
+      },
+    },
+    // staleness 与"编辑器关闭即收工"两条订阅（§4.2）
+    onDidChangeTextDocument() {
+      return { dispose() {} };
+    },
+    onDidCloseTextDocument() {
+      return { dispose() {} };
     },
   },
   extensions: {
@@ -85,11 +140,25 @@ check(typeof ext.activate === 'function', '导出 activate');
 check(typeof ext.deactivate === 'function', '导出 deactivate');
 
 const subscriptions = [];
-ext.activate({ subscriptions: { push: (d) => subscriptions.push(d) } });
+ext.activate({
+  subscriptions: { push: (...items) => subscriptions.push(...items) },
+  globalStorageUri: { fsPath: path.join(ROOT, '.tmp-smoke', 'User', 'globalStorage', 'anchor.anchor-explain') },
+});
 check(subscriptions.length > 0, 'activate 往 subscriptions 里注册了东西', `${subscriptions.length} 项`);
 
-const handler = registered.get(EXPECTED_COMMAND);
-check(typeof handler === 'function', `注册了命令 ${EXPECTED_COMMAND}`);
+// ---- 声明 ↔ 注册 对齐 ------------------------------------------------------
+const missing = declaredCommands.filter((id) => !registered.has(id));
+const undeclared = [...registered.keys()].filter((id) => !declaredCommands.includes(id));
+check(missing.length === 0, 'package.json 声明的命令全部已注册', missing.join(', ') || `${declaredCommands.length} 个`);
+check(undeclared.length === 0, '没有"注册了但没声明"的命令（那种命令面板里看不见）', undeclared.join(', ') || 'ok');
+
+const orphanBindings = declaredKeybindings.filter((k) => !declaredCommands.includes(k.command)).map((k) => k.command);
+check(orphanBindings.length === 0, 'keybindings 指向的都是已声明的命令', orphanBindings.join(', ') || `${declaredKeybindings.length} 条`);
+
+// ---- showState 命令本身 ----------------------------------------------------
+const handler = registered.get(SHOW_STATE);
+check(typeof handler === 'function', `注册了命令 ${SHOW_STATE}`);
+check(statusBarItems.length === 1, 'activate 建了状态栏项（讲解期间的常驻入口）');
 
 // 情景 A：没有打开的编辑器
 peerInstalled = false;
@@ -108,6 +177,28 @@ handler?.();
 const msg = messages.at(-1) ?? '';
 check(msg.includes('第 40-48 行'), 'locationLabel（来自 @anchor/core）在产物里输出正确行号', msg);
 check(msg.includes('已安装'), '对端已安装时如实报告');
+
+// ---- 侧边栏资源活着 --------------------------------------------------------
+const bundleText = readFileSync(BUNDLE, 'utf8');
+check(bundleText.includes('acquireVsCodeApi'), 'webview 客户端脚本进了产物');
+check(bundleText.includes('ui:ready'), 'webview 启动握手（ui:ready）进了产物');
+check(bundleText.includes("default-src 'none'"), '侧边栏 CSP 进了产物');
+check(bundleText.includes('anchorExplain.walkthroughActive'), 'context key 名进了产物（键位 when 生效的前提）');
+check(bundleText.includes('anchorExplain.sessionOpen'), 'sessionOpen 也在产物里（ESC 在 done 之后仍有效的前提，D46）');
+
+// ---- 纯视觉：产物里根本不存在写文件的路径 ----------------------------------
+// 比运行期断言更强：不是"这次没调用"，而是"没有可调用的东西"。
+// 用词边界匹配：裸 includes('TextEdit') 会被 TextEditorDecorationType 误命中。
+const writeApiPatterns = [
+  [/\bapplyEdit\b/, 'applyEdit'],
+  [/\bWorkspaceEdit\b/, 'WorkspaceEdit'],
+  [/\bTextEdit\b/, 'TextEdit'],
+  [/\binsertSnippet\b/, 'insertSnippet'],
+  [/\bsaveAll\b/, 'saveAll'],
+  [/\bcreateFileSystemWatcher\b/, 'createFileSystemWatcher'],
+];
+const leaked = writeApiPatterns.filter(([re]) => re.test(bundleText)).map(([, name]) => name);
+check(leaked.length === 0, '产物里没有任何文档写入 API', leaked.join(', ') || '一个都没有');
 
 ext.deactivate();
 check(true, 'deactivate 可调用');

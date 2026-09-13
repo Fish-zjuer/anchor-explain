@@ -15,7 +15,7 @@
 |---|---|---|---|
 | F1 | 契约冻结：`packages/core` 类型与 ports 落地 | 自动化 | 完成 `slice-F1` |
 | F2 | 走通骨架 + 测试台（能装能编能跑能测 + 假货 + fixture） | 自动化 | 完成 `slice-F2` |
-| S1 | 线1 最小可视：F5 → main.c → FakeProvider 写死 3 step → 高亮流转 → ESC 清除 | **用户实操确认** | — |
+| S1 | 线1 最小可视：F5 → main.c → FakeProvider 写死 3 step → 高亮流转 → ESC 清除 | **用户实操确认** | 代码与自动化完成 `slice-S1`，**待用户 F5 确认** |
 | S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 | — |
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | — |
 | S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | — |
@@ -139,6 +139,56 @@
   - 键位走 `contributes.keybindings` 默认声明，**不硬编码 Space**
   - 状态栏提示**反映用户实际绑定**
 - **回退点**：`slice-F2`
+- **状态**：实现与自动化验收完成（2026-09-13）。**硬门未过：等用户 F5 实操确认后才进 S2。**
+
+### S1 实际落地
+
+声明范围全部落地，另有几处**声明外的新增**（都是把"最小可视"补成一条能自动验的链路，逐条说明理由）：
+
+| 文件 | 说明 |
+|---|---|
+| `src/orchestrator/validateExplanation.ts` | 声明内。§3.3 全条 + 两条实现约定（D44 严一格；emphasis 未知值降级） |
+| `src/protocol.ts` | 声明内。§5 全部消息类型 + 两处边界守卫（`isAnchorLike` / `parseSidebarMessage`） |
+| `src/playback/{WalkthroughSession,CodeWalkthroughPlayer}.ts` | 声明内 |
+| `src/playback/decorationPlan.ts` | **新增**。「该画哪些框」的纯决策。理由：播放器的决策若和 vscode 调用混在一起，配色分支就没法在 `node --test` 里验，只能靠肉眼看 |
+| `src/sidebar/{SidebarPanel,statusBar,keybindingResolve}.ts` + `ui/*` | 声明内。`ui/` 是三个 TS 模块（内联进 webview，D42），不是静态资源目录 |
+| `src/vscode/ports/{editorPort,fileSystemPort}.ts` | 声明内。四个方法里只有 `getSelection` 被替身顶掉，其余 S1 起就是真实现 |
+| `src/paths.ts` | **新增**。路径归一/比较/行数。理由：`"同一个文件"`这个判断出现在四处（校验闸门、播放器、端口、staleness），各写一遍早晚有一处写成严格比较，表现为"高亮跑到另一个标签页" |
+| `src/commands.ts` | 声明内。8 个命令 + 四层装配 + **唯一的假货接线点** |
+| `test/*.test.ts`（5 个，54 条） | **新增**。补上约束 16 说的空格 |
+| `scripts/smoke-walkthrough.mjs` | **新增**（D43）。`capture` 从选区跑到 decoration 的链路冒烟 |
+| `scripts/def-lines.mjs` | **新增**。`CONTRACTS §9.1` 行号表的一次性生成器，防手写行号漂移 |
+
+**两处偏离，均已声明**：
+
+1. `adapters/CodeAdapter.ts` **没有落地** —— `capture()` 的等价逻辑（选区 → `Anchor`）
+   临时住在 `commands.ts` 的 `buildAnchor()` 里，S2 搬走。理由：S1 手里只有一条来源线，
+   提前抽 `SourceAdapter` 接口等于凭空猜第二个消费者的形状。
+2. `contributes.keybindings` 额外给了 mac 变体（`key` + `mac` 两个字段）。§4.1 只写了 ctrl 形式，
+   但 `keybindings` 的 `mac` 字段本来就是为这件事存在的（D45）。
+
+### S1 自动化验收结果
+
+`pnpm check`：typecheck 0 错 → **86 测**（core 28 + ext 58）全过 → build 299.6kb →
+`pnpm smoke` **19 项** → `pnpm smoke:chain` **43 项**（数字都是运行时实际执行到的断言数，
+不是 `grep` 出来的调用点数）。链路冒烟的硬断言包括
+「第 1 步底色在第 40-42 行、context 在 40、definition 在 42」「next 后底色换到 44-45」
+「caveat 在 46」「5 个 decoration type 全部 `isWholeLine` + `ClosedClosed` + 主题色、无写死颜色」
+「done 时状态栏是「已讲完」且不再展示已失效的 next/prev」「`sessionOpen` 在 done 时仍为 true」
+「stop 后所有 decoration type 清空」「`main.c` 字节未变」「`applyEdit` 从未被调用」，
+外加 `pnpm smoke` 的一条结构性断言：**产物里根本不存在写文件的 API**。
+
+**独立只读校验（D32）抓到并已修的问题**（详见 `DECISIONS.md` D46 / D47）：
+① `done` 之后 `escape` 变死键 → 最后一步的框再也清不掉；② 状态栏在 `done` 时仍写「讲解中」
+并展示三个已失效的键；③ 用户解绑某个键时，状态栏把**动作**一起删掉了；
+④ `isAnchorLike` 放行 `web` 与 `NaN` 行号，把"锚点不合法"报成"AI 输出不合法"；
+⑤ 连按两次 capture 会留下一个仍然活着的旧会话；⑥ 冒烟桩把 `DecorationRangeBehavior`
+的两个枚举值写反了（等于把"编辑时框不撑到新行"在测试里反转）；⑦ 三份文档把
+`engines.vscode` 必须写成"精确版本"，实际它应当是范围（见 D39 的更正）。
+
+**未被自动化覆盖、必须靠这次 F5 的**：配色好不好看、流转顺不顺、`borderWidth: '0 0 0 3px'`
+在真实主题下渲染成什么样、以及**焦点落在侧边栏面板里时键位还灵不灵**（D47 的转发逻辑
+无法在本机验证，见 STATE.md 的 F5 检查项 5）。
 
 ## S2 线1 触发与确认 UI
 

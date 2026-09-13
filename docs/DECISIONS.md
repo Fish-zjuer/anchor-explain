@@ -300,6 +300,164 @@
 
 ---
 
+## D41 步级底色与 emphasis 配色分层（S1）
+
+**决策**：一个 step 的**整体范围**只画一层中性底色（`editor.selectionHighlightBackground`、无描边），
+§4.3 的四档 `emphasis` 配色**只作用于 `highlights[]` 子高亮**。两者用**各自独立的
+`TextEditorDecorationType`**，不用同一个 type 的两份 range。
+
+**理由**：步级范围（如 40-42）与子高亮（如 40、42）几乎总是重叠。若两者都用 emphasis 配色，
+两套半透明底色叠在一起会糊成一团，"哪几行是这一步、哪一行是重点"反而看不清。
+independent type 的另一个好处：清框时不会有"同 type 的 range 被覆盖掉"的错觉。
+**代价**：`WalkthroughStep.color` 在 S1 没有消费者（类型保留，值不用）。接受。
+
+**状态**：生效。配色表见 `CONTRACTS.md` §4.3。
+
+---
+
+## D42 侧边栏资源内联进 bundle + `ui:ready` 握手（S1）
+
+**决策**：两件事合在一起解决"侧边栏重开是一片空白"这个隐患。
+
+1. **资源内联**：侧边栏的 CSS 与客户端脚本写成三个 TS 模块（`ui/styles.ts` / `ui/clientScript.ts` /
+   `ui/html.ts`）导出字符串常量，由宿主在设置 `webview.html` 时拼进去。**不做 `asWebviewUri`、
+   不做静态资源拷贝、不加构建步骤**。CSP 取最严一档：`default-src 'none'` + 只放行带 nonce 的内联 script/style。
+2. **`ui:ready` 握手**：`SidebarToHost` 追加一个消息类型（§5.3 冻结表里唯一的新增）。
+   webview 一启动就发它，宿主收到后把最近的若干条消息（环形，上限 50）原样重放。
+
+**理由**：webview 的 DOM 生命周期与宿主无关 —— 面板被关掉再打开时，新 webview 的脚本才刚
+`acquireVsCodeApi()`，宿主在 `webview.html = ...` 之后立刻 post 的消息会丢在它订阅之前。
+没有握手就只能让 webview 自己持久化状态（`vscode.setState`），那是第二份状态源，与
+"会话状态只有 `WalkthroughSession` 一份"冲突。**重放把这个问题降级成零状态。**
+**代价**：客户端脚本是字符串常量，**不参与类型检查**（已在该文件头写明）；webview 侧因此
+不能 import `@anchor/core`，`locationLabel` 的显示规则在 `ui/clientScript.ts` 里有一份 4 行的副本，
+两处注释互相指向。这是内联方案的固有限制，已记录。
+
+**状态**：生效。
+
+---
+
+## D43 新增 `scripts/smoke-walkthrough.mjs`：S1 链路的自动化验收（S1）
+
+**决策**：在 `smoke-extension.mjs`（结构冒烟：产物可加载、命令已注册）之外，再加一个**链路冒烟**：
+同样只桩 `vscode` 模块，但把 `anchorExplain.capture` 从选区一路跑到 decoration ——
+真读磁盘上的 `main.c`、真 `fakeProvider`、真 `validateExplanation`、真会话、真玩家决策
+（只记下 `setDecorations` 的入参），并断言每一步画在哪几行、用的是哪一档配色。
+
+**理由**：S1 的验收标准是"用户实操确认手感"，而**手感的前置条件是链路不崩**。
+若 F5 一按就报错，用户的时间就白花了；而"画对了行、用对了档、退出清干净、文件字节没变"
+这些是脚本能判的，不该占用用户的一次 F5。这也补上了 `STATE.md` 约束 16 说的
+"`extension-anchor` 没有测试"的空白。
+**代价**：桩会随真实 API 增长（本例加了 6 个成员）。**但桩只加在 `vscode` 这一个边界上**，
+与 D17「假货只允许出现在最外层边界」一致：桩之外全是真代码。
+**它不替代 F5**：配色好不好看、流转顺不顺、`borderWidth: '0 0 0 3px'` 在真实主题下渲染成什么样，
+只有肉眼看才算数。
+
+**状态**：生效。`pnpm smoke:chain`，已进 `pnpm check`。
+
+---
+
+## D44 输出校验比 §3.3 严一格：`step.text` 必须非空（S1）
+
+**决策**：§3.3 逐条列举了 `steps.length ≥ 1`、`confidence ∈ [0,1]`、`summary` 非空，
+但没有要求 `step.text` 非空。`validateExplanation` **补上这一条**：空 `text` 判失败。
+
+**理由**：`text` 是侧边栏里那段主体讲解，空字符串在 UI 上就是一片空白 ——
+用户看到"第 2 步"却什么都没读到，比报错更糟。宁可让模型重试一次。
+**代价**：它是一个不在冻结清单里的判据。所以写在这里，且 `CONTRACTS.md` §3.3 末尾同步标注了
+"这是比 §3.3 严一格的规则"。**不是密谋加严**：任何未来的模型适配都要知道这条。
+
+**状态**：生效。
+
+---
+
+## D45 mac 默认键位用 `cmd` 替换 `ctrl`；修饰键显示顺序 Cmd 在前（S1）
+
+**决策**：`contributes.keybindings` 每一条都同时给 `key`（win/linux）与 `mac`；
+mac 上 `ctrl` → `cmd`，`alt+[`/`alt+]`/`escape` 两侧相同。
+`formatChord` 的修饰键归一顺序为 **Cmd/Win → Ctrl → Shift → Alt**，
+于是 mac 显示 `Cmd+Alt+W`、Windows 显示 `Ctrl+Shift+A`，两边都符合各自习惯。
+
+**理由**：§4.1 的默认键位表只写了 ctrl 形式，mac 用户按 `ctrl+alt+w` 是很别扭的；
+`keybindings` 的 `mac` 字段本来就是为这件事存在的。
+顺序问题：用户写 `shift+ctrl+a` 也得显示成同一种读法，否则状态栏提示会随用户写法漂移。
+**状态**：生效。耦合锁在 `test/keybindingResolve.test.ts`。
+
+---
+
+## D46 `done` 之后 ESC 必须仍然可用 —— 新增 context key `sessionOpen`
+
+**决策**：新增 context key `anchorExplain.sessionOpen`（S1 第二条、也是最后一条契约新增）。分工：
+
+| key | 语义 | 绑在它上面的命令 |
+|---|---|---|
+| `anchorExplain.walkthroughActive` | running / playing / paused 为 true；**`done` 与 `idle` 都落 false** | `next` / `prev` / `goto` / `playPause` |
+| `anchorExplain.sessionOpen` | 从开会话起 true，**只到 `stop` / 编辑器关闭才落 false**（`done` 不落） | `stop` |
+
+**理由**（独立校验抓出来的阻塞级问题）：原设计把 `stop` 也绑在 `walkthroughActive` 上，
+于是产生一条用户必然踩到的死路 —— `alt+]` 走到最后一步 → `done` → §4.2 要求
+`walkthroughActive` 落 false → **`escape` 的 `when` 不再匹配 → 屏幕上的荧光笔再也清不掉**，
+而状态栏还在向用户展示这三个"按不动"的键。两条各自合规的冻结条款合起来产生了这个洞，
+只能靠把"该不该吃推进键"与"还有没有东西要收尾"拆成两个 key 来解。
+
+**代价**：`contexts` 多一个 key（`Contributes` 里不需要声明，`setContext` 动态置位即可）；
+`CONTRACTS` §4.2 与 `stop` 那一行同步改了。**用户 F5 时要专门验这条**（STATE.md 检查项 3/4）。
+
+**状态**：生效。
+
+---
+
+## D47 宿主把用户键位内联进侧边栏 HTML，让 webview 自己派发按键
+
+**决策**：`renderSidebarHtml(cspSource, chords)` 多收一份**已解析的用户键位**，
+内联成 webview 里的 `ANCHOR_CHORDS` 常量；客户端在 `keydown` 上按这份表匹配
+`next` / `prev` / `stop` 三条，匹配上就 `postMessage` 转成已有的 `ui:*` 消息。
+**不加协议消息类型**，`ui:next` / `ui:prev` / `ui:stop` 早就在 §5.3 里了。
+
+**理由**：**webview 里的按键不会冒泡到工作台** —— iframe 内的键盘事件到不了父文档，
+所以一旦焦点落在侧边栏面板上（`createWebviewPanel` 默认会把焦点给它），
+`contributes.keybindings` 里那几条就全哑了。而"按 `alt+]` 往下走"正是 S1 的核心交互。
+用工作台键位 + 面板内转发**两层**覆盖：编辑器有焦点时走前者，面板有焦点时走后者，两者用的
+是同一份解析结果（和状态栏提示同源），不会显示一套、响应另一套。
+
+**为什么用内联 HTML 而不是新协议消息**：键位在一次会话里是常量，编译进 HTML 比再加一条
+消息类型便宜，而且顺着 D42 已经建好的重放/握手通道走，不引入新的时序问题。
+**代价**：键位来自用户的 `keybindings.json`，属不可信文本，所以 JSON 里的 `<` 一律转义成
+`\u003c`（否则一个形如 `</script>` 的键名就能跳出 script 标签）。
+**顺带修掉**：状态栏原先"第一次要显示时才读键位"，会让第一帧用默认键、之后跳变；现在激活时就读一次。
+
+**未验证项**：本机无法验证"面板有焦点时转发是否真的生效"（需要 F5）。
+若 F5 时发现按键在面板里不灵，先查 `ANCHOR_CHORDS` 是否内联成功（`pnpm smoke:chain` 已断言它在 HTML 里）。
+
+**状态**：生效。
+
+---
+
+## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
+
+原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。
+**后半句对，前半句错**，三份文档（D39 / CONTRACTS §9.5 / STATE 约束 14）都照着错的写了，
+而 `packages/extension-anchor/package.json` 一直是 `engines.vscode: "^1.90.0"` —— 它是对的。
+
+正确的规则：
+
+| 字段 | 应当写成 | 为什么 |
+|---|---|---|
+| `engines.vscode` | `"^1.90.0"`（**范围**，下界 = 我们实际支持的最低版本） | 它是给**使用者**看的兼容范围。钉成 `"1.90.0"` 等于宣布"只在恰好 1.90.0 上能装"，用户升到 1.91 就装不上 |
+| `devDependencies.@types/vscode` | `"1.90.0"`（**精确值，无 caret**） | 它是给 `tsc` 看的 API 面。写 `^` 会让类型漂到最新版，`tsc` 静默放行 1.90 上不存在的 API |
+
+不变式是：**`@types/vscode` 必须精确等于 `engines.vscode` 的下界**，
+而不是"两个字段的字符串相同"。`vsce` 那条 `@types/vscode ≤ engines.vscode 下界` 的守卫
+在两个值相等时通过，所以这套写法既过守卫又不骗用户。
+
+**这次是谁发现的**：独立只读校验（D32）按文档去核对源码，报了"M1：`engines.vscode` 带 caret，
+违反冻结约束"。**核对下来是文档错了，不是源码错了** —— 所以改的是文档。
+这正是 D32 想要的效果：一个外部视角按你写的规则逐条验，错了就是错了，不管错在哪一侧。
+
+**状态**：生效（原 D39 前半句作废，后半句继续有效）。
+
+---
+
 ## 已被取代 / 已废弃（保留记录，勿重蹈）
 
 | 原计划 | 取代者 | 说明 |

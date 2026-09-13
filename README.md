@@ -12,8 +12,12 @@
 
 ## 现在能跑什么
 
-**F2 阶段：能装、能编、能测、能起调试宿主，但还没有任何讲解功能。**
-下一条可见的能力是 S1（线1 最小可视，用假 AI 跑通真实播放链路）。
+**S1 阶段：线1（代码编辑器）的最小闭环能跑了。** 打开 `main.c`、选中一段、按 `Ctrl+Shift+A`，
+编辑器里出现半透明高亮，侧边栏出逐步讲解，`Alt+]` 往下走，`Esc` 退出。**文件一个字节都不会变。**
+
+目前**只有"AI 从哪来"与"选区从哪来"两处是替身**（写死的三个 step、写死的第 40-48 行），
+链路其余部分全是真的：输出校验 → 会话状态 → decoration → 侧边栏 → 状态栏。
+S2 换掉假选区、S3 换成真实 AI —— **各改一行**，见 `packages/extension-anchor/README.md`。
 
 ## 仓库结构
 
@@ -22,6 +26,9 @@ packages/core                  @anchor/core —— 类型契约 / ports / 纯函
 packages/extension-anchor      线1 代码编辑器扩展（ID anchor.anchor-explain）
 packages/extension-anchor-pdf  线2 PDF 扩展（fork，S4 才落地）
 scripts/make-fixture-pdf.mjs   生成 30 页验收样本 PDF
+scripts/smoke-extension.mjs    产物冒烟：能加载 / 命令注册与声明对齐 / webview 资源在不在
+scripts/smoke-walkthrough.mjs  链路冒烟：capture 从选区跑到 decoration（画哪几行、哪档配色、文件未变）
+scripts/def-lines.mjs          一次性工具：生成 CONTRACTS §9.1 的行号表
 test/fixtures/                 main.c（第 40-48 行是默认选区）+ sample-30p.pdf
 docs/                          唯一事实源，见下
 ```
@@ -30,23 +37,24 @@ docs/                          唯一事实源，见下
 
 ```bash
 pnpm install
-pnpm fixtures    # 重新生成 test/fixtures/sample-30p.pdf（零依赖，已提交，一般不用跑）
-pnpm build       # esbuild 打包扩展，产物落在各自 packages/<包名>/dist/extension.cjs
-pnpm watch       # 同上，watch 模式；F5 的 preLaunchTask 用的就是这个
-pnpm typecheck   # tsc --noEmit，只做类型检查，不出产物
-pnpm test        # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）
-pnpm smoke       # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩
-pnpm check       # 以上最后四件事串起来：typecheck → test → build → smoke
+pnpm fixtures     # 重新生成 test/fixtures/sample-30p.pdf（零依赖，已提交，一般不用跑）
+pnpm build        # esbuild 打包扩展，产物落在各自 packages/<包名>/dist/extension.cjs
+pnpm watch        # 同上，watch 模式；F5 的 preLaunchTask 用的就是这个
+pnpm typecheck    # tsc --noEmit，只做类型检查，不出产物
+pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 58
+pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（19 项断言）
+pnpm smoke:chain  # 链路冒烟：跑一次完整讲解，断言高亮画在哪几行（43 项断言）
+pnpm check        # 上面最后五件事串起来：typecheck → test → build → smoke → smoke:chain
 ```
 
 > `pnpm build` 目前只打一个扩展（`esbuild.mjs` 的 `TARGETS` 里只有 `extension-anchor`），
 > 线2 的 `extension-anchor-pdf` 到 S4 才加进去。
 >
-> `pnpm test` 目前也**只覆盖 `@anchor/core`** —— `extension-anchor` 还没有 `test` 脚本，
-> 它的行为由 `pnpm smoke` 覆盖（S1 起会给它补真测试）。
+> 两个冒烟脚本都只对 `vscode` 模块打桩，但**都不替代 F5**：配色好不好看、流转顺不顺只有肉眼算数。
 
-
-按 `F5` 起扩展开发宿主：工作区会自动落到 `test/fixtures/`，命令面板里执行 `Anchor: 显示状态` 应弹出通知。
+按 `F5` 起扩展开发宿主：工作区会自动落到 `test/fixtures/`。打开 `main.c`、选中几行、
+按 `Ctrl+Shift+A`（mac 是 `Cmd+Shift+A`），侧边栏会出逐步讲解，`Alt+]` / `Alt+[` / `Esc` 操作它。
+命令面板里另有 `Anchor: 显示状态` 可看骨架接线是否正常。
 
 ## 文档（唯一事实源）
 

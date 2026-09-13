@@ -136,7 +136,7 @@ interface EditorSelection {
   filePath: string;
   lineStart: number;      // 1-based, inclusive
   lineEnd: number;        // 1-based, inclusive
-  text: string;           // 选中行原文（含行尾换行）
+  text: string;           // 选中行原文，多行以 \n 连接，**不含末尾换行**
 }
 
 interface EditorPort {
@@ -230,8 +230,20 @@ interface SourceAdapter {
    - `sourceType` 与 `anchor.sourceType` 一致
    - `code`：`filePath === anchor.location.filePath`；`1 ≤ lineStart ≤ lineEnd ≤ 文档总行数`
    - `pdf`：`1 ≤ page ≤ pageCount`；`bbox` 四项 ∈ `[0,1]` 且 `x1 < x2`、`y1 < y2`
+   - **路径比较忽略大小写与斜杠方向**（Windows 本身不区分大小写；严格比较会把同一个文件判成两个）
+   - 文档总行数/总页数**取不到时传 `null` → 跳过该上界检查**，不是跳过整条 location 校验
 4. **不做覆盖度校验**（已砍，见 `DECISIONS.md` D16）
 5. 校验失败 → 带修复提示（`prompts/repair.ts`）重试一次；仍失败 → **报错给用户，不渲染**
+
+**S1 增补两条实现约定**（都不改上表的判据，只是把边界说清楚）：
+
+- `step.text` 必须是**非空字符串**。§3.3 原文没逐字要求，但空 text 的 step 在侧边栏里是一片空白 ——
+  与其渲染一个说不出话的步骤，不如让模型重来一次。这是**比 §3.3 严一格**的规则（D44）。
+- `emphasis` 不在 §4.3 的四档里时**降级为 undefined，不判失败**：它只影响颜色，
+  为一个装饰性字段把整段讲解判死，代价大于收益（D41）。
+
+**返回的是重建对象，不是原对象**：`validateExplanation` 逐字段重新组装 `ExplanationResult`，
+模型多塞的键（包括 `__proto__` 之类）不可能流到渲染层。所以所有渲染方只消费它的返回值。
 
 ---
 
@@ -244,7 +256,7 @@ interface SourceAdapter {
 | `anchorExplain.capture` | 捕获当前选区并请求讲解 | `ctrl+shift+a` / `cmd+shift+a` | `editorTextFocus` |
 | `anchorExplain.next` | 下一步 | `alt+]` | `anchorExplain.walkthroughActive` |
 | `anchorExplain.prev` | 上一步 | `alt+[` | `anchorExplain.walkthroughActive` |
-| `anchorExplain.stop` | 退出并清除高亮 | `escape` | `anchorExplain.walkthroughActive && !inputFocus` |
+| `anchorExplain.stop` | 退出并清除高亮 | `escape` | `anchorExplain.sessionOpen && !inputFocus` |
 | `anchorExplain.goto` | 跳到指定步 | `ctrl+alt+w` | `anchorExplain.walkthroughActive` |
 | `anchorExplain.playPause` | 播放 / 暂停 | `ctrl+shift+space` | `anchorExplain.walkthroughActive` |
 | `anchorExplain.explainAnchor` | 接受外部 Anchor 并起讲解（跨扩展入口） | — | — |
@@ -252,7 +264,21 @@ interface SourceAdapter {
 | `anchorPdf.openInAnchorViewer` | 用 Anchor 的 PDF 视图打开 | — | — |
 | `anchorPdf.revealPage` | 滚动 PDF 到指定页（跨扩展调用） | — | — |
 
+**`stop` 的 `when` 自 S1 起是 `sessionOpen`，不是 `walkthroughActive`（D46）。** 原表写的是后者，
+但两者合起来会产生一个用户可见的死键：`alt+]` 走到最后一步 → `done` → §4.2 要求
+`walkthroughActive` 落 false → `escape` 的 `when` 不再匹配 → **屏幕上的荧光笔再也清不掉**，
+而状态栏还在展示这三个"按不动"的键。改绑 `sessionOpen` 后：
+推进类键照旧在 `done` 时失效，`stop` 一直有效到用户主动退出。
+
 **默认不绑 `Space`**（避免抢打字）。状态：默认键位为 `已冻结（可调）`。
+
+**mac 变体（S1 落地）**：上表只给了 win/linux 形式；mac 上一律把 `ctrl` 换成 `cmd`
+（`cmd+shift+a` / `cmd+alt+w` / `cmd+shift+space`），`alt+[`、`alt+]`、`escape` 三键两侧相同。
+两侧的值都写在 `contributes.keybindings` 的 `key` / `mac` 里，并由
+`test/keybindingResolve.test.ts` 的耦合锁与 `WALKTHROUGH_CHORDS` 逐字比对。
+
+**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 8 个 ext-A 命令；
+`scripts/smoke-extension.mjs` 有一条锁断言「`package.json` 声明的命令 == 实际注册的命令」。
 
 **`title` / `category` 约定（F2 冻结）**：命令的 `title` **只写动作**（如 `显示状态`），
 分类统一由 `category: "Anchor"` 提供，命令面板里显示为 `Anchor: 显示状态`。
@@ -262,8 +288,13 @@ interface SourceAdapter {
 
 | key | 类型 | 置位时机 |
 |---|---|---|
-| `anchorExplain.walkthroughActive` | boolean | 讲解开始置 `true`；`stop` / 讲完 / 编辑器关闭时置 `false` |
+| `anchorExplain.walkthroughActive` | boolean | 讲解开始置 `true`；`stop` / 讲完（`done`）/ 编辑器关闭时置 `false` |
+| `anchorExplain.sessionOpen` | boolean | **S1 新增（D46）**。从开会话起置 `true`，**只到 `stop` / 编辑器关闭才置 `false`**（`done` 不落） |
 | `anchorPdf.selectMode` | boolean | PDF 进入框选模式置 `true` |
+
+两个 key 的分工不重叠：`walkthroughActive` 管"要不要吃推进键"（`next`/`prev`/`goto`/`playPause`），
+`sessionOpen` 管"还有没有东西需要收尾"（`stop`）。合成一个 key 会让 `done` 之后的界面变成死局
+（详见 §4.1 里 `stop` 那一行）。
 
 ### §4.3 `emphasis` → 配色（`已冻结（可调）`）
 
@@ -275,6 +306,25 @@ interface SourceAdapter {
 | `caveat` | 注意/坑 | 半透明警示背景 + 虚线描边 |
 
 全部走主题色变量（不写死十六进制），`isWholeLine: true`，纯视觉不改文件。
+
+**步级底色与 emphasis 分层（S1 冻结，D41）**：一个 step 的**整体范围**只画一层中性底色
+（就是上表 `context` 那档的视觉：`editor.selectionHighlightBackground`、无描边），
+`emphasis` 四档配色**只作用于 `highlights[]` 子高亮**。原因：步级范围与子高亮几乎总是重叠，
+两套半透明底色叠在一起会糊成一团，反而看不清"这一步在讲哪几行、重点是哪一行"。
+
+实测映射（`scripts/smoke-walkthrough.mjs` 按这些 id 反查 decoration type，所以它们**就是**断言）：
+
+| 用途 | 背景 | 描边 |
+|---|---|---|
+| 步级底色 | `editor.selectionHighlightBackground` | 无 |
+| `primary` | `editor.findMatchHighlightBackground` | 左 2px `editor.findMatchBorder` + 概览尺 |
+| `context` | `editor.wordHighlightBackground` | 无 |
+| `definition` | `editor.findMatchHighlightBackground` | 左 3px `editorInfo.foreground` |
+| `caveat` | `editor.wordHighlightStrongBackground` | 1px 虚线 `editorWarning.foreground` |
+
+`rangeBehavior` 一律 `ClosedClosed`：编辑时不要把框自动撑到新行，否则高亮会追着光标跑。
+**非代码位置不产出任何框** —— 线2 的硬约束「PDF 上不出现任何高亮框」写在
+`decorationPlan.ts` 里（过滤非 `CodeLocation`），不靠调用方自觉。
 
 ---
 
@@ -320,16 +370,52 @@ type HostToSidebar =
 
 // webview → 宿主
 type SidebarToHost =
+  | { type: 'ui:ready' }
   | { type: 'ui:next' } | { type: 'ui:prev' } | { type: 'ui:goto'; index: number }
   | { type: 'ui:stop' } | { type: 'ui:revealStep'; index: number };
 ```
 
-`WalkthroughState = 'idle' | 'running' | 'playing' | 'paused' | 'done' | 'error'`
+**`ui:ready` 是 S1 追加的唯一一条消息（D42）**，非加不可：webview 的 DOM 生命周期与宿主无关 ——
+用户关掉面板再触发一次讲解时，新 webview 的脚本才刚 `acquireVsCodeApi()`，
+宿主在 `webview.html = ...` 之后立刻 post 的消息会丢在它订阅之前，表现为"重开面板一片空白"。
+有了握手，宿主收到 `ui:ready` 就把最近的若干条消息（环形，上限 50）原样重放，
+webview 因此**不需要自己持久化任何状态**。
+
+**`ui:goto` / `ui:revealStep` 的分工**：点侧边栏里某条的**正文** = `ui:goto`（把那条变成当前步）；
+点那条的**位置标签** = `ui:revealStep`（只把视图滚过去，不改变当前步）。
+S6 的 PDF 侧边栏是同一套语义（点击滚动到该页）。
+
+**两个方向都过守卫**：宿主侧用 `parseSidebarMessage()` 校验 webview 发来的东西（非法丢静默），
+跨扩展入口用 `isAnchorLike()` 校验 `explainAnchor` 的参数（非法明确报错不静默）。
+两处守卫都在 `protocol.ts`，都有单测。`isAnchorLike` 只放行 code / pdf 且**数值也查**
+（`NaN`、`1e400`、越界 bbox 一律拒），`web` 直接拒绝 —— 放行一个注定失败的锚点，
+只会在一次模型往返之后把"锚点不合法"报成"AI 输出不合法"。
+
+**webview 里怎么按 next / prev / stop（D47）**：宿主把**已解析的用户键位**内联进 HTML
+（`ANCHOR_CHORDS`），客户端自己匹配 keydown 后转成上面已有的 `ui:*` 消息。
+**没有新增消息类型**。原因：webview 内的按键不会冒泡到工作台，
+`contributes.keybindings` 在面板有焦点时是哑的；编辑器有焦点时走工作台键位，
+两层的键位来自同一份解析结果（与状态栏提示同源）。
+
+`WalkthroughState` 的 `done` / `idle` 都会让 `anchorExplain.walkthroughActive` 落回 false（§4.2）：
+`done` 是"讲完了"，`idle` 是"用户按了退出"，两者都不该再吃 `alt+]`。
+但 `done` **不落** `anchorExplain.sessionOpen` —— 否则 `escape` 会跟着变哑（D46）。
 
 ### §5.4 状态栏提示
 
 必须**读取用户实际绑定**后渲染（如 `讲解中 · Alt+] 下一步 · Esc 退出`），
 读取失败才回退默认文案。实现方式见 `DECISIONS.md` D10（含其脆弱性说明）。
+
+S1 落地的行为（`sidebar/statusBar.ts`）：
+
+- 提示形如 `$(book) 1/3 · 讲解中 · Alt+] 下一步 · Alt+[ 上一步 · Esc 退出`；
+  `playing` / `paused` 换成对应措辞，`done` 用 `$(check)`。
+- 用户的键位**只在第一次要显示提示时才读一次** `keybindings.json`（激活阶段零磁盘 I/O），
+  读不到/解析失败一律静默保留默认键位 —— 状态栏宁可保守，也不能因为读不到键位而骗人。
+- 用户把某个键解绑（`-anchorExplain.next`）时，提示里**只显示动作、不显示键**。
+- 状态栏是 **staleness 唯一如实告诉用户的地方**：讲解期间文件被改动 → 前缀换成
+  `$(warning) 文件已改动`（§5.3 的 `session:update` 里没有这个字段，而这句话必须有人说）。
+- 点击状态栏项 = `anchorExplain.goto`（跳转面板）。
 
 ---
 
@@ -405,7 +491,7 @@ function createContextRequestLogger(opts?: {
 
 ## §9 模块路径映射与落地行号
 
-### 9.1 已落地（F1 契约类 / F2 骨架与替身）——行号 = 实体定义所在行
+### 9.1 已落地（F1 契约类 / F2 骨架与替身 / S1 线1 最小可视）——行号 = 实体定义所在行
 
 | 路径 | 职责 | 关键实体行号 |
 |---|---|---|
@@ -420,10 +506,24 @@ function createContextRequestLogger(opts?: {
 | `packages/core/test/{types,locationLabel,normalizeBBox,fakes}.test.ts` | 单测（`node --test`） | — |
 | `packages/core/src/fakes/fakeProvider.ts` | 假 AI。S3 被 orchestrator 替换 | `FAKE_TARGET_LINE_START`:29 `FAKE_TARGET_LINE_END`:30 `FALLBACK_FILE_PATH`:33 `createFakeProvider`:161 `fakeProvider`:176 |
 | `packages/core/src/fakes/fakeEditorPort.ts` | 假选区（写死 40-48 行）。S2 被真实现替换 | `FAKE_FILE_PATH`:18 `FAKE_LINE_START`:19 `FAKE_LINE_END`:20 `FAKE_SELECTION_TEXT`:27 `FAKE_DOCUMENT_HASH`:39 `createFakeEditorPort`:63 |
-| `packages/extension-anchor/src/extension.ts` | activate / 装配四层。**F2 只注册 `showState` 做接线自检**，S1 起装配四层 | — |
+| `packages/extension-anchor/src/extension.ts` | activate → `registerCommands`（入口保持极薄） | `activate`:11 `deactivate`:16 |
+| `packages/extension-anchor/src/paths.ts` | 路径归一 / 比较 / 行数（vscode-free，四条链路共用一份） | `normPath`:11 `samePath`:15 `countTextLines`:25 |
+| `packages/extension-anchor/src/commands.ts` | §4.1 八个命令 + 四层装配。**全项目唯一的假货接线点**（见 §2.1） | `registerCommands`:41 `resolveS1FixturePath`:331（S1 脚手架，S2 删除） |
+| `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 两处边界守卫 | `WalkthroughState`:19 `HostToSidebar`:25 `SidebarToHost`:38 `HostToSelect`:50 `SelectToHost`:55 `isAnchorLike`:86 `parseSidebarMessage`:115 |
+| `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**） | `ValidationIssue`:35 `ExplanationOutline`:42 `ExplanationValidation`:49 `coerceEmphasis`:66 `parseMaybeJson`:76 `validateExplanation`:299 `describeIssues`:336 |
+| `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（vscode-free） | `WalkthroughSnapshot`:16 `SnapshotListener`:28 `PLAY_INTERVAL_MS`:31 `WalkthroughSession`:37 |
+| `packages/extension-anchor/src/playback/decorationPlan.ts` | 「一个 step 该画哪些框」的纯决策 | `DecorationSpec`:20 `EMPHASES`:27 `FALLBACK_EMPHASIS`:29 `planForStep`:35 `primaryLocationOf`:55 |
+| `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档** | `CodeWalkthroughPlayer`:83 |
+| `packages/extension-anchor/src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 | `SidebarHandlers`:17 `SidebarPanel`:28 |
+| `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（键位读用户实际绑定，并**交给侧边栏复用**） | `StatusBarHandle`:23 `createStatusBar`:59 |
+| `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表 + JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:13 `WalkthroughChordSpec`:15 `WALKTHROUGH_CHORDS`:27 `ResolvedChord`:76 `ResolvedChords`:77 `KeyBindingEntry`:79 `defaultChords`:86 `keybindingsPathFrom`:99 `stripJsonc`:116 `parseKeybindings`:175 `resolveChords`:191 `formatChord`:258 |
+| `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
+| `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（`getSelection` 当前被替身顶掉） | `createEditorPort`:24 |
+| `packages/extension-anchor/src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` | `createFileSystemPort`:12 `countLines`:38 |
+| `packages/extension-anchor/test/{validateExplanation,WalkthroughSession,decorationPlan,keybindingResolve,protocol}.test.ts` | 线1 单测（58 条，`node --test`，全部 vscode-free） | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
-| `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs}`（根） | 生成 30 页 fixture；产物冒烟（见 §9.4） | — |
+| `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；行号表的一次性生成器 | — |
 | `test/fixtures/{main.c, sample-30p.pdf}`（根） | `main.c` 第 40-48 行是假选区目标；PDF 是 S5~S7 的样本 | — |
 | `package.json` / `pnpm-workspace.yaml` / `tsconfig.base.json`（根） | workspace 与依赖声明、共用 TS 基线、pnpm 11 的 `allowBuilds` 放行（见 §9.3） | — |
 | `.gitignore` / `.gitattributes`（根） | 忽略规则与**换行符纪律**（后者是 `fakes.test.ts` 耦合锁的前提，见 §9.3） | — |
@@ -434,16 +534,11 @@ function createContextRequestLogger(opts?: {
 
 | 路径 | 职责 | 落地切片 |
 |---|---|---|
-| `packages/extension-anchor/src/commands.ts` | §4.1 全部命令 | S1 |
-| `packages/extension-anchor/src/protocol.ts` | **§5 消息协议类型**（`WalkthroughState` / `HostToSidebar` / `SidebarToHost` / `HostToSelect` / `SelectToHost`） | S1 |
-| `packages/extension-anchor/src/vscode/ports/*` | §2 ports 的 vscode 真实现 | S1 / S2 |
-| `packages/extension-anchor/src/playback/*` | decoration 渲染与流转 | S1 |
-| `packages/extension-anchor/src/sidebar/*` | 侧边栏（原生 DOM）+ 状态栏 + 键位解析 | S1 |
-| `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验 | S1 |
+| `packages/extension-anchor/src/vscode/ports/editorPort.ts` 的 `getSelection` | **真选区**（其余三个方法 S1 起已是真的） | S2 |
+| `packages/extension-anchor/src/adapters/CodeAdapter.ts` | 代码来源适配器（`capture` 现在临时住在 `commands.ts` 的 `buildAnchor`） | S2 / S3 |
 | `packages/extension-anchor/src/orchestrator/*`（其余） | §3.2 取件校验、编排循环、ModelRouter | S3 |
-| `packages/extension-anchor/src/prompts/*` | 所有 prompt | S3 |
+| `packages/extension-anchor/src/prompts/*` | 所有 prompt（含 §3.3 第 5 条的 repair） | S3 |
 | `packages/extension-anchor/src/config.ts` | §6 配置读取 + SecretStorage 覆盖 | S3 |
-| `packages/extension-anchor/src/adapters/CodeAdapter.ts` | 代码来源适配器 | S2 / S3 |
 | `packages/extension-anchor/src/adapters/PDFAdapter.ts` + `adapters/pdf/*` | PDF 无头取件 | S7 |
 | `packages/extension-anchor-pdf/`（整树） | 线2 fork | S4 |
 | `packages/extension-anchor-pdf/media/anchor-select.js` | 注入式框选 overlay | S5 |
@@ -467,15 +562,17 @@ function createContextRequestLogger(opts?: {
 `packages/extension-anchor-pdf/assets/pdf.js/` 下任何同名目录一起忽略 —— 那是必须提交的上游 vendored 源码。
 已改写成 `packages/*/dist/`。
 
-### 9.5 `@types/vscode` 必须钉死，不能带 caret
+### 9.5 类型版本：`@types/vscode` 精确，`engines.vscode` 是范围
 
-`packages/extension-anchor/package.json` 里 `engines.vscode` 与 `devDependencies.@types/vscode`
-**必须写成同一个具体版本**（当前都是 `1.90.0`，不带 `^`）。
+| 字段 | 应当写成 | 为什么 |
+|---|---|---|
+| `engines.vscode` | `"^1.90.0"`（**范围**，下界 = 实际支持的最低版本） | 给**使用者**看的兼容范围。钉成 `"1.90.0"` 等于宣布"只在恰好 1.90.0 上能装" |
+| `devDependencies.@types/vscode` | `"1.90.0"`（**精确值，无 caret**） | 给 `tsc` 看的 API 面。写 `^` 会让 pnpm 解析到最新版（实测 `^1.90.0` → 装了 `1.137.0`），`tsc` 就静默放行 1.90 上不存在的 API，而 `engines` 又向用户承诺了 1.90 —— 只有运行时才崩 |
 
-理由：两个都写 `^1.90.0` 时，`vsce` 那条 `@types/vscode ≤ engines.vscode` 的守卫只比字符串、不会报错，
-但 `pnpm` 会把类型实际解析到最新版（实测 `^1.90.0` → 装了 `1.137.0`）。
-于是 `tsc` 会静默放行 1.90 上不存在的 API，而 `engines.vscode` 又向用户承诺了 1.90 —— 只有运行时才崩。
-收紧 `engines.vscode` 上界时，同步收紧类型版本。
+不变式是 **`@types/vscode` 精确等于 `engines.vscode` 的下界**，不是"两个字段字符串相同"。
+`vsce` 的 `@types/vscode ≤ engines.vscode 下界` 守卫在两者相等时通过。
+（本文件早期版本把不变式写成了"两个都写 1.90.0 不带 `^`"，那是错的：`engines.vscode` 钉死会让
+用户升级 VS Code 后装不上。更正见 `DECISIONS.md` D39 的更正。）
 
 ### 9.4 构建与产物（F2 冻结）
 
@@ -491,8 +588,21 @@ function createContextRequestLogger(opts?: {
 
 **产物冒烟**：`pnpm smoke`（`scripts/smoke-extension.mjs`）在不启动 VS Code 的前提下
 `require` 产物，只对最外层边界（`vscode` 模块）打桩，断言：产物可加载、`activate` 注册了命令、
-命令回调能跑通且 `@anchor/core` 的 `locationLabel` 确实被 bundle 进去。
-`pnpm check` 已把它排在 `build` 之后。
+**`package.json` 声明的命令与注册的命令逐一对齐**（声明了没注册 → 用户点了报"命令未找到"；
+注册了没声明 → 命令面板里看不见）、命令回调能跑通且 `@anchor/core` 的 `locationLabel` 确实被 bundle 进去、
+webview 的 HTML/客户端脚本活到了产物里。
+
+**链路冒烟**：`pnpm smoke:chain`（`scripts/smoke-walkthrough.mjs`，S1 新增）同样只桩 `vscode`，
+但把 `anchorExplain.capture` **从选区一路跑到 decoration**：真读磁盘上的 `main.c`（所以行数上界
+用的是真数据）→ 真 `fakeProvider` → 真 `validateExplanation` → 真会话 → 真玩家决策（只记下
+`setDecorations`）。它断言三件用户在 F5 才会发现的事：
+
+1. 每一步画在**哪几行**、用的是**哪一档配色**（即 §4.3 映射本身）
+2. 退出时所有 decoration type 都被清空（不留残影）、`ui:ready` 会触发全量重放
+3. **`main.c` 字节未变**、`workspace.applyEdit` 从未被调用（"纯视觉"的硬要求）
+
+`pnpm check` 把它们排在 `build` 之后。**F5 仍然不可省**：配色好不好看、流转顺不顺是手感评审，
+`pnpm smoke:chain` 只能保证"画对了行、用对了档、退出清干净"。
 
 ---
 

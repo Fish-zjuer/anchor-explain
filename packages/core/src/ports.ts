@@ -14,7 +14,7 @@ export interface EditorSelection {
   filePath: string;
   lineStart: number;      // 1-based, inclusive
   lineEnd: number;        // 1-based, inclusive
-  text: string;           // 选中行原文（含行尾换行）
+  text: string;           // 选中行原文，多行以 \n 连接，不含末尾换行（与 CONTRACTS §2 一致）
 }
 
 export interface EditorPort {

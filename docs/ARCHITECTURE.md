@@ -121,6 +121,18 @@ CodeAdapter.capture()
 
 **关键点**：第 40-48 行这个选区来源，在 S1 由 `EditorPort` 的**假实现**返回、S2 换成真实现；**下游一行不动**（`DECISIONS.md` D17）。
 
+**S1 的实际形态与上图的两处差异**（都是尚未落地，不是改了架构）：
+
+1. `CodeAdapter.capture()` 还没写成文件 —— 它的等价逻辑（选区 → `Anchor`）暂时住在
+   `commands.ts` 的 `buildAnchor()` 里，S2 搬进 `adapters/CodeAdapter.ts`。
+2. `Orchestrator.run()` 整个不存在 —— S1 是 `commands.ts` 里一行
+   `const provider: ExplainProvider = fakeProvider;`（`ExplainProvider` 就是"编排层"的替身接口）。
+   S3 换成编排循环时，同样只改那一行。
+
+于是 S1 的命令回调实际读作：
+`getSelection → buildAnchor → provider → validateExplanation → WalkthroughSession → {player, sidebar, statusBar}`，
+其中**除了首尾两处替身，每一环都已经是真的**。
+
 ### 4.2 线2：PDF
 
 ```

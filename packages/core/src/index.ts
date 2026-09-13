@@ -20,7 +20,13 @@ export type {
 
 export { isPDFLocation, isCodeLocation, isWebLocation } from './types.ts';
 
-export type { EditorSelection, EditorPort, FileSystemPort, ImageRendererPort } from './ports.ts';
+export type {
+  EditorSelection,
+  EditorPort,
+  FileSystemPort,
+  ImageRendererPort,
+  ExplainProvider,
+} from './ports.ts';
 
 export type { BBox } from './normalizeBBox.ts';
 export { clamp01, normalizeBBox, coerceBBox, isValidBBox, bboxArea } from './normalizeBBox.ts';
