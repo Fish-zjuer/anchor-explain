@@ -24,6 +24,7 @@
     "onCommand:anchorExplain.goto",
     "onCommand:anchorExplain.playPause",
     "onCommand:anchorExplain.showStart",
+    "onCommand:anchorExplain.openSettings",
     "onCommand:anchorExplain.showState",
     "onCommand:anchorExplain.setApiKey",
     "onView:anchorExplain.start"
@@ -56,7 +57,7 @@
           {
             "id": "setup",
             "title": "配一个模型端点",
-            "description": "填 baseUrl 与模型名，再把 API Key 存进 SecretStorage（不进 settings.json）。\n[设置 API Key](command:anchorExplain.setApiKey)\n[显示当前配置](command:anchorExplain.showState)",
+            "description": "填 baseUrl 与模型名，再把 API Key 存进 SecretStorage（不进 settings.json）。\n[打开设置](command:anchorExplain.openSettings)\n[设置 API Key](command:anchorExplain.setApiKey)\n[显示当前配置](command:anchorExplain.showState)",
             "media": {
               "markdown": "media/walkthrough/setup.md"
             },
@@ -136,6 +137,11 @@
       {
         "command": "anchorExplain.showState",
         "title": "显示状态",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.openSettings",
+        "title": "打开设置（配模型端点）",
         "category": "Anchor"
       },
       {

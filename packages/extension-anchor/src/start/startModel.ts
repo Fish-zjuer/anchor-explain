@@ -17,7 +17,14 @@ import type { ChordId, ResolvedChords } from '../sidebar/keybindingResolve.ts';
 import { STATE_WORD } from '../protocol.ts';
 import type { WalkthroughState } from '../protocol.ts';
 
-export type StartActionId = 'capture' | 'setApiKey' | 'showState' | 'openPdf' | 'selectRegion' | 'goto';
+export type StartActionId =
+  | 'capture'
+  | 'openSettings'
+  | 'setApiKey'
+  | 'showState'
+  | 'openPdf'
+  | 'selectRegion'
+  | 'goto';
 
 export type StartGroupId = 'start' | 'line2' | 'session';
 
@@ -63,6 +70,16 @@ export const START_ACTIONS: readonly StartActionSpec[] = [
     detail: '在编辑器里选中一段，然后按下面这个键（也可以在命令面板里找「Anchor：捕获选区并讲解」）',
     command: 'anchorExplain.capture',
     chordId: 'capture',
+  },
+  {
+    // **门厅不许是死路**（D61）。用户第一眼看到的常常是"设置 API Key 不可用 + 说你还缺 providers"，
+    // 那就必须有一条去配 providers 的路 —— 否则面板把该做什么说清楚了，却一步也走不动。
+    // 放在「设置 API Key」**上面**：顺序本身就是那句"先配端点、再存 key"。
+    id: 'openSettings',
+    group: 'start',
+    title: '打开设置（配模型端点）',
+    detail: '填 anchorExplain.providers：baseUrl 与一个模型名就够（端点由你选，一个 OpenAI 兼容实现覆盖多家）',
+    command: 'anchorExplain.openSettings',
   },
   {
     id: 'setApiKey',
@@ -161,7 +178,9 @@ export interface StartModelInput {
 }
 
 const REQUIREMENT_REASON: Record<StartRequirement, string> = {
-  provider: '还没有配 anchorExplain.providers（要有 baseUrl 与 tier1Model）',
+  // 说清缺什么，并**指出下一步按哪个按钮**（D61）：灰按钮只写"缺钱"不写"去哪儿取"，
+  // 就是把这句提示变成一句废话。
+  provider: '还没有配 anchorExplain.providers —— 先用上面那颗「打开设置」填 baseUrl 与 tier1Model',
   peer: '没有安装线2（anchor.anchor-pdf）',
   session: '现在没有进行中的讲解',
 };

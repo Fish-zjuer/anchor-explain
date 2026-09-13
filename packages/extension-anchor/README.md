@@ -72,7 +72,8 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 | 面板上看到 | 其实就是 |
 |---|---|
 | 「讲解选中的代码」+ 一个键位徽章 | `anchorExplain.capture`。**徽章显示的是你自己绑的键**（改过 `keybindings.json` 就显示你那个；解绑了就不显示键） |
-| 「设置 API Key」 | `anchorExplain.setApiKey` |
+| 「打开设置（配模型端点）」 | `anchorExplain.openSettings` → 打开设置并筛到 `anchorExplain`（**D61**：面板说"你还缺 providers"，就必须有一条去配它的路） |
+| 「设置 API Key」 | `anchorExplain.setApiKey`（没配端点时是灰的，理由会指出上面那颗「打开设置」） |
 | 「显示状态（自检）」 | `anchorExplain.showState` |
 | 「用 Anchor 打开 PDF」 | `anchorPdf.openInAnchorViewer`（**线2 装没装**决定它灰不灰） |
 | 「框选 PDF 区域」 | `anchorPdf.selectRegion`，键位徽章是线2 的 `Ctrl+Alt+S` |
@@ -280,7 +281,7 @@ pnpm devhost:pdf      # 线2（PDF 视图）
 | 找不到状态栏提示 | 未定论 | 运行 `Anchor: 显示状态`，它会报出状态栏项是否显示、文本是什么 |
 | **左侧活动栏没有 Anchor 图标** | 产物是旧的（S8 之前），或图标文件没进扩展目录 | 回仓库根 `pnpm build` 再起宿主。图标路径写错时 VS Code **只是不显示、不报错**，所以 `pnpm smoke` 专门查了它在不在 |
 | **点开图标面板一片空白** | webview 的 HTML 没生成出来（客户端脚本被字符串问题破坏） | `pnpm test` 里 `startUi` 那几条就是查这个的；若它们绿着，请看 `Developer: Open Webview Developer Tools` 的控制台 |
-| **面板上的某个动作点了没反应** | 它是灰的（前置条件不满足） | 看按钮下面那行字：它会说清缺什么（模型没配 / 线2 没装 / 没有进行中的讲解） |
+| **面板上的某个动作点了没反应** | 它是灰的（前置条件不满足） | 看按钮下面那行字：它会说清缺什么**并指出下一步按哪颗**（模型没配 → 先「打开设置」/ 线2 没装 / 没有进行中的讲解） |
 | **欢迎页「演练」里没有那张卡片** | 扩展没被载入，或 walkthrough 声明有问题 | 先确认 `Anchor:` 命令在（见上一行）；卡片内容在 `package.json` 的 `contributes.walkthroughs`，四步正文在 `media/walkthrough/` |
 | 高亮有，但 `main.c` 被挤得看不见 | 面板开在第 2 列 | 拖分栏，或把面板拖到侧边栏 |
 | 想重来一次 | 上一次的框还在 | 触发一次新讲解即可（会先收掉上一次） |
@@ -333,7 +334,7 @@ pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（会先 build，见上）
 pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 161 条 + 线2 12 条
+pnpm test             # 在根执行：core 28 条 + 本包 162 条 + 线2 12 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
 
@@ -345,8 +346,8 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（161 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
-| 产物冒烟（58 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示） |
+| 单测（162 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
+| 产物冒烟（61 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示 → 「打开设置」真的落到内置设置命令） |
 | 链路冒烟（115 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
 
 这三层都只对**最外层边界**（`vscode` 模块）打桩，桩之外全是真代码。

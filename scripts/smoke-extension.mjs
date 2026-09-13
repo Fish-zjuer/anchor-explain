@@ -315,6 +315,15 @@ check(
 );
 check(startModel?.openChord === 'Ctrl+Alt+A', '面板顶部知道怎么再打开自己');
 
+// 门厅不许是死路（D61）：面板说"你还缺 anchorExplain.providers"，那就得有一条去配它的路，
+// 而且那条路**不受任何前置条件限制**
+check(
+  startModel?.sections?.some((section) =>
+    section.actions.some((a) => a.id === 'openSettings' && a.enabled),
+  ),
+  '没配模型时「打开设置」仍可点（否则面板把该做什么说清楚了、却一步也走不动）',
+);
+
 // 点一个动作 → 真的执行了那条命令
 receiveFromPanel?.({ type: 'start:run', id: 'capture' });
 check(
@@ -327,6 +336,20 @@ const executedBefore = executedCommands.length;
 receiveFromPanel?.({ type: 'start:run', id: '并不是我们的动作' });
 await new Promise((resolve) => setTimeout(resolve, 20));
 check(executedCommands.length === executedBefore, '面板回传表里没有的 id 时，一条命令都不执行');
+
+// 面板点「打开设置」→ 命令层再去调 VS Code 的内置设置命令（参数在**命令里面**，不在面板里）
+receiveFromPanel?.({ type: 'start:run', id: 'openSettings' });
+check(
+  await waitFor(() => executedCommands.some((c) => c.id === 'anchorExplain.openSettings')),
+  '点「打开设置」→ 执行的是我们声明的那条命令',
+);
+executedCommands.length = 0;
+await registered.get('anchorExplain.openSettings')?.();
+check(
+  executedCommands.some((c) => c.id === 'workbench.action.openSettings' && c.args[0] === 'anchorExplain'),
+  '那条命令落到 VS Code 的内置设置命令上，并带上筛选词',
+  JSON.stringify(executedCommands.at(-1) ?? null),
+);
 
 // 缺前置条件：明确提示 + 不执行（goto 在没有会话时本来是静默返回的）
 const gotoBefore = executedCommands.length;

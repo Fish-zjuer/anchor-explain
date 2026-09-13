@@ -7,6 +7,10 @@ OpenAI / DeepSeek / 通义 / 本地 Ollama，端点与模型名由你选。
 { "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" } }
 ```
 
+懒得搜就点这里（会把设置筛到 `anchorExplain`）：
+
+[打开设置](command:anchorExplain.openSettings)
+
 ### 2. 存 Key
 
 **不要把 key 写进 `settings.json`** —— 那份文件会被同步、被截图、被提交。

@@ -338,6 +338,7 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `anchorExplain.explainAnchor` | 接受外部 Anchor 并起讲解（跨扩展入口） | — | — |
 | `anchorExplain.showStart` | 打开开始界面（把活动栏的「开始」视图聚焦出来，**S8 新增**） | `ctrl+alt+a` / `cmd+alt+a` | `!inputFocus` |
 | `anchorExplain.showState` | 显示当前状态（F2 的骨架验证命令） | — | — |
+| `anchorExplain.openSettings` | 打开设置并筛到 `anchorExplain`（**D61**：开始面板里那条"去配端点"的路） | — | — |
 | `anchorExplain.setApiKey` | 把某个 provider 的 API Key 存进 `SecretStorage`（**S3 新增**） | — | — |
 | `anchorPdf.openInAnchorViewer` | 用 Anchor 的 PDF 视图打开 | — | — |
 | `anchorPdf.selectRegion` | 让当前 PDF 面板进入框选模式（**S5 新增**） | `ctrl+alt+s` / `cmd+alt+s` | `activeCustomEditorId == 'anchorPdf.view'` |
@@ -356,7 +357,7 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 两侧的值都写在 `contributes.keybindings` 的 `key` / `mac` 里，并由
 `test/keybindingResolve.test.ts` 的耦合锁与 `WALKTHROUGH_CHORDS` 逐字比对。
 
-**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 10 个 ext-A 命令；
+**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 11 个 ext-A 命令；
 `scripts/smoke-extension.mjs` 有一条锁断言「`package.json` 声明的命令 == 实际注册的命令」。
 
 **`showStart` 的 `when: !inputFocus`（S8）**：与 `stop` 同一个立场（D11）——"打开开始界面"
@@ -580,7 +581,6 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 | 宿主 → 面板 | `{ type: 'start:model', model }` | 整份快照，见 `start/startModel.ts` 的 `StartModel` |
 
 **三条不许改回去的约定**：
-
 1. **`start:run` 只带 id**。webview 是不可信输入；若它能指定"执行哪个命令"，它就能执行任意命令。
    宿主用 `findStartAction(id)` 查 `START_ACTIONS`，查不到就丢 —— **能执行什么由宿主决定**。
    `parseStartMessage` 因此**只查形状、不查成员资格**（守卫管"能不能读"，业务管"能不能做"）。
@@ -594,6 +594,13 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 它和线1 的键一样可能被用户改掉，所以走同一套解析 —— `LINE2_CHORDS` +
 `test/keybindingResolve.test.ts` 里那条对线2 `package.json` 的镜像锁。
 **显示一个写死的默认键，就是替用户断言一件我们并不知道的事**（D10 对线2 同样成立）。
+
+**门厅不许是死路（D61）**：面板上每个灰按钮的 `note` 必须**指出下一步按哪个按钮**，
+而且必须真的存在那样一个按钮。目前唯一的缺口是"还没配 `anchorExplain.providers`"，
+对应 `anchorExplain.openSettings` —— 它包住了 VS Code 的内置命令
+`workbench.action.openSettings`（带筛选词 `anchorExplain`），**参数放在命令里面，不放面板**：
+`start:run` 只回传 id，说不出"带什么参数"（这是刻意的）。包一层还有个好处 ——
+"动作表里的命令必须在所属扩展里声明过"那条锁继续守得住（内置命令没法声明）。
 
 ---
 

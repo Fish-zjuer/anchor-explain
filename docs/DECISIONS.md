@@ -928,6 +928,40 @@ symlink 要管理员权限（或开发者模式），junction 不要。
 
 ---
 
+## D61 门厅不许是死路：灰按钮必须指出下一步按哪颗（S8 补）
+
+**用户先看出来的是这个**：面板上「设置 API Key」是灰的，理由是"还没有配 `anchorExplain.providers`" ——
+**而面板没有任何一条路能把用户带到那个设置上去**。说清了缺什么，却一步也走不动。
+
+**这不是美观问题，是流程缺陷**，而且是我自己在 D57 里埋的：我给 `setApiKey` 加了
+`requires: 'provider'`（理由是"命令自己也要求先配端点"），却忘了**门厅的义务不只是说明缺什么，
+还要给一条去补齐的路**。命令层的判断没错，错的是面板把这条判断变成了单行道。
+
+**改法三件**：
+
+1. **新增 `anchorExplain.openSettings`**：打开设置并筛到 `anchorExplain`。
+   它包住 VS Code 的内置命令 `workbench.action.openSettings`（参数写**在命令里**，
+   因为 §5.5 的 `start:run` 只回传 id、说不出"带什么参数"）。
+   包一层而不是让面板直接指向内置命令，是为了让"**动作表里的命令必须在所属扩展里声明过**"
+   那条锁继续守得住 —— 内置命令没法声明。
+2. **灰按钮的理由换成"下一步动作"**：`还没有配 anchorExplain.providers —— 先用上面那颗「打开设置」填 …`。
+   一条锁断言这句话里必须出现「打开设置」（理由不能只描述症状）。
+3. **顺带收掉用户可见文案里的错误码**：通知里原本是 `Anchor：PROVIDER_ERROR: 没有可用的 provider（…）`。
+   `describeError` 给的是给**我们**排查用的（`码: 人话`），所以加了 `userFacing()`：
+   `isAnchorError(err) ? err.message : describeError(err)` —— 通知只讲人话，
+   判断成败仍然一律用码（状态机 / 校验 / 日志全部照旧）。
+
+**顺带**：演练卡片第一步的正文加了 `[打开设置](command:anchorExplain.openSettings)` ——
+那条"去配端点"的路现在在四个入口里都有。
+
+**状态**：生效。验证：`pnpm check` 全绿 —— **202 测**（core 28 + ext 162 + pdf 12）
+→ `pnpm smoke` **61** 项（+3：面板里「打开设置」可点、点它真的执行了那条命令、
+那条命令落到内置设置命令且带筛选词）。
+
+---
+
+
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

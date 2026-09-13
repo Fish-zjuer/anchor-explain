@@ -111,17 +111,35 @@ test('一切就绪：每个动作都可点，note 是它自己的说明', () => 
   }
 });
 
-test('没配模型：只有「设置 API Key」灰掉，且说清缺什么', () => {
+test('没配模型：「设置 API Key」灰掉，但**「打开设置」必须可点**（门厅不许是死路，D61）', () => {
   const model = buildStartModel(input({ providerReady: false, providerSummary: '没有可用的 provider' }));
 
   const key = actionOf(model, 'setApiKey');
   assert.equal(key.enabled, false);
   assert.ok(key.note.includes('anchorExplain.providers'), key.note);
+  assert.ok(key.note.includes('打开设置'), `灰按钮的理由要指出下一步按哪个按钮：${key.note}`);
+
+  // 这条是这一测的重点：面板说"你还缺 providers"，那就必须有一步去配它 ——
+  // 否则用户面对的是"所有事都做不了"的一句话，而不是一条路。
+  const open = actionOf(model, 'openSettings');
+  assert.equal(open.enabled, true, '「打开设置」不该受 provider / 对端 / 会话任何条件限制');
+  // 命令在**表**里，不在模型里（模型只带 id，命令由宿主查表 —— §5.5 的刻意的分工）
+  assert.equal(START_ACTIONS.find((a) => a.id === 'openSettings')?.command, 'anchorExplain.openSettings');
+
   assert.equal(actionOf(model, 'showState').enabled, true, '自检命令不需要模型');
   assert.equal(actionOf(model, 'capture').enabled, true, '捕获不预设前提：缺模型时它自己会报错');
 
   assert.equal(model.status[0]?.label, '模型');
   assert.equal(model.status[0]?.tone, 'warn');
+});
+
+test('「打开设置」排在「设置 API Key」上面（顺序就是"先配端点、再存 key"）', () => {
+  const model = buildStartModel(input());
+  const ids = model.sections[0]?.actions.map((a) => a.id) ?? [];
+  assert.ok(
+    ids.indexOf('openSettings') < ids.indexOf('setApiKey'),
+    `实际顺序：${ids.join(' → ')}`,
+  );
 });
 
 test('没装线2：两个线2 动作灰掉并且理由是同一句（不静默：说清是哪一半缺）', () => {

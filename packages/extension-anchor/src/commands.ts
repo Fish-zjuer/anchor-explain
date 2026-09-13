@@ -16,6 +16,7 @@ import {
   AnchorError,
   createContextRequestLogger,
   describeError,
+  isAnchorError,
   isCodeLocation,
   isPDFLocation,
   locationLabel,
@@ -66,6 +67,18 @@ const PDF_EXTENSION_ID = 'anchor.anchor-pdf';
  */
 function peer(): vscode.Extension<unknown> | undefined {
   return vscode.extensions.getExtension(PDF_EXTENSION_ID);
+}
+
+/**
+ * 弹给用户的那句话：**不带错误码**。
+ *
+ * @anchor 为什么专门写一个：`describeError` 给的是 `PROVIDER_ERROR: 没有可用的 provider（…）` ——
+ *         那个码是**给我们排查用的**，用户看到它只会以为是"报错编号"，还会以为是扩展坏了。
+ *         真正需要码的时候：错误里的中文说明已经说清该怎么办，而取件/调用记录在输出面板「Anchor」通道。
+ *         （判断成败仍然靠码，所以状态机、校验、日志一律继续用 `describeError`。）
+ */
+function userFacing(err: unknown): string {
+  return isAnchorError(err) ? err.message : describeError(err);
 }
 
 export function registerCommands(context: vscode.ExtensionContext): void {
@@ -487,7 +500,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       status.hide();
       setActive(false);
       setContextKey('anchorExplain.sessionOpen', false);
-      void vscode.window.showErrorMessage(`Anchor：${describeError(err)}`);
+      void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
       return;
     }
 
@@ -541,7 +554,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       anchor = await codeAdapter.capture(scope);
     } catch (err) {
       // 确认之后、取件之前环境变了（文件被关掉）。这不是"讲解失败"，所以不走 explain 的提示。
-      void vscode.window.showErrorMessage(`Anchor：${describeError(err)}`);
+      void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
       return;
     }
 
@@ -671,6 +684,22 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   // 视图要等用户点开才存在 —— 所以 `start` 是懒的（见 refreshStart）。
   start = StartViewProvider.register(context, { onRun: (id) => void runStartAction(id) }, makeStartModel);
 
+  /**
+   * 打开设置，并筛到我们的配置项（D61）。
+   *
+   * @anchor 这是开始面板里**唯一**一条不指向我们自己功能的动作（它落到 VS Code 的内置命令
+   *         `workbench.action.openSettings` 上）。之所以包成一条我们自己的命令，而不是让面板
+   *         直接指向内置命令，是因为有一条锁断言"动作表里的每条命令都在所属扩展里声明过" ——
+   *         内置命令没法声明，那条锁就守不住了。包一层，规则不变，而且用户也能从命令面板
+   *         （或在键盘快捷方式里给它绑一个键）用到它。
+   *
+   * **参数放在这里，不放面板**：面板只会说"执行哪条命令"，说不出"带什么参数"
+   * （§5.5 的 `start:run` 只回传 id，这是刻意的）。所以命令自己带着它要的参数。
+   */
+  async function openSettings(): Promise<void> {
+    await vscode.commands.executeCommand('workbench.action.openSettings', 'anchorExplain');
+  }
+
   context.subscriptions.push(
     vscode.commands.registerCommand('anchorExplain.capture', capture),
     vscode.commands.registerCommand('anchorExplain.explainAnchor', explainAnchor),
@@ -680,6 +709,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.goto', goto),
     vscode.commands.registerCommand('anchorExplain.playPause', playPause),
     vscode.commands.registerCommand('anchorExplain.showStart', showStart),
+    vscode.commands.registerCommand('anchorExplain.openSettings', openSettings),
     vscode.commands.registerCommand('anchorExplain.showState', showState),
     vscode.commands.registerCommand('anchorExplain.setApiKey', setApiKey),
 
