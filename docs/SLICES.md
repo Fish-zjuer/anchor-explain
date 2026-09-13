@@ -15,8 +15,8 @@
 |---|---|---|---|
 | F1 | 契约冻结：`packages/core` 类型与 ports 落地 | 自动化 | 完成 `slice-F1` |
 | F2 | 走通骨架 + 测试台（能装能编能跑能测 + 假货 + fixture） | 自动化 | 完成 `slice-F2` |
-| S1 | 线1 最小可视：F5 → main.c → FakeProvider 写死 3 step → 高亮流转 → ESC 清除 | **用户实操确认** | 代码与自动化完成 `slice-S1`，**待用户 F5 确认** |
-| S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 | — |
+| S1 | 线1 最小可视：F5 → main.c → FakeProvider 写死 3 step → 高亮流转 → ESC 清除 | **用户实操确认** | 完成 `slice-S1`（用户四轮实测反馈后通过） |
+| S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 | 代码与自动化完成 `slice-S2`，**待用户 F5 确认** |
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | — |
 | S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | — |
 | S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | — |
@@ -36,7 +36,7 @@
 | 切片 | 假的东西 | 真的东西 |
 |---|---|---|
 | S1 | AI 从哪来（`FakeProvider` 返回写死的 `ExplanationResult`）、选区从哪来（`EditorPort` 的假实现返回写死 40-48 行） | `ExplanationResult → 校验 → 会话状态 → decoration 渲染 → 侧边栏 → 状态栏 → 键位` **全真** |
-| S2 | 仅 AI（`FakeProvider`） | 以上全部 + 真实选区捕获 |
+| S2 | 仅 AI（`FakeProvider`） | 以上全部 + **真实选区捕获**（`EditorPort` 无任何覆盖层，`fakes/fakeEditorPort.ts` 已从产物退出） |
 | S3 | 无 | 全部真实 |
 
 因此 S2 = 换掉"选区来源"一个件；S3 = 换掉 `FakeProvider` 一个文件。**上层零改动。**
@@ -188,7 +188,7 @@
 ### S1 自动化验收结果
 
 `pnpm check`：typecheck 0 错 → **93 测**（core 28 + ext 65）全过 → build → `pnpm smoke` **19 项**
-→ `pnpm smoke:chain` **64 项**（数字都是运行时实际执行到的断言数，不是 `grep` 出来的调用点数）。
+→ `pnpm smoke:chain` **67 项**（数字都是运行时实际执行到的断言数，不是 `grep` 出来的调用点数）。
 链路冒烟的硬断言包括「整块那一拍一个子高亮都不亮」「扫描时只亮一个点、上一个点已灭」
 「扫完两个点才进第 2 步」「5 个 decoration type 全部 `isWholeLine` + `ClosedClosed` + 主题色、无写死颜色」
 「done 时状态栏是「已讲完」且不再展示已失效的 next/prev」「`sessionOpen` 在 done 时仍为 true」
@@ -208,6 +208,35 @@
 - **范围**：`src/vscode/ports/editorPort.ts`（接 `window.activeTextEditor`）、`src/commands.ts`（确认流程）、`src/adapters/CodeAdapter.ts`（首次落地 `capture`）
 - **验收标准**：**用户实操** —— 选中 40-48 行 → 快捷键 → 出现确认 → 确认后结果与 S1 一致。
 - **回退点**：`slice-S1`
+
+### S2 落地结果（2026-09-13，tag `slice-S2`）
+
+| 声明范围内 | 落地 |
+|---|---|
+| `src/vscode/ports/editorPort.ts` | 新增 `getDocumentSelection()`（真实现，优先取内存文档）；`getSelection` 的替身覆盖已删 |
+| `src/commands.ts` | 删 `resolveS1FixturePath()` + 假选区覆盖；新增 `askWhatToExplain()`（§4.1.1 四条分支）；`capture()` 改走确认 → `codeAdapter.capture(scope)` → `explain()`；`showState` 增报「上次捕获」 |
+| `src/adapters/CodeAdapter.ts` | **首次落地**：`type` / `capabilities` / `capture(scope?)` |
+| `packages/core/src/ports.ts` | `EditorPort` 加 `getDocumentSelection()`（**契约追加，非规范原文，已在 CONTRACTS §2 同步**） |
+| `packages/core/src/fakes/fakeEditorPort.ts` | 兑现新方法 + `FAKE_DOCUMENT_LINE_COUNT` / `FAKE_DOCUMENT_TEXT` |
+| `src/paths.ts` | 新增 `basenameOf()`（显示名，跨平台一致） |
+| **新增** `test/CodeAdapter.test.ts` | 7 条：真选区 / 整文件 / 缺省 / 指纹退化 / 两种缺件抛错 / capabilities / 形状仍满足 `SourceAdapter` |
+| `scripts/smoke-walkthrough.mjs` | 桩补 `editor.selection`（可改）+ Range 感知的 `getText` + 可回答的 `showQuickPick`/`showWarningMessage`；新增第 9 节 15 项 |
+| `scripts/smoke-extension.mjs` | 新增 4 项，含两条「假选区已从产物里 tree-shake 掉」；`bundleText` 现在会先做 `\uXXXX` 反解（esbuild 默认 `charset=ascii`，否则中文断言永远假红） |
+
+**两处偏离，均已声明**：
+
+1. **`detect()` / `fetchContext()` 没落**。它们的调用方（适配器注册表、§3.2 取件校验）S3 才存在。
+   属**分期兑现**冻结接口，不是接口变更（CONTRACTS §3.1 已写明）。
+   也因此 S2 的 `CodeAdapter` 还不满足 `SourceAdapter` 的完整形状 —— 它满足的是"落地的那部分 + 不违背签名"。
+2. **`capture()` 多一个可选参数**（§3.1）。可选参数仍可赋值给零参签名，接口没变，有单测钉住。
+
+**自动化验收结果**：`pnpm check` 全绿 —— 100 测（core 28 + ext 72）→ `pnpm smoke` 23 项
+→ `pnpm smoke:chain` 82 项。第 9 节把桩选区改成 `第 10-14 行`（**替身写死 40-48，给不出这个值**），
+再断言锚点跟着走 —— 这是"真选区确实接上了"的硬证据，不是"看起来一样"。
+
+**验收靠**：**用户实操**。选中一段 → `Ctrl+Shift+A` → 出现确认 → 选「讲解这段」→ 结果与 S1 一致；
+再试「整个文件」与「只放光标」两条分支，并按 `Anchor: 显示状态` 核对「上次捕获」。
+
 
 ## S3 线1 接真实 AI
 

@@ -466,6 +466,52 @@ mac 上 `ctrl` → `cmd`，`alt+[`/`alt+]`/`escape` 两侧相同。
 
 ---
 
+## D51 S2：真选区接线 + 捕获确认 UI + `capture` 搬进适配器
+
+**决策**：五件事。
+
+1. **删掉假选区**。`commands.ts` 里 `createFakeEditorPort(...)` 那行覆盖与 `resolveS1FixturePath()`
+   整体删除，`editorPort` 就是 `createEditorPort()` 的原样。**判据不是"行为看起来对"**：
+   `fakes/fakeEditorPort.ts` 的独有字面量（`fake-hash-0000`、整份文档的替身正文）已从产物里
+   tree-shake 掉 —— `smoke-extension.mjs` 有一条断言守这件事，它比"这次没走到那条分支"硬。
+2. **`EditorPort` 加 `getDocumentSelection()`**（§2）。「整个文件」需要一个"整份文档的行区间 + 全文"，
+   而 `getSelection()` 在只放光标时按设计返回 `null`。**复用 `EditorSelection` 而不是新开一个
+   `getDocumentText()`**：`capture()` 的产出只认"一个行区间 + 一段原文"，两种范围在它眼里是同一件事；
+   多一个形状就多一条分支，而这条分支的差别只在"谁来定这个区间"。
+   实现**优先取内存里的文档**（同 `documentTextHash` 的理由：用户在编辑器里改了还没保存，
+   要讲的是他眼前那一份）。
+3. **`CodeAdapter.capture(scope?)` 带一个可选参数**（§3.1）。冻结的 `SourceAdapter.capture()`
+   是零参的 —— 可选参数在 TS 里仍可赋值给零参签名（有单测
+   `capture 的形状仍满足 §3 的 SourceAdapter` 钉住），所以**接口本身没有变**。
+   这样"范围从哪来"（由确认 UI 拍板）不必污染契约，也不必让适配器去读 UI。
+4. **确认 UI 四条分支**（§4.1.1）：无编辑器 → 提示去打开；只有光标 → 提示未选中 + 一个
+   「讲解整个文件」按钮；有选区 → QuickPick「讲解这段 / 整个文件」；取消 → 什么都不做。
+   **不替用户决定"只放光标就讲整份"**：整份往往几百行，命中率低得多，与其猜不如摆出来让他拍板。
+   **两种"没得讲"分开提示**，因为要用户做的事不同（一个去打开、一个去选）——
+   一句笼统的"请先选中内容"会让人在没有编辑器时反复去选。
+5. **`showState` 增报「上次捕获：<文件> 第 a-b 行（选区 / 整个文件）」**。真选区接上之后，
+   "我刚才那一按到底讲了哪一段"**在屏幕上再也看不出来**（高亮画在哪由讲解内容决定，
+   不由选区决定）。这条纯粹是为了让用户能自己复核，也是 `smoke:chain` 第 9 节能验真选区的唯一观测点。
+
+**顺带落地**：`CodeAdapter` 从 `commands.ts` 的 `buildAnchor()` 搬进 `adapters/CodeAdapter.ts`。
+搬家的实际收益不是洁癖，而是**它第一次变得可断言** —— `adapters/` 零 vscode 依赖（D19），
+于是"选区 → Anchor"这件事现在有 7 条 `node --test` 覆盖，不必按 F5。
+`sourceName` 从 `vscode.workspace.asRelativePath(...)` 改成 `paths.ts` 新增的 `basenameOf()`
+（§3.1 记的形状就是 `'main.c'`；且 `node:path.basename` 按平台变行为，Linux 上切不动 `C:\` 开头的路径）。
+
+**为什么 `detect()` / `fetchContext()` 没一起落**：它们的调用方（适配器注册表、§3.2 取件校验）
+S3 才存在，现在写出来就是没有消费者的死码。这是**分期兑现**冻结接口，不是接口变更；
+`SLICES.md` 的 S3 范围里本就列着 `CodeAdapter` 的 `fetchContext`。
+
+**验证**：`pnpm check` 全绿 —— 100 测（core 28 + ext 72，本轮 +7）→ `pnpm smoke` 23 项
+（+4，其中两条是"假选区已从产物退出"）→ `pnpm smoke:chain` 82 项（+15，第 9 节专门验真选区：
+把桩的选区改成一个替身绝不会给的值 `第 10-14 行`，再看锚点跟不跟着走 ——
+**替身给不出这个值，所以这一节不可能被替身蒙过**）。
+
+**状态**：生效。
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

@@ -7,7 +7,13 @@
 import { readFileSync } from 'node:fs';
 
 const TARGETS = {
-  'packages/extension-anchor/src/paths.ts': ['normPath', 'samePath', 'countTextLines'],
+  'packages/extension-anchor/src/paths.ts': ['normPath', 'samePath', 'basenameOf', 'countTextLines'],
+  'packages/extension-anchor/src/adapters/CodeAdapter.ts': [
+    'CaptureScope',
+    'CodeAdapter',
+    'CodeAdapterDeps',
+    'createCodeAdapter',
+  ],
   'packages/extension-anchor/src/protocol.ts': [
     'WalkthroughState',
     'HostToSidebar',
@@ -65,9 +71,32 @@ const TARGETS = {
   'packages/extension-anchor/src/sidebar/ui/html.ts': ['renderSidebarHtml'],
   'packages/extension-anchor/src/vscode/ports/editorPort.ts': ['createEditorPort'],
   'packages/extension-anchor/src/vscode/ports/fileSystemPort.ts': ['createFileSystemPort', 'countLines'],
-  'packages/extension-anchor/src/commands.ts': ['registerCommands', 'resolveS1FixturePath'],
+  'packages/extension-anchor/src/commands.ts': ['registerCommands', 'askWhatToExplain', 'capture'],
   'packages/extension-anchor/src/extension.ts': ['activate', 'deactivate'],
-  'packages/core/src/ports.ts': ['ExplainProvider'],
+  'packages/core/src/ports.ts': [
+    'EditorSelection',
+    'EditorPort',
+    'FileSystemPort',
+    'ImageRendererPort',
+    'ExplainProvider',
+  ],
+  'packages/core/src/fakes/fakeEditorPort.ts': [
+    'FAKE_FILE_PATH',
+    'FAKE_LINE_START',
+    'FAKE_LINE_END',
+    'FAKE_SELECTION_TEXT',
+    'FAKE_DOCUMENT_HASH',
+    'FAKE_DOCUMENT_LINE_COUNT',
+    'FAKE_DOCUMENT_TEXT',
+    'createFakeEditorPort',
+  ],
+  'packages/core/src/fakes/fakeProvider.ts': [
+    'FAKE_TARGET_LINE_START',
+    'FAKE_TARGET_LINE_END',
+    'FALLBACK_FILE_PATH',
+    'createFakeProvider',
+    'fakeProvider',
+  ],
 };
 
 const PREFIXES = [

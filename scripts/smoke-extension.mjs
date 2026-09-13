@@ -179,12 +179,26 @@ check(msg.includes('第 40-48 行'), 'locationLabel（来自 @anchor/core）在�
 check(msg.includes('已安装'), '对端已安装时如实报告');
 
 // ---- 侧边栏资源活着 --------------------------------------------------------
-const bundleText = readFileSync(BUNDLE, 'utf8');
+// 读进来先做一次 `\uXXXX` 反解：esbuild 默认 charset='ascii'，产物里的中文是转义形式，
+// 直接 includes('讲解整个文件') 会永远假红 —— 而中文文案恰恰是用户唯一看得到的东西。
+const bundleText = readFileSync(BUNDLE, 'utf8').replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+  String.fromCharCode(parseInt(hex, 16)),
+);
 check(bundleText.includes('acquireVsCodeApi'), 'webview 客户端脚本进了产物');
 check(bundleText.includes('ui:ready'), 'webview 启动握手（ui:ready）进了产物');
 check(bundleText.includes("default-src 'none'"), '侧边栏 CSP 进了产物');
 check(bundleText.includes('anchorExplain.walkthroughActive'), 'context key 名进了产物（键位 when 生效的前提）');
 check(bundleText.includes('anchorExplain.sessionOpen'), 'sessionOpen 也在产物里（ESC 在 done 之后仍有效的前提，D46）');
+
+// ---- S2 接线的硬判据：假选区必须**从产物里整体消失** ----------------------
+// S2 删掉的是 `commands.ts` 里 `createFakeEditorPort(...)` 那行覆盖。删干净了没有，
+// 有一条比行为断言更硬的判据：`fakes/fakeEditorPort.ts` 里独有的字面量如果已经被
+// tree-shake 掉，就说明产物里**根本没有**假选区这条路径 —— 不是"这次没走到"。
+// 别拿 `'test/fixtures/main.c'` 当判据：fakeProvider 的兜底路径也是它，会误命中。
+check(!bundleText.includes('fake-hash-0000'), '产物里没有假选区的指纹常量（那行覆盖确实删了）');
+check(!bundleText.includes('整份 main.c 的替身文本'), '产物里没有假文档正文（「整个文件」走的是真端口）');
+check(bundleText.includes('getDocumentSelection'), '「整个文件」读的是端口方法（真实现已进产物）');
+check(bundleText.includes('讲解整个文件') && bundleText.includes('只放了光标'), '确认 UI 的两条分支文案都在产物里');
 
 // ---- 纯视觉：产物里根本不存在写文件的路径 ----------------------------------
 // 比运行期断言更强：不是"这次没调用"，而是"没有可调用的东西"。

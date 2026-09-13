@@ -119,19 +119,26 @@ CodeAdapter.capture()
    ▼ 用户按键 → 命令 anchorExplain.next / prev / goto / playPause / stop
 ```
 
-**关键点**：第 40-48 行这个选区来源，在 S1 由 `EditorPort` 的**假实现**返回、S2 换成真实现；**下游一行不动**（`DECISIONS.md` D17）。
+**关键点**：第 40-48 行这个选区来源，在 S1 由 `EditorPort` 的**假实现**返回、**S2 已换成真实现**；
+**下游一行不动**（`DECISIONS.md` D17）。这就是"假货只放在最外层边界"的兑现方式 ——
+换掉的是**一个来源**，不是一条链路。
 
-**S1 的实际形态与上图的两处差异**（都是尚未落地，不是改了架构）：
+**S2 之后的实际形态与上图的一处差异**（尚未落地，不是改了架构）：
 
-1. `CodeAdapter.capture()` 还没写成文件 —— 它的等价逻辑（选区 → `Anchor`）暂时住在
-   `commands.ts` 的 `buildAnchor()` 里，S2 搬进 `adapters/CodeAdapter.ts`。
-2. `Orchestrator.run()` 整个不存在 —— S1 是 `commands.ts` 里一行
-   `const provider: ExplainProvider = fakeProvider;`（`ExplainProvider` 就是"编排层"的替身接口）。
-   S3 换成编排循环时，同样只改那一行。
+`Orchestrator.run()` 整个不存在 —— 现在是 `commands.ts` 里一行
+`const provider: ExplainProvider = fakeProvider;`（`ExplainProvider` 就是"编排层"的替身接口）。
+S3 换成编排循环时，同样只改那一行。
 
-于是 S1 的命令回调实际读作：
-`getSelection → buildAnchor → provider → validateExplanation → WalkthroughSession → {player, sidebar, statusBar}`，
-其中**除了首尾两处替身，每一环都已经是真的**。
+于是现在的命令回调实际读作：
+`askWhatToExplain → CodeAdapter.capture(scope) → provider → validateExplanation → WalkthroughSession → {player, sidebar, statusBar}`，
+其中**除了 `provider` 这一处替身，每一环都是真的** —— 包括 S2 刚接上的真选区与真适配器。
+
+两处细节与上图不同（都不影响架构，只是尚未填）：
+
+1. **确认那一步**：上图从"用户选区"直接进 `capture()`。实际多一个 `askWhatToExplain()`
+   （QuickPick「讲解这段 / 整个文件」），它决定 `scope`；只有光标时改为提示 + 按钮（§4.1.1）。
+2. **`Anchor.neighborHint` 目前不填**：它是可选字段，第一个消费者是 S3 的 prompt。
+   现在填一个没有消费者的字符串属凭空猜形状 —— 与 S1 不提前抽 `SourceAdapter` 是同一条理由。
 
 ### 4.2 线2：PDF
 
@@ -183,7 +190,7 @@ provider 配置由用户在 settings JSON 自填（`baseUrl` / `apiKey` / `tier1
 
 ---
 
-## 6. 防返工的装配差异（S1 vs S3）
+## 6. 防返工的装配差异（S1 / S2 / S3）
 
 同一张图，只换边界上的一个件：
 
@@ -191,10 +198,14 @@ provider 配置由用户在 settings JSON 自填（`baseUrl` / `apiKey` / `tier1
 S1:  [假选区] → CodeAdapter → Orchestrator([FakeProvider]) → 校验 → Session → 渲染
 S2:  [真选区] → CodeAdapter → Orchestrator([FakeProvider]) → 校验 → Session → 渲染
 S3:  [真选区] → CodeAdapter → Orchestrator([openAICompatible]) → 校验 → Session → 渲染
-                    ↑ 这一步起变真                    ↑ 只有这一处被替换
+      ↑ S2 换掉了这个           ↑ S3 换掉这个，也是最后一处替身
 ```
 
 **渲染层在 S1~S3 完全不变。** 这就是"先建基础、上层构建、最后把基础换成成熟版本"的具体形态（`DECISIONS.md` D17/D18）。
+
+**S2 的实际观感**：把假选区换成真选区，**只动了两处来源**（`EditorPort` 的真实现、`commands.ts` 里的确认流程），
+外加把 `capture()` 从装配层搬进 `adapters/CodeAdapter.ts`（第一次可被 `node --test` 覆盖）。
+播放器、会话、侧边栏、状态栏、键位**一行都没改** —— 这正是 S1 把假货关在边界上换来的东西。
 
 ---
 

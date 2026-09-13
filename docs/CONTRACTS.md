@@ -141,6 +141,11 @@ interface EditorSelection {
 
 interface EditorPort {
   getSelection(): Promise<EditorSelection | null>;
+  // S2 追加【新增，非规范原文】：把**整份文档**也表达成一个 EditorSelection
+  // （lineStart=1、lineEnd=总行数、text=全文），供确认 UI 的「整个文件」用。
+  // 复用同一个类型是刻意的 —— 两种范围在 capture() 眼里就是"一个行区间 + 那段原文"。
+  // 没有活动编辑器 → null；实现必须优先取内存里的文档（与 documentTextHash 同一条理由）。
+  getDocumentSelection(): Promise<EditorSelection | null>;
   getActiveFilePath(): Promise<string | null>;
   revealLocation(loc: CodeLocation, opts?: { inCenter?: boolean }): Promise<void>;
   documentTextHash(filePath: string): Promise<string | null>;   // 用于 staleness 检测
@@ -167,7 +172,11 @@ type ExplainProvider = (anchor: Anchor) => Promise<ExplanationResult>;
 | 边界 | 假的实现 | 真的实现 | 替换时机 |
 |---|---|---|---|
 | AI 从哪来 | `fakes/fakeProvider.ts`（写死 3 个合法 step） | orchestrator 循环 + `openAICompatible` | S3 |
-| 选区从哪来 | `fakes/fakeEditorPort.ts`（写死第 40-48 行） | `vscode/ports/` 下的真 `EditorPort` | S2 |
+| 选区从哪来 | ~~`fakes/fakeEditorPort.ts`（写死第 40-48 行）~~ | `vscode/ports/` 下的真 `EditorPort` | **S2 已完成** |
+
+**S2 之后的实际接线**：`commands.ts` 里只剩一处替身（`provider`），还带 `★` 注释。
+假选区的覆盖已删除，`fakes/fakeEditorPort.ts` 仅被单测引用（**已从产物里 tree-shake 掉**，
+`smoke-extension.mjs` 有两条断言守这件事）。
 
 **中间链路永远是真的**：`ExplanationResult → 输出校验 → 会话状态 → decoration → 侧边栏 → 状态栏 → 键位`。
 不允许把假数据写进播放器（见 `DECISIONS.md` D17）。
@@ -206,6 +215,23 @@ interface SourceAdapter {
 | `CodeAdapter` | `['file']` | `window.activeTextEditor` 存在且有选区 | `CodeLocation` + `extractedText` = 选中行原文 |
 | `PDFAdapter` | `['page_range']` | 存在已打开的 PDF 会话 | `PDFLocation` + `capturedImage`（拖拽裁出的截图） |
 | `WebAdapter` | — | **本次不实现** | — |
+
+**`SourceAdapter` 分两步兑现（S2 落了第一步，接口本身没动）**：
+
+`packages/extension-anchor/src/adapters/CodeAdapter.ts` 现有 `type` / `capabilities` /
+`capture(scope?)`，**尚无** `detect()` 与 `fetchContext()` —— 它们的调用方（适配器注册表、
+§3.2 取件校验）S3 才存在，现在写出来就是没有消费者的死码。`SLICES.md` 对 S3 的范围里本就列着
+`CodeAdapter` 的 `fetchContext`，这是一次**分期落地**，不是接口变更。
+
+`capture()` 比冻结的零参形式多一个**可选**参数：
+
+```ts
+capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'selection'
+```
+
+可选参数在 TS 里仍可赋值给零参签名（有单测 `capture 的形状仍满足 §3 的 SourceAdapter` 钉住），
+所以 `CodeAdapter` 照样满足 `SourceAdapter`。这样"范围从哪来"（由确认 UI 拍板）
+不必污染冻结的接口，也不必让适配器去读 UI（`adapters/` 不许 import 'vscode'）。
 
 ### §3.2 取件校验规则（冻结）
 
@@ -283,6 +309,28 @@ interface SourceAdapter {
 **`title` / `category` 约定（F2 冻结）**：命令的 `title` **只写动作**（如 `显示状态`），
 分类统一由 `category: "Anchor"` 提供，命令面板里显示为 `Anchor: 显示状态`。
 **不要在 `title` 里再写一遍 `Anchor:`** —— `category` 会被面板拼在前面，会显示成 `Anchor: Anchor: 显示状态`。
+
+### §4.1.1 捕获确认 UI（S2 新增，非规范原文）
+
+`anchorExplain.capture` 从"按下就讲"改成"先问一句再讲"。四条分支（`commands.ts` 的
+`askWhatToExplain` + `capture`）：
+
+| 场景 | 行为 |
+|---|---|
+| 没有活动编辑器 | 警告「先打开一个文件，再选中要讲解的代码。」**不弹确认** |
+| 有编辑器、无选区（只放光标） | 警告「<文件> 里只放了光标，没有选中内容。」+ 一个按钮「讲解整个文件」 |
+| 有编辑器、有选区 | QuickPick 二选一：「讲解这段」（描述是真实行区间）/「讲解整个文件」（描述是真实行数） |
+| 用户在确认里取消（Esc） | 什么也不做：不起会话、不建 decoration type、不弹通知 |
+
+**为什么"只放光标"不直接讲整个文件**：整份文件往往几百行，命中率通常比一段低得多。
+与其替用户猜，不如把「要讲整份吗」摆出来让他拍板 —— 他也可以直接按 Esc 走开。
+
+**为什么"没打开文件"和"没选内容"要分开提示**：两者要用户做的事不一样（一个去打开、一个去选），
+一句笼统的"请先选中内容"会让人在没有编辑器时反复去选。
+
+**「整个文件」也是 `Anchor`**：它的 `location` 是 `{ filePath, lineStart: 1, lineEnd: 总行数 }`，
+`extractedText` 是全文。下游（校验 / 会话 / 渲染 / 侧边栏）完全看不出这两种范围的区别 ——
+这正是 §3.1 里 `capture(scope?)` 用一个可选参数就够了的理由。
 
 ### §4.2 context key（冻结）
 
@@ -504,12 +552,12 @@ function createContextRequestLogger(opts?: {
 
 ## §9 模块路径映射与落地行号
 
-### 9.1 已落地（F1 契约类 / F2 骨架与替身 / S1 线1 最小可视）——行号 = 实体定义所在行
+### 9.1 已落地（F1 契约类 / F2 骨架与替身 / S1 线1 最小可视 / S2 真选区与确认 UI）——行号 = 实体定义所在行
 
 | 路径 | 职责 | 关键实体行号 |
 |---|---|---|
 | `packages/core/src/types.ts` | §1 全部类型 + 守卫 + §3 适配器接口 | `SourceType`:14 `PDFLocation`:16 `WebLocation`:21 `CodeLocation`:27 `Location`:33 `Anchor`:35 `ContextRequest`:45 `WalkthroughStep`:51 `ExplanationResult`:61 `HighlightEmphasis`:75 `SubHighlight`:78 `AdapterCapabilities`:95 `SourceAdapter`:106 `isPDFLocation`:119 `isCodeLocation`:124 `isWebLocation`:133 |
-| `packages/core/src/ports.ts` | §2 ports（**全部为新增**） | `EditorSelection`:13 `EditorPort`:20 `FileSystemPort`:28 `ImageRendererPort`:34 `ExplainProvider`:48 |
+| `packages/core/src/ports.ts` | §2 ports（**全部为新增，S2 加了 `getDocumentSelection`**） | `EditorSelection`:13 `EditorPort`:20 `FileSystemPort`:41 `ImageRendererPort`:47 `ExplainProvider`:61 |
 | `packages/core/src/normalizeBBox.ts` | §10.1 bbox 数学（**唯一实现，fork 也复用**） | `BBox`:8 `clamp01`:16 `normalizeBBox`:27 `coerceBBox`:42 `isValidBBox`:50 `bboxArea`:55 |
 | `packages/core/src/locationLabel.ts` | §10.2 位置标签 | `formatLineRange`:12 `locationLabel`:24 |
 | `packages/core/src/errors.ts` | §10.3 类型化错误 | `AnchorErrorCode`:8 `AnchorError`:16 `isAnchorError`:28 `describeError`:33 |
@@ -518,10 +566,11 @@ function createContextRequestLogger(opts?: {
 | `packages/core/package.json` / `tsconfig.json` | 包声明与类型检查配置（tsconfig `extends` 根 `tsconfig.base.json`） | — |
 | `packages/core/test/{types,locationLabel,normalizeBBox,fakes}.test.ts` | 单测（`node --test`） | — |
 | `packages/core/src/fakes/fakeProvider.ts` | 假 AI。S3 被 orchestrator 替换 | `FAKE_TARGET_LINE_START`:29 `FAKE_TARGET_LINE_END`:30 `FALLBACK_FILE_PATH`:33 `createFakeProvider`:161 `fakeProvider`:176 |
-| `packages/core/src/fakes/fakeEditorPort.ts` | 假选区（写死 40-48 行）。S2 被真实现替换 | `FAKE_FILE_PATH`:18 `FAKE_LINE_START`:19 `FAKE_LINE_END`:20 `FAKE_SELECTION_TEXT`:27 `FAKE_DOCUMENT_HASH`:39 `createFakeEditorPort`:63 |
+| `packages/core/src/fakes/fakeEditorPort.ts` | 假选区（写死 40-48 行）。**S2 已从产物里退出**，现在只被单测引用 | `FAKE_FILE_PATH`:18 `FAKE_LINE_START`:19 `FAKE_LINE_END`:20 `FAKE_SELECTION_TEXT`:27 `FAKE_DOCUMENT_HASH`:39 `FAKE_DOCUMENT_LINE_COUNT`:47 `FAKE_DOCUMENT_TEXT`:48 `createFakeEditorPort`:77 |
 | `packages/extension-anchor/src/extension.ts` | activate → `registerCommands`（入口保持极薄） | `activate`:11 `deactivate`:16 |
-| `packages/extension-anchor/src/paths.ts` | 路径归一 / 比较 / 行数（vscode-free，四条链路共用一份） | `normPath`:11 `samePath`:15 `countTextLines`:25 |
-| `packages/extension-anchor/src/commands.ts` | §4.1 八个命令 + 四层装配。**全项目唯一的假货接线点**（见 §2.1） | `registerCommands`:41 `resolveS1FixturePath`:382（S1 脚手架，S2 删除） |
+| `packages/extension-anchor/src/paths.ts` | 路径归一 / 比较 / 显示名 / 行数（vscode-free，四条链路共用一份） | `normPath`:11 `samePath`:15 `basenameOf`:26 `countTextLines`:37 |
+| `packages/extension-anchor/src/adapters/CodeAdapter.ts` | **S2 落地**。代码来源适配器：`capture(scope?)` 把「选区 / 整文件」变成 `Anchor`。零 vscode 依赖 | `CaptureScope`:31 `CodeAdapter`:33 `CodeAdapterDeps`:46 `createCodeAdapter`:50（`detect`/`fetchContext` 归 S3） |
+| `packages/extension-anchor/src/commands.ts` | §4.1 八个命令 + 四层装配 + 捕获确认（§4.1.1）。**全项目唯一的假货接线点**（见 §2.1，S2 后只剩 `provider` 一行） | `registerCommands`:42 `askWhatToExplain`:234 `capture`:259 |
 | `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 两处边界守卫 | `WalkthroughState`:19 `HostToSidebar`:35 `SidebarToHost`:54 `HostToSelect`:66 `SelectToHost`:71 `isAnchorLike`:102 `parseSidebarMessage`:131 |
 | `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**） | `ValidationIssue`:35 `ExplanationOutline`:42 `ExplanationValidation`:49 `coerceEmphasis`:66 `parseMaybeJson`:76 `validateExplanation`:299 `describeIssues`:336 |
 | `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
@@ -531,9 +580,9 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（读用户实际绑定，并**交给侧边栏复用**）+ `probe()` 自检 | `StatusBarHandle`:23 `createStatusBar`:65 |
 | `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表 + JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:13 `WalkthroughChordSpec`:15 `WALKTHROUGH_CHORDS`:27 `ResolvedChord`:76 `ResolvedChords`:77 `KeyBindingEntry`:79 `defaultChords`:86 `keybindingsPathFrom`:99 `stripJsonc`:116 `parseKeybindings`:175 `resolveChords`:191 `formatChord`:258 |
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
-| `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（`getSelection` 当前被替身顶掉） | `createEditorPort`:24 |
+| `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（**S2 起五个方法全部是真的**，没有覆盖层） | `createEditorPort`:25 |
 | `packages/extension-anchor/src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` | `createFileSystemPort`:12 `countLines`:38 |
-| `packages/extension-anchor/test/{validateExplanation,WalkthroughSession,decorationPlan,keybindingResolve,protocol}.test.ts` | 线1 单测（58 条，`node --test`，全部 vscode-free） | — |
+| `packages/extension-anchor/test/*.test.ts`（6 个，72 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 新增 `CodeAdapter.test.ts` | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
 | `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器 | — |
@@ -547,8 +596,7 @@ function createContextRequestLogger(opts?: {
 
 | 路径 | 职责 | 落地切片 |
 |---|---|---|
-| `packages/extension-anchor/src/vscode/ports/editorPort.ts` 的 `getSelection` | **真选区**（其余三个方法 S1 起已是真的） | S2 |
-| `packages/extension-anchor/src/adapters/CodeAdapter.ts` | 代码来源适配器（`capture` 现在临时住在 `commands.ts` 的 `buildAnchor`） | S2 / S3 |
+| `packages/extension-anchor/src/adapters/CodeAdapter.ts` 的 `detect()` / `fetchContext()` | 兑现完整的 `SourceAdapter`（`capture` 已落） | S3 |
 | `packages/extension-anchor/src/orchestrator/*`（其余） | §3.2 取件校验、编排循环、ModelRouter | S3 |
 | `packages/extension-anchor/src/prompts/*` | 所有 prompt（含 §3.3 第 5 条的 repair） | S3 |
 | `packages/extension-anchor/src/config.ts` | §6 配置读取 + SecretStorage 覆盖 | S3 |

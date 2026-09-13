@@ -1,28 +1,29 @@
 /**
  * 四层装配 + §4.1 全部命令。事实源：docs/CONTRACTS.md §4.1。
  *
- * @anchor 本文件是整个线1 里**唯一**知道"假货在哪"的地方。两个替身各占一行，各自标注了
- *         替换时机，S2 / S3 只需要删掉或改掉那一行 —— 中间链路
- *         （校验 → 会话 → decoration → 侧边栏 → 状态栏）一行不用动。
+ * @anchor 本文件是整个线1 里**唯一**知道"假货在哪"的地方。S1 有两个替身，
+ *         **S2 已收掉一个**（假选区 → 真选区），现在只剩一个：
+ *
+ *         S3 接线点：`const provider: ExplainProvider = fakeProvider;` 那一行。
+ *         换成 orchestrator 循环后，中间链路（校验 → 会话 → decoration → 侧边栏 → 状态栏）
+ *         一行不用动。
  *
  * 装配顺序（STATE.md 里写死的）：commands → sidebar → playback → statusbar。
  */
 
-import * as path from 'node:path';
-import { existsSync } from 'node:fs';
 import * as vscode from 'vscode';
 import { AnchorError, describeError, isCodeLocation, locationLabel } from '@anchor/core';
 import type {
   Anchor,
   CodeLocation,
   EditorPort,
-  EditorSelection,
   ExplainProvider,
   ExplanationResult,
   FileSystemPort,
 } from '@anchor/core';
-import { createFakeEditorPort, FAKE_FILE_PATH } from '@anchor/core/fakes/fakeEditorPort';
 import { fakeProvider } from '@anchor/core/fakes/fakeProvider';
+import { createCodeAdapter } from './adapters/CodeAdapter.ts';
+import type { CaptureScope } from './adapters/CodeAdapter.ts';
 import { describeIssues, validateExplanation } from './orchestrator/validateExplanation.ts';
 import { isAnchorLike } from './protocol.ts';
 import { CodeWalkthroughPlayer } from './playback/CodeWalkthroughPlayer.ts';
@@ -41,12 +42,10 @@ const PEER_EXTENSION_ID = 'anchor.anchor-pdf';
 export function registerCommands(context: vscode.ExtensionContext): void {
   const fsPort: FileSystemPort = createFileSystemPort();
 
-  const realEditorPort = createEditorPort();
-
-  // ★ S2 接线点（唯一）：删掉下面两行里对 getSelection 的覆盖，真选区即刻生效。
-  //   其余三个方法（revealLocation / documentTextHash / getActiveFilePath）从 S1 起就是真的。
-  const fakeSelection = createFakeEditorPort({ filePath: resolveS1FixturePath() });
-  const editorPort: EditorPort = { ...realEditorPort, getSelection: () => fakeSelection.getSelection() };
+  // 真选区（S2）。这里不再有任何覆盖：命令层拿到的就是编辑器里那个选区，
+  // 以及（「整个文件」分支要的）当前文档的全文与行数。
+  const editorPort: EditorPort = createEditorPort();
+  const codeAdapter = createCodeAdapter({ editor: editorPort });
 
   // ★ S3 接线点（唯一）：换成 orchestrator 循环（真实 AI + fetch_context 取件）。
   const provider: ExplainProvider = fakeProvider;
@@ -59,6 +58,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   let unsubscribe: (() => void) | undefined;
   /** 每次 explain() 领一个号：慢的那次回来时若号已过期，就丢弃它的结果（见 explain） */
   let generation = 0;
+  /**
+   * 最近一次捕获的锚点与范围。**只为 `Anchor: 显示状态` 而留**：
+   * 真选区接上之后，"我选的是不是我以为的那段"变成了唯一无法从屏幕上直接看出来的事
+   * （高亮画在哪由讲解内容决定，不由选区决定）。留着它，用户按一下命令就能核对。
+   */
+  let lastCapture: { anchor: Anchor; scope: CaptureScope } | undefined;
 
   // 播放器与侧边栏都延迟构造：激活阶段不做任何 vscode 取值/建面板，启动开销为零，
   // 也让 scripts/smoke-extension.mjs 的桩不必覆盖一堆用不到的 API。
@@ -220,36 +225,58 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   /**
-   * 从选区组装 Anchor。
+   * 「讲解什么」的确认 —— S2 新增的唯一交互。
    *
-   * S2 会把这段搬进 `adapters/CodeAdapter.ts` 的 `capture()`（§3.1 的能力矩阵），
-   * S1 先留在装配层：手里只有一条来源线，提前抽接口等于凭空猜第二个消费者的形状。
+   * 两种"没得讲"分开提示，因为要用户做的事不一样：没打开文件要去打开，只放了光标要去选内容。
+   * 只放光标那一路**不直接开始讲整个文件**：整份文件往往是几百行，命中率通常比一段低得多，
+   * 与其猜，不如把「要讲整份吗」摆出来让用户拍板（他也可以直接按 Esc 走开）。
    */
-  async function buildAnchor(selection: EditorSelection): Promise<Anchor> {
-    const location: CodeLocation = {
-      filePath: selection.filePath,
-      lineStart: selection.lineStart,
-      lineEnd: selection.lineEnd,
-    };
-    const hash = await editorPort.documentTextHash(selection.filePath);
+  async function askWhatToExplain(editor: vscode.TextEditor): Promise<CaptureScope | undefined> {
+    const relative = vscode.workspace.asRelativePath(editor.document.uri);
 
-    return {
-      sourceType: 'code',
-      // 文档指纹：会话记忆与 staleness 都用它，取不到就退化成路径
-      sourceId: hash ?? selection.filePath,
-      sourceName: vscode.workspace.asRelativePath(vscode.Uri.file(selection.filePath)),
-      location,
-      extractedText: selection.text,
-    };
+    if (editor.selection.isEmpty) {
+      const picked = await vscode.window.showWarningMessage(
+        `Anchor：${relative} 里只放了光标，没有选中内容。`,
+        '讲解整个文件',
+      );
+      return picked ? 'whole-file' : undefined;
+    }
+
+    const start = Math.min(editor.selection.start.line, editor.selection.end.line) + 1;
+    const end = Math.max(editor.selection.start.line, editor.selection.end.line) + 1;
+    const items: { label: string; description: string; scope: CaptureScope }[] = [
+      { label: '讲解这段', description: `第 ${start}-${end} 行`, scope: 'selection' },
+      { label: '讲解整个文件', description: `共 ${editor.document.lineCount} 行`, scope: 'whole-file' },
+    ];
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'Anchor 讲解',
+      placeHolder: '要讲解哪一段？',
+    });
+    return picked?.scope;
   }
 
   async function capture(): Promise<void> {
-    const selection = await editorPort.getSelection();
-    if (!selection) {
-      void vscode.window.showWarningMessage('Anchor：先在编辑器里选中一段代码。');
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      void vscode.window.showWarningMessage('Anchor：先打开一个文件，再选中要讲解的代码。');
       return;
     }
-    await explain(await buildAnchor(selection));
+
+    const scope = await askWhatToExplain(editor);
+    if (!scope) return; // 用户取消：什么也不做，比默默讲一段他没点过头的内容好
+
+    let anchor: Anchor;
+    try {
+      anchor = await codeAdapter.capture(scope);
+    } catch (err) {
+      // 确认之后、取件之前环境变了（文件被关掉）。这不是"讲解失败"，所以不走 explain 的提示。
+      void vscode.window.showErrorMessage(`Anchor：${describeError(err)}`);
+      return;
+    }
+
+    lastCapture = { anchor, scope };
+    await explain(anchor);
   }
 
   /** 跨扩展入口（§5.1）。参数来自别的扩展，属于外部输入，必须先过形状守卫。 */
@@ -320,6 +347,17 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const peer = vscode.extensions.getExtension(PEER_EXTENSION_ID);
     parts.push(`对端 anchor-pdf：${peer ? '已安装' : '未安装'}`);
 
+    // 真选区接上之后，"我刚才那一按到底讲了哪一段"屏幕上再也看不出来
+    // （高亮画在哪由讲解内容决定，不由选区决定）。所以这里单独报一次。
+    if (lastCapture && isCodeLocation(lastCapture.anchor.location)) {
+      const how = lastCapture.scope === 'whole-file' ? '整个文件' : '选区';
+      parts.push(
+        `上次捕获：${lastCapture.anchor.sourceName} ${locationLabel(lastCapture.anchor.location)}（${how}）`,
+      );
+    } else {
+      parts.push('还没有捕获过');
+    }
+
     const step = session?.snapshot;
     parts.push(
       step
@@ -367,24 +405,4 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       },
     },
   );
-}
-
-/**
- * ── S1 脚手架（S2 删除）──
- *
- * 假选区里的路径是**仓库相对**的（`test/fixtures/main.c`），而 F5 调试宿主打开的工作区是
- * `test/fixtures`。真选区走 `document.uri.fsPath`，天生绝对路径，不需要这一步。
- *
- * 两个候选依次试：先「工作区根 + 文件名」（配合 .vscode/launch.json 的工作区设置命中），
- * 再「工作区根 + 整个相对路径」（工作区开的是仓库根时命中）。都不在就退回相对路径 ——
- * 那会让行数上界检查退化为跳过（`countLines` 返回 null），但讲解本身照常走。
- */
-function resolveS1FixturePath(): string {
-  const roots = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
-  for (const root of roots) {
-    for (const candidate of [path.join(root, path.basename(FAKE_FILE_PATH)), path.join(root, FAKE_FILE_PATH)]) {
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return FAKE_FILE_PATH;
 }

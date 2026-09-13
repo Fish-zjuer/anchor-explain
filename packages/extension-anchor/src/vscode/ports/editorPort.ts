@@ -3,7 +3,8 @@
  *
  * @anchor S1 里 `getSelection` 是**被替身顶掉的**：`commands.ts` 用
  *         `fakes/fakeEditorPort.ts` 覆盖了这一个方法，其余三个方法（定位、哈希、活动文件）
- *         从第一天起就是真实现。S2 要做的只是把那行覆盖删掉 —— 本文件不用改。
+ *         从第一天起就是真实现。**S2 已把那行覆盖删掉** —— 本文件现在是全部真实现，
+ *         命令层拿到的选区就是编辑器里那个选区。
  *
  * 本文件是 core 之外的实现层：`core/` 不许 import 'vscode'，`vscode/` 负责兑现 core 的接口。
  */
@@ -45,6 +46,23 @@ export function createEditorPort(): EditorPort {
         lineStart: start + 1,
         lineEnd: end + 1,
         text,
+      };
+    },
+
+    async getDocumentSelection(): Promise<EditorSelection | null> {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return null;
+
+      const doc = editor.document;
+      // 与 getSelection 同一种形状：取到最后一行的行尾为止，**不带末尾换行**。
+      // 为什么不复用 getSelection 再退化：那会把"没选内容"和"要整个文件"混成一件事，
+      // 而这两件事在 UI 上是两个不同的选项，必须能分别要。
+      const last = doc.lineCount - 1;
+      return {
+        filePath: doc.uri.fsPath,
+        lineStart: 1,
+        lineEnd: doc.lineCount,
+        text: doc.getText(new vscode.Range(0, 0, last, doc.lineAt(last).text.length)),
       };
     },
 

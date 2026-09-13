@@ -8,8 +8,15 @@
 
 ## 现在到哪了
 
-**S1：线1 最小可视**。八个命令全部可用，链路是真的（校验 → 会话 → decoration → 侧边栏 → 状态栏），
-**只有"AI 从哪来"与"选区从哪来"两处是替身**（见下）。
+**S2：线1 触发与确认 UI**。八个命令全部可用，链路是真的（确认 → 适配器 → 校验 → 会话 → decoration →
+侧边栏 → 状态栏），**只剩"AI 从哪来"一处替身**（S3 换掉）。
+
+S2 相比 S1 只多了三件事，但都是用户能直接感觉到的：
+
+1. **选区是真的了** —— 讲的就是你在编辑器里选的那一段（S1 里写死 40-48 行）
+2. **多一步确认** —— 有选区时弹「讲解这段 / 整个文件」；只放光标时提示 + 一个「讲解整个文件」按钮
+3. **`Anchor: 显示状态` 多报一项「上次捕获」** —— 真选区接上后，"我这一按讲了哪一段"在屏幕上
+   看不出来（高亮由讲解内容决定），所以单独报给你核对
 
 | 命令 ID | 命令面板里显示 | 默认键（`when` 见 `package.json`） |
 |---|---|---|
@@ -20,44 +27,41 @@
 | `anchorExplain.goto` | `Anchor: 跳到指定步` | `Ctrl+Alt+W` |
 | `anchorExplain.playPause` | `Anchor: 播放或暂停` | `Ctrl+Shift+Space` |
 | `anchorExplain.explainAnchor` | `Anchor: 讲解外部锚点` | —（跨扩展入口，S6 由线2 调用） |
-| `anchorExplain.showState` | `Anchor: 显示状态` | —（骨架自检） |
+| `anchorExplain.showState` | `Anchor: 显示状态` | —（自检：选区 / 上次捕获 / 状态栏） |
 
 mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），键位请自己在
 `keybindings.json` 里改；状态栏提示会读你的实际绑定（读不到才回退默认）。
 
-### 两个替身在哪（S2 / S3 各自只改一行）
+### 唯一的替身在哪（S3 只改一行）
 
 `src/commands.ts` 里 `registerCommands()` 的开头：
 
 ```ts
-// ★ S2 接线点（唯一）：删掉下面两行里对 getSelection 的覆盖，真选区即刻生效。
-const fakeSelection = createFakeEditorPort({ filePath: resolveS1FixturePath() });
-const editorPort: EditorPort = { ...realEditorPort, getSelection: () => fakeSelection.getSelection() };
-
 // ★ S3 接线点（唯一）：换成 orchestrator 循环（真实 AI + fetch_context 取件）。
 const provider: ExplainProvider = fakeProvider;
 ```
 
-配套的 S1 脚手架是文件末尾的 `resolveS1FixturePath()`（**S2 一并删除**）：把假选区里那个
-仓库相对路径落到 F5 工作区里的真文件上，好让"文档总行数"取自真实文件。
+（S1 里还有第二处 —— 假选区 —— S2 已经把那段覆盖连同 `resolveS1FixturePath()` 一起删掉了。
+`fakes/fakeEditorPort.ts` 现在只被单测引用，已从打包产物里 tree-shake 掉。）
 
 ## 源码入口表
 
 | 文件 | 职责 |
 |---|---|
 | `src/extension.ts` | activate → `registerCommands`，入口保持极薄 |
-| `src/commands.ts` | §4.1 全部命令 + 四层装配 + **唯一的假货接线点** |
+| `src/commands.ts` | §4.1 全部命令 + 四层装配 + 捕获确认（§4.1.1）+ **唯一的假货接线点** |
+| `src/adapters/CodeAdapter.ts` | 代码来源适配器：`capture(scope?)` 把「选区 / 整文件」变成 `Anchor`（**零 vscode 依赖**，可单测） |
 | `src/protocol.ts` | §5 消息协议 + 两处边界守卫（webview 来的、其他扩展来的） |
-| `src/paths.ts` | 路径归一/比较/行数（四条链路共用，vscode-free） |
+| `src/paths.ts` | 路径归一/比较/显示名/行数（四条链路共用，vscode-free） |
 | `src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门 —— **AI 输出不可信的唯一入口** |
-| `src/playback/WalkthroughSession.ts` | 会话状态机（下标/播放/staleness，vscode-free） |
-| `src/playback/decorationPlan.ts` | 「一个 step 该画哪些框」的纯决策（vscode-free） |
+| `src/playback/WalkthroughSession.ts` | 会话状态机（拍游标/播放/staleness，vscode-free） |
+| `src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策（vscode-free） |
 | `src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；只读不写文档 |
 | `src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 |
 | `src/sidebar/statusBar.ts` | 状态栏提示（键位读用户实际绑定、staleness 提示） |
 | `src/sidebar/keybindingResolve.ts` | 键位表 + JSONC 解析 + 显示格式化（vscode-free） |
 | `src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**内联进产物**；客户端脚本不参与类型检查 |
-| `src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（`getSelection` 当前被替身顶掉） |
+| `src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（**五个方法全部是真的，没有覆盖层**） |
 | `src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` |
 
 ## 怎么跑（第一次：从零到看见荧光笔）
@@ -113,23 +117,33 @@ pnpm devhost
 1. 左侧资源管理器里应该只有两个文件：`main.c`、`sample-30p.pdf`。
    **如果不是**，说明第 2 步的目录参数没生效（那就回到方式 B）。
 2. 点开 `main.c`，滚到第 40 行，能看到 `static int rb_pop(ring_buffer_t *rb, int *out)`。
-3. 用鼠标选中 40-48 行（**S1 里这一步只影响手感，不影响结果** —— 见下面的说明）。
+3. 用鼠标**选中 40-48 行**（S2 起这一步**决定讲什么** —— 选别的会讲别的）。
 4. 触发讲解，二选一：
    - **命令面板（最稳）**：`Ctrl+Shift+P` → 输入 `Anchor` → 选 **`Anchor: 捕获选区并讲解`**
    - **快捷键**：`Ctrl+Shift+A`（mac `Cmd+Shift+A`；**焦点必须在编辑器里**，不能停在资源管理器）
-5. 应该同时发生三件事：
+5. **先出现确认框**（S2 新增）：面板顶部弹一个 QuickPick，两项 ——
+   「**讲解这段** · 第 40-48 行」与「**讲解整个文件** · 共 N 行」。
+   选第一项（想试整份就选第二项；按 Esc 则什么也不做）。
+6. 确认后同时发生三件事：
    - 右边（第 2 列）弹出「**Anchor 讲解**」面板，里面有标题、摘要、3 个步骤
    - 编辑器里第 40-42 行出现**均匀的浅色底色**，此刻**还没有任何一行被单独点亮**
    - 右下角状态栏出现 `$(book) 1/3 步 · 整块 · 讲解中 · Alt+] 下一步 · …`
-6. **逐点扫描**（这是"讲得细"的部分）：
+7. **逐点扫描**（这是"讲得细"的部分）：
    - `Alt+]` → 第 40 行亮起「上下文」，块级底色不变，面板里对应的那行出现 `▸` 与
      「第 1/2 个逻辑点」徽章
    - 再 `Alt+]` → 40 行灭、第 42 行亮起「定义」
    - **任何一拍都只有一行亮色** —— 这样块看起来才是"一整块"而不是花斑
    - 扫完两个点才进第 2 步（44-45）
    - 觉得一下一下按太慢：`Ctrl+Shift+Space` 播放，荧光会自己在块内扫过去
-7. 走到最后一步的**最后一拍**再按一次 `Alt+]` → 状态栏变「**已讲完**」，
+8. 走到最后一步的**最后一拍**再按一次 `Alt+]` → 状态栏变「**已讲完**」，
    **接着按 `Esc`** → 高亮全清、状态栏收起、面板显示「讲解已结束」。
+
+**想确认"到底讲了哪一段"**：命令面板 → `Anchor: 显示状态`，看其中一项
+「上次捕获：main.c 第 40-48 行（选区）」或「… 第 1-N 行（整个文件）」。
+
+**没有选中内容时**（只放了光标）按 `Ctrl+Shift+A`：不会弹二选一，而是提示
+「只放了光标，没有选中内容。」+ 一个「讲解整个文件」按钮。**没有打开文件**时是另一句提示
+「先打开一个文件，再选中要讲解的代码。」—— 这两句是分开的，因为要你做的事不一样。
 
 > **所有动作都能从命令面板触发**，键位只是方便。被抢键或键盘不顺手时用命令面板：
 > `Anchor: 下一步` / `Anchor: 上一步` / `Anchor: 退出讲解` / `Anchor: 跳到指定步` / `Anchor: 播放或暂停`。
@@ -143,10 +157,10 @@ pnpm devhost
 2. 侧边栏面板左下角的「**退出**」按钮（点一下就清）
 3. 命令面板 → `Anchor: 退出讲解`
 
-> **S1 的选区是写死的**：不管你在 `main.c` 里选了什么、甚至什么都没选，
-> 讲解的一定是**第 40-48 行** —— 那是 `fakeEditorPort` 里写死的一段（S2 才换成你真正的选区）。
-> 想看你**实际**选了什么，用命令面板的 `Anchor: 显示状态`，那条走的是真选区。
-> **两者不一致是 S1 的正常现象，不是 bug。**
+> **高亮仍然画在第 40-48 行附近，即使你选的是别的地方** —— 这是正常的：
+> S2 换掉的是**选区**（锚点区间跟着你走），还没换掉**讲解内容**。
+> 讲解来自 `fakeProvider` 里写死的脚本（它就是照 `main.c` 的 `rb_pop` 写的），S3 才换成真 AI。
+> 想确认锚点区间是不是你选的那段 → `Anchor: 显示状态` 里的「上次捕获」。
 
 > **看不到状态栏提示？** 命令面板执行 `Anchor: 显示状态`，它会报出状态栏项此刻是否显示、
 > 文本是什么 —— 用来分辨"提示没显示"（我的问题）和"显示了但没找到"（落点问题）。
@@ -160,6 +174,8 @@ pnpm devhost
 | 新窗口里命令面板搜不到 `Anchor:` | 扩展没被载入：产物缺失/损坏 | 在那个新窗口执行 `Developer: Show Running Extensions`，看 `anchor.anchor-explain` 在不在；不在就回仓库根重跑 `pnpm build` 再起一次 |
 | 有 `Anchor:` 命令，但 `Ctrl+Shift+A` 没反应 | `when: editorTextFocus` 不满足（焦点在资源管理器/终端），或键被别的扩展抢了 | 先点一下 `main.c` 的编辑区；或改用命令面板；或加 `--disable-extensions` 重起方式 B |
 | 按 `Esc` 没反应、高亮清不掉 | 焦点在终端/别的输入框里，Esc 到不了命令 | 先点一下编区或侧边栏面板；或点面板里的「退出」；或命令面板 `Anchor: 退出讲解` |
+| 弹了「只放了光标，没有选中内容」 | 这就是 S2 的行为：没选区不猜，问你要不要讲整份 | 点「讲解整个文件」，或先选中一段再按一次 |
+| 确认框里写的行区间不是我选的 | 选区在弹框之前被改了（点了别处） | 重选一次；`Anchor: 显示状态` 的「上次捕获」是权威值 |
 | 面板里有讲解文字，但编辑器里**没有**高亮 | 目标文件路径没解析到 —— 宿主的工作区既不是 `test/fixtures` 也不是仓库根 | 用方式 B 起宿主（它带的目录参数就是对的） |
 | 找不到状态栏提示 | 未定论 | 运行 `Anchor: 显示状态`，它会报出状态栏项是否显示、文本是什么 |
 | 高亮有，但 `main.c` 被挤得看不见 | 面板开在第 2 列 | 拖分栏，或把面板拖到侧边栏 |
@@ -178,7 +194,7 @@ pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（见上）
 pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 65 条
+pnpm test             # 在根执行：core 28 条 + 本包 72 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
 
@@ -190,9 +206,9 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（54 条，vscode-free） | `pnpm test` | 校验闸门、会话状态机、配色决策、键位解析、两处守卫 |
-| 产物冒烟 | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；webview 资源在产物里 |
-| 链路冒烟 | `pnpm smoke:chain` | `capture` 从选区跑到 decoration：画在哪几行、哪一档配色、退出清干净、**文件字节未变** |
+| 单测（72 条，vscode-free） | `pnpm test` | 校验闸门、会话状态机、配色决策、键位解析、两处守卫、**适配器的「选区 → Anchor」** |
+| 产物冒烟（23 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；webview 资源在产物里；**假选区已从产物退出** |
+| 链路冒烟（82 项） | `pnpm smoke:chain` | `capture` 从**真选区**跑到 decoration：确认的四条分支、画在哪几行、哪一档配色、退出清干净、**文件字节未变** |
 
 这三层都只对**最外层边界**（`vscode` 模块）打桩，桩之外全是真代码。
 它们**都不替代 F5**：配色好不好看、流转顺不顺，只有肉眼看才算数。

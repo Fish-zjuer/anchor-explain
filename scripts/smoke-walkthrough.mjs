@@ -7,6 +7,7 @@
  *
  * 只对最外层边界打桩（`vscode` 模块）。桩之外全是真的：
  *   - 真的读磁盘上的 `test/fixtures/main.c`（所以行数上界检查用的是真数据）
+ *   - **S2 起真的读编辑器选区**（桩提供的 `window.activeTextEditor.selection`，第 9 节会改它来验接线）
  *   - 真的 `fakeProvider` → 真的 `validateExplanation` → 真的 `WalkthroughSession`
  *   - 真的 `CodeWalkthroughPlayer` 决策，只是把 `setDecorations` 记下来
  *   - 真的 `SidebarPanel` 生成 HTML，只是把 `postMessage` 记下来
@@ -73,7 +74,8 @@ class MarkdownString {
 }
 
 const source = readFileSync(MAIN_C, 'utf8');
-const lineCount = source.split(/\r?\n/).length - (source.endsWith('\n') ? 1 : 0);
+const sourceLines = source.split(/\r?\n/);
+const lineCount = sourceLines.length - (source.endsWith('\n') ? 1 : 0);
 
 const messages = [];
 const registered = new Map();
@@ -82,20 +84,51 @@ const decorationTypes = [];
 const reveals = [];
 const webviews = [];
 const statusItems = [];
+const quickPicks = [];
 let applyEditCalls = 0;
 let receiveFromWebview;
 let onCloseDocument;
+
+// S2：capture 现在走**真选区**（`window.activeTextEditor.selection`），所以桩必须真的给一个，
+// 而且要能改 —— "只放光标没选内容"、QuickPick 里选哪一项，都是靠改下面这几个变量走的。
+// 行号 0-based，与 VS Code 的 Position 一致；默认 39..47 = 第 40-48 行（1-based）。
+let selectionStartLine = 39;
+let selectionEndLine = 47;
+let selectionEmpty = false;
+/** 用户在 QuickPick 里点的 label；undefined = 用户按 Esc 取消 */
+let quickPickAnswer;
+/** 用户在警告提示上点的按钮（S2 的"只放光标"分支）；undefined = 没点 */
+let warningAnswer;
 
 const editor = {
   document: {
     uri: { fsPath: MAIN_C },
     lineCount,
-    getText: () => source,
-    lineAt: (n) => ({ text: source.split(/\r?\n/)[n] ?? '' }),
+    // 必须支持按 Range 取：真实现是 `doc.getText(new Range(start, 0, end, 行尾))`。
+    // 如果这里忽略参数返回全文，`extractedText` 会悄悄变成整份文件，而没有任何断言会红。
+    getText: (range) => {
+      if (!range) return source;
+      const { start, end } = range;
+      const out = sourceLines.slice(start.line, end.line + 1);
+      if (out.length === 0) return '';
+      out[out.length - 1] = out[out.length - 1].slice(0, end.character);
+      out[0] = out[0].slice(start.character);
+      return out.join('\n');
+    },
+    lineAt: (n) => ({ text: sourceLines[n] ?? '' }),
     // 讲解期间用户完全可能把这个文件关掉。桩必须能模拟它 —— 见下面第 6 节
     get isClosed() {
       return closed;
     },
+  },
+  get selection() {
+    // 只放光标时 VSCode 的 start/end 是同一个位置（`isEmpty` 就是"两者相等"），
+    // 桩照这个来，否则 showState 会打出一句"光标在 第 10-14 行"这种真实里不会出现的话
+    return {
+      isEmpty: selectionEmpty,
+      start: { line: selectionStartLine, character: 0 },
+      end: { line: selectionEmpty ? selectionStartLine : selectionEndLine, character: 0 },
+    };
   },
   decorations: new Map(),
   setDecorations(type, ranges) {
@@ -128,9 +161,14 @@ const vscodeStub = {
     visibleTextEditors: [editor],
     activeTextEditor: editor,
     showInformationMessage: (m) => (messages.push(['info', m]), Promise.resolve(undefined)),
-    showWarningMessage: (m) => (messages.push(['warn', m]), Promise.resolve(undefined)),
+    showWarningMessage: (m) => (messages.push(['warn', m]), Promise.resolve(warningAnswer)),
     showErrorMessage: (m) => (messages.push(['error', m]), Promise.resolve(undefined)),
-    showQuickPick: () => Promise.resolve(undefined),
+    showQuickPick: (items) => {
+      quickPicks.push(items);
+      // S2：capture 先弹一次确认。答什么由 `quickPickAnswer` 决定 ——
+      // undefined 表示用户按了 Esc，那条路径也要能跑（取消不该起会话）。
+      return Promise.resolve(items.find((i) => i.label === quickPickAnswer));
+    },
     openTextDocument: () => Promise.resolve(editor.document),
     showTextDocument: () => Promise.resolve(editor),
     createTextEditorDecorationType(options) {
@@ -262,6 +300,9 @@ check(messages.at(-1)?.[0] === 'error', '非法锚点走错误提示', messages.
 check(webviews.length === 0, '非法锚点没有起会话');
 
 // ---- 2. 正常捕获 -----------------------------------------------------------
+// S2 起 capture 之前会先弹一次确认。默认按「讲解这段」答，让本节验的还是"选中一段"这条主路径；
+// 整文件 / 取消 / 只放光标三条分支在第 9 节单独走。
+quickPickAnswer = '讲解这段';
 await registered.get('anchorExplain.capture')?.();
 
 check(webviews.length === 1, '捕获后建了侧边栏面板');
@@ -544,6 +585,74 @@ check(!closeThrew, 'onDidCloseTextDocument 回调本身不抛');
 check(webviews[0].webview.posted.at(-1)?.type === 'session:end', '关掉正在讲的文件会主动结束会话（§4.2）');
 check(statusItems[0]?.shown === false, '关文件后状态栏已收起');
 closed = false;
+
+// ---- 9. S2：真选区接线 + 确认 UI 的四条分支 --------------------------------
+// 这一节的本事在于**能区分真选区与替身**：替身写死 40-48 行，所以这里把桩的选区改成
+// 一个替身绝不会给的值（第 10-14 行），再看锚点跟不跟着走。
+// 放在最后跑：它每走一次都重开会话，会打乱第 3 节依赖的那条游标。
+const stateLine = () => messages.at(-1)?.[1] ?? '';
+
+selectionStartLine = 9;
+selectionEndLine = 13; // 第 10-14 行
+
+quickPicks.length = 0;
+quickPickAnswer = '讲解这段';
+await registered.get('anchorExplain.capture')?.();
+
+const asked = quickPicks.at(-1) ?? [];
+check(asked.length === 2, '有选区时确认框给两个选项（这段 / 整个文件）', `${asked.length}`);
+check(
+  asked.map((i) => i.label).join('|') === '讲解这段|讲解整个文件',
+  '两个选项的文案与顺序都是定好的',
+  asked.map((i) => i.label).join('|'),
+);
+check(asked[0]?.description === '第 10-14 行', '确认框里的行区间来自编辑器真实选区', asked[0]?.description ?? '');
+check(asked[1]?.description === `共 ${lineCount} 行`, '「整个文件」选项报的是真实行数', asked[1]?.description ?? '');
+
+await registered.get('anchorExplain.showState')?.();
+check(stateLine().includes('第 10-14 行'), '锚点用的是刚选的那段，不是替身写死的 40-48', stateLine());
+check(stateLine().includes('（选区）'), '捕获方式如实记为「选区」', stateLine());
+
+// 「整个文件」：同一个编辑器、同一份文档，只是范围换成 1..总行数
+quickPickAnswer = '讲解整个文件';
+await registered.get('anchorExplain.capture')?.();
+await registered.get('anchorExplain.showState')?.();
+check(stateLine().includes(`第 1-${lineCount} 行`), '「整个文件」的锚点区间是 1..总行数', stateLine());
+check(stateLine().includes('（整个文件）'), '捕获方式如实记为「整个文件」', stateLine());
+check(stateLine().includes('第 10-14 行'), '整文件分支不影响编辑器里那个真实选区本身', stateLine());
+
+// 只放光标：不该弹二选一（没有"这段"可讲），而是问一句要不要讲整份
+selectionEmpty = true;
+quickPicks.length = 0;
+await registered.get('anchorExplain.capture')?.();
+check(quickPicks.length === 0, '只放光标时**不弹**二选一（没有"这段"可选）');
+check(stateLine().includes('只放了光标'), '只放光标 → 明确提示未选中内容', stateLine());
+
+warningAnswer = '讲解整个文件';
+await registered.get('anchorExplain.capture')?.();
+await registered.get('anchorExplain.showState')?.();
+check(stateLine().includes(`第 1-${lineCount} 行`), '在提示上点「讲解整个文件」→ 走整文件分支', stateLine());
+warningAnswer = undefined;
+selectionEmpty = false;
+
+// 取消：确认框按 Esc 走开，什么都不该发生
+quickPickAnswer = undefined;
+const postedBeforeCancel = webviews[0].webview.posted.length;
+const decorationTypesBefore = decorationTypes.length;
+await registered.get('anchorExplain.capture')?.();
+check(webviews[0].webview.posted.length === postedBeforeCancel, '取消确认 → 不起会话、不打扰');
+check(decorationTypes.length === decorationTypesBefore, '取消确认 → 连 decoration type 都不该多建');
+
+// 没有活动编辑器：与"只放光标"要用户做的事不同，提示也必须不同
+vscodeStub.window.activeTextEditor = undefined;
+await registered.get('anchorExplain.capture')?.();
+check(stateLine().includes('先打开一个文件'), '没有活动编辑器 → 提示去打开文件（不是"未选中"）', stateLine());
+vscodeStub.window.activeTextEditor = editor;
+
+// 收尾前把桩恢复成主路径的样子（真选区接上之后它已经不带任何 S1 脚手架了）
+quickPickAnswer = '讲解这段';
+selectionStartLine = 39;
+selectionEndLine = 47;
 
 // ---- 收尾 -----------------------------------------------------------------
 Module._load = originalLoad;

@@ -17,6 +17,18 @@ export function samePath(a: string, b: string): boolean {
 }
 
 /**
+ * 取文件名（带扩展名），用于 `Anchor.sourceName` 这个**显示名**。
+ *
+ * 为什么不用 `node:path.basename`：它按运行平台决定分隔符 —— 在 Linux 上
+ * `basename('C:\\repo\\main.c')` 返回整串，于是同一份锚点在两个平台上显示名不同。
+ * 这里两种斜杠都当分隔符切，与 `normPath` 同一个立场：路径的写法不该改变语义。
+ */
+export function basenameOf(p: string): string {
+  const parts = p.split(/[\\/]/).filter((s) => s !== '');
+  return parts[parts.length - 1] ?? p;
+}
+
+/**
  * 文本行数 = 编辑器里能看到的行数。
  *
  * 末尾换行不算作一行（`"a\n"` 是 1 行，不是 2 行），否则最后一行会平白多出一个空行，

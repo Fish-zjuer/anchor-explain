@@ -19,6 +19,19 @@ export interface EditorSelection {
 
 export interface EditorPort {
   getSelection(): Promise<EditorSelection | null>;
+  /**
+   * 【新增，非规范原文】把**整份文档**也表达成一个 `EditorSelection`
+   * （`lineStart: 1`、`lineEnd: 总行数`、`text: 全文`），供确认里的「整个文件」用。
+   *
+   * 为什么复用一个类型而不是新开一个 `getDocumentText()`：`capture()` 的产出
+   * （`Anchor`）只认「一个行区间 + 一段原文」，两种范围在它眼里是同一件事。
+   * 多一个形状就多一条分支，而这条分支的差别只在"谁来定这个区间"。
+   *
+   * 没有活动编辑器（或编辑器不是文本编辑器）→ null。
+   * 实现**必须优先取内存里的文档**（与 `documentTextHash` 同一条理由）：
+   * 用户改了还没保存时，要讲的是他眼前那一份，不是磁盘上那一份。
+   */
+  getDocumentSelection(): Promise<EditorSelection | null>;
   getActiveFilePath(): Promise<string | null>;
   revealLocation(loc: CodeLocation, opts?: { inCenter?: boolean }): Promise<void>;
   /** 用于 staleness 检测：讲解期间文件被改则标记该步失效，而不是高亮错行 */
