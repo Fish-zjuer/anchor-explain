@@ -9,7 +9,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { WalkthroughStep } from '@anchor/core';
-import { EMPHASES, FALLBACK_EMPHASIS, planForBeat, primaryLocationOf } from '../src/playback/decorationPlan.ts';
+import {
+  EMPHASES,
+  FALLBACK_EMPHASIS,
+  focusFileOf,
+  planForBeat,
+  primaryLocationOf,
+  specsInFile,
+} from '../src/playback/decorationPlan.ts';
 
 const FILE = 'C:\\repo\\test\\fixtures\\main.c';
 
@@ -144,4 +151,43 @@ test('混着一个 PDF 步骤时：只有代码步骤被画', () => {
   // 但"结构上画不出来"这件事必须由这一层保证，而不是靠上游不传进来。
   assert.ok(planForBeat(codeStep(), -1).length > 0);
   assert.deepEqual(planForBeat({ ...pdfStep(), location: { url: 'https://x', selector: '#a', scrollY: 0 } }, 0), []);
+});
+
+// ── D69：一拍只画一个文件（跨文件之后，单文件的假设不成立了）───────────────
+
+const OTHER = 'C:\repo\test\fixtures\ring_buffer.h';
+
+/** 步骤在 A，子高亮在 B —— 用户在真代码上就是这么被抓住的（protocol.h:16 被画到 main.c:16） */
+function crossFileStep(): WalkthroughStep {
+  return {
+    location: { filePath: FILE, lineStart: 322, lineEnd: 347 },
+    text: '上电 5 秒后放行油门',
+    color: 'primary',
+    highlights: [
+      { location: { filePath: OTHER, lineStart: 41, lineEnd: 44 }, narration: '放行开关', emphasis: 'definition' },
+    ],
+  };
+}
+
+test('跨文件那一拍：焦点是**子高亮**所在的文件（最具体的那个）', () => {
+  assert.equal(focusFileOf(planForBeat(crossFileStep(), -1)), FILE, '整块那一拍跟着步骤走');
+  assert.equal(focusFileOf(planForBeat(crossFileStep(), 0)), OTHER, '扫到子高亮时跟着子高亮走');
+  assert.equal(focusFileOf([]), undefined, '没有可画的框就没有焦点');
+});
+
+test('跨文件那一拍：**只留焦点文件里的框**（不然会把 B 的行号画到 A 上）', () => {
+  const specs = planForBeat(crossFileStep(), 0);
+  assert.equal(specs.length, 2, '计划里仍有两个（信息不丢，侧边栏还要用）');
+
+  const inFocus = specsInFile(specs, OTHER);
+  assert.equal(inFocus.length, 1);
+  assert.equal(inFocus[0]!.location.lineStart, 41, '留下的是子高亮');
+  assert.ok(
+    !inFocus.some((s) => s.kind === 'step'),
+    '步骤在另一个文件里 —— 这一拍不画它，否则 main.c:322 会顶着"高亮"的名义出现',
+  );
+
+  // 单文件时行为一字不变：两个框都在同一个文件里，一条不丢
+  const same = planForBeat(codeStep(), 0);
+  assert.equal(specsInFile(same, FILE).length, 2);
 });

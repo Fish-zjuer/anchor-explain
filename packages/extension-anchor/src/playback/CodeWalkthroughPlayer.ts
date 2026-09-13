@@ -13,8 +13,8 @@
 
 import * as vscode from 'vscode';
 import type { CodeLocation, HighlightEmphasis } from '@anchor/core';
-import { normPath } from '../paths.ts';
-import { EMPHASES, planForBeat, primaryLocationOf } from './decorationPlan.ts';
+import { normPath, samePath } from '../paths.ts';
+import { EMPHASES, focusFileOf, planForBeat, primaryLocationOf, specsInFile } from './decorationPlan.ts';
 import type { WalkthroughSnapshot } from './WalkthroughSession.ts';
 
 type DecorationKey = 'step' | HighlightEmphasis;
@@ -101,10 +101,16 @@ export class CodeWalkthroughPlayer {
     const specs = planForBeat(snapshot.step, snapshot.pointIndex);
     this.clear();
 
-    const anchorLoc = specs[0]?.location;
-    if (!anchorLoc) return;
+    /**
+     * 一拍只画**一个文件**（D69）。S9a 起 location 可以落在取过件的别的文件里，
+     * 而"拿 `specs[0]` 的文件当唯一目标、把所有 spec 都画进去"会把 `protocol.h:16`
+     * 画到 `main.c:16` 上 —— 一个看起来很确定的假框。焦点取**最具体**的那一个
+     * （有子高亮就跟子高亮），其余文件的框这一拍不画：它们在侧边栏的标签里带着文件名。
+     */
+    const focusFile = focusFileOf(specs);
+    if (!focusFile) return;
 
-    const editor = await this.#ensureEditor(anchorLoc.filePath);
+    const editor = await this.#ensureEditor(focusFile);
     if (!editor) {
       // 打不开目标文件（被删/权限）时静默退化：讲解文字仍然在侧边栏里，不该因此中断会话
       return;
@@ -112,7 +118,7 @@ export class CodeWalkthroughPlayer {
 
     const lineCount = editor.document.lineCount;
     const byKey = new Map<DecorationKey, vscode.Range[]>();
-    for (const spec of specs) {
+    for (const spec of specsInFile(specs, focusFile)) {
       const key: DecorationKey = spec.kind === 'step' ? 'step' : spec.emphasis;
       const range = toRange(spec.location, lineCount);
       if (!range) continue;
@@ -126,7 +132,12 @@ export class CodeWalkthroughPlayer {
       editor.setDecorations(this.#types[key], ranges);
     }
 
-    const first = toRange(anchorLoc, lineCount);
+    // 滚动目标：这一拍里**那一步**的位置（它就在焦点文件里时，与单文件时代的行为一字不差），
+    // 否则退到最具体那个位置 —— 别为了"滚到步骤"把视图带到另一个文件去
+    const target =
+      specs.find((spec) => spec.kind === 'step' && samePath(spec.location.filePath, focusFile))?.location ??
+      specs[specs.length - 1]!.location;
+    const first = toRange(target, lineCount);
     if (first) await this.#reveal(editor, first);
   }
 
@@ -176,7 +187,10 @@ export class CodeWalkthroughPlayer {
       return await vscode.window.showTextDocument(doc, {
         // 侧边栏保有焦点，用户读完还能直接按键继续，不必先点回编辑器
         preserveFocus: true,
-        preview: false,
+        // **预览标签**（D69/S9c 的落地约束）：跨文件讲解会经过好几个文件，
+        // 每个都开一个常驻标签，标签栏很快就堆满了 —— 预览标签会被下一个替换，不堆积。
+        // 仍然是 `ViewColumn.One`：**不开右侧列、不分屏**（"同时只有一个文件可见"）
+        preview: true,
         viewColumn: vscode.ViewColumn.One,
       });
     } catch {

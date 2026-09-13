@@ -57,6 +57,14 @@ export type HostToSidebar =
       index: number;
       state: WalkthroughState;
       pointIndex: number;
+      /**
+       * 【D69 新增】锚点所在的文件（PDF 锚点为 `null`）。
+       *
+       * 为什么非加不可：S9a 起 location 可以落在**别的文件**里，而面板一直把行号裸着显示成
+       * `[第 16 行]` —— 用户看到的就像"main.c 的第 16 行"，而它其实是 `protocol.h` 的第 16 行。
+       * 客户端没有别的地方能拿到"锚点是哪个文件"，于是无从判断"这个位置要不要标文件名"。
+       */
+      anchorPath: string | null;
     }
   | { type: 'session:end' }
   /**

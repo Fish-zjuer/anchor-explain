@@ -17,7 +17,7 @@
  *     把它写在这里，S6 之后即便 AI 返回 PDF location 也不会漏出一个框。
  */
 
-import { isCodeLocation } from '@anchor/core';
+import { isCodeLocation, samePath } from '@anchor/core';
 import type { CodeLocation, HighlightEmphasis, WalkthroughStep } from '@anchor/core';
 
 export type DecorationKind = 'step' | 'highlight';
@@ -59,4 +59,26 @@ export function planForBeat(step: WalkthroughStep, pointIndex: number): readonly
 /** 这一步的第一个代码位置（用于"把视图滚过去"）。 */
 export function primaryLocationOf(step: WalkthroughStep): CodeLocation | undefined {
   return planForBeat(step, -1)[0]?.location;
+}
+
+/**
+ * 这一拍的**焦点文件**：有子高亮就跟着子高亮走，否则跟着步骤（D69）。
+ *
+ * @anchor S9a 之前，"一拍 = 一个文件"是成立的，所以播放器直接拿 `specs[0]` 的文件当唯一目标。
+ *         §3.3 从 S9a 起允许 location 落在**取过件的别的文件**里 —— 那个假设就错了，
+ *         后果是 `protocol.h:16` 被画到 `main.c:16` 上：屏幕上出现一个**看起来很确定的假框**。
+ *         比不画更坏的东西只有"画错"，所以焦点只能有一个，其余文件的框不画
+ *         （它们在侧边栏的标签里带着文件名，用户点得过去）。
+ */
+export function focusFileOf(specs: readonly DecorationSpec[]): string | undefined {
+  // 顺序是"先铺底、再点亮"，所以最后一个就是最具体的那一个
+  return specs[specs.length - 1]?.location.filePath;
+}
+
+/** 只留落在**这个文件**里的框。别的文件这一拍不画（原因见 `focusFileOf`）。 */
+export function specsInFile(
+  specs: readonly DecorationSpec[],
+  filePath: string,
+): readonly DecorationSpec[] {
+  return specs.filter((spec) => samePath(spec.location.filePath, filePath));
 }

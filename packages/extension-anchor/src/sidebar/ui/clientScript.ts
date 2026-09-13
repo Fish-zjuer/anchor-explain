@@ -34,6 +34,37 @@ export const SIDEBAR_CLIENT_SCRIPT = `
 
   var snapshot = null;
   var trace = [];
+  /** 本次会话的锚点文件（session:update 带来的）。判断"这个位置要不要标文件名"用它。 */
+  var anchorPath = null;
+
+  /** 与 core 的 samePath 同一个立场：忽略大小写与斜杠方向（webview 里 import 不到 core）。 */
+  function normLoc(p) {
+    return String(p).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  }
+
+  /** 路径末段（文件名）。标签窄，标出文件名就够指认了。 */
+  function shortName(p) {
+    var parts = String(p).split(/[\\/]/);
+    return parts[parts.length - 1];
+  }
+
+  /** 路径末两段（Inc/esc.h）。取件日志用它：那里要能分清两个同名文件（D68）。 */
+  function shortTail(p) {
+    var parts = String(p).split(/[\\/]/);
+    return parts.slice(-2).join("/");
+  }
+
+  /**
+   * 位置的人话标签。**不在锚点文件里的位置必须带上文件名**（D69）——
+   * 否则「[第 16 行]」看起来就是锚点文件的第 16 行，而它可能是另一个文件的
+   * （用户实测就是这么被绕住的：读了的两个文件里的定义被标成了 main.c 的行号）。
+   */
+  function locTextWithFile(location) {
+    var text = locText(location);
+    var file = location && typeof location.filePath === "string" ? location.filePath : null;
+    if (!file || !anchorPath || normLoc(file) === normLoc(anchorPath)) return text;
+    return shortName(file) + " " + text;
+  }
 
   function mk(tag, cls, text) {
     var n = document.createElement(tag);
@@ -89,7 +120,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var head = mk("div", "step-head");
     head.appendChild(mk("span", "step-title", (i + 1) + ". " + (step.title || "步骤")));
 
-    var loc = mk("button", "loc", locText(step.location));
+    var loc = mk("button", "loc", locTextWithFile(step.location));
     loc.setAttribute("data-act", "reveal");
     loc.setAttribute("data-index", String(i));
     // 两条线的定位方式不同，提示词也不能一样 ——
@@ -113,7 +144,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
         row.appendChild(mk("span", "mark", scanning ? "▸" : ""));
         var emphasis = h.emphasis || "primary";
         row.appendChild(mk("span", "tag tag-" + emphasis, EMPHASIS_LABEL[emphasis] || emphasis));
-        row.appendChild(mk("span", "narration", h.narration + " [" + locText(h.location) + "]"));
+        row.appendChild(mk("span", "narration", h.narration + " [" + locTextWithFile(h.location) + "]"));
         if (scanning) row.id = "anchor-scanning";
         ul.appendChild(row);
       }
@@ -163,8 +194,8 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var start = typeof params.start === "number" ? params.start : "?";
     var end = typeof params.end === "number" ? params.end : "?";
     if (kind === "file" && typeof params.path === "string") {
-      var parts = params.path.split(/[\\/]/);
-      return parts[parts.length - 1] + " " + start + "-" + end + " 行";
+      // 末两段（Inc/esc.h）：这里正是"两个同名文件分不清"会出问题的地方（D69）
+      return shortTail(params.path) + " " + start + "-" + end + " 行";
     }
     if (kind === "page_range") return "第 " + start + "-" + end + " 页";
     return kind;
@@ -255,6 +286,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
         atStart: atStart,
         ended: false
       };
+      // 锚点文件（D69）：标签要不要带文件名，全看它。旧宿主不发这个字段时退化成 null
+      // （那就与从前一样，一律不标 —— 不标是"少说"，标错才是"说反"）
+      anchorPath = typeof msg.anchorPath === "string" ? msg.anchorPath : null;
       render();
     } else if (msg.type === "session:end") {
       if (snapshot) snapshot.ended = true;

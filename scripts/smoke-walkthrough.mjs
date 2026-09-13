@@ -1013,6 +1013,12 @@ check(
   webviews[0].webview.posted.some((m) => m?.type === 'tooltrace:reset'),
   '新一轮开始时先清空上一轮的日志（不然两轮会叠在一起）',
 );
+// D69：面板要拿锚点文件才能判断"这个位置要不要标文件名"（不在锚点文件里就标）
+check(
+  [...webviews[0].webview.posted].reverse().find((m) => m?.type === 'session:update')?.anchorPath === MAIN_C,
+  'session:update 带着锚点文件（客户端据此给别的文件里的位置标上文件名）',
+  String([...webviews[0].webview.posted].reverse().find((m) => m?.type === 'session:update')?.anchorPath),
+);
 
 // ⑥ 讲解进行中再按一次：不许开出第二份（D68）。白烧一份 token 之外，屏幕上还会多出一个
 //    要等它自己跑完才消失的进度通知 —— 用户截图里那条"正在讲解: 第 2 轮取件被拒"就是它。

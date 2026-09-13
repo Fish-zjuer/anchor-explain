@@ -131,6 +131,13 @@ test('输出契约按 crossFile 换口径，且两档互斥', () => {
   assert.match(explainOutputContract(true), /整次讲解会被判失败/);
 });
 
+test('D69：跨文件时要说清"讲的其实是别的文件就落在那个文件里"（别塞回锚点文件凑位置）', () => {
+  const cross = explainOutputContract(true);
+  assert.match(cross, /就把那一步的 `location` \*\*落在那个文件里\*\*/);
+  assert.match(cross, /不要为了显得"跨文件"而硬拆/, '另一半也要说：不许为了凑跨文件硬拆步骤');
+  assert.doesNotMatch(explainOutputContract(false), /落在那个文件里/, '单文件档不许出现这条（会自相矛盾）');
+});
+
 test('repair 与 system 说同一句话（repair 说错就等于修不回来）', () => {
   const cross = buildRepairPrompt('{}', '有问题', { crossFile: true });
   assert.match(cross, /你这次真的有过的东西/);

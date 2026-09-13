@@ -221,6 +221,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   let sidebar: SidebarPanel | undefined;
   let start: StartViewProvider | undefined;
   let session: WalkthroughSession | undefined;
+  /** 当前会话的锚点文件（D69）。`session:update` 带着它，面板据此决定要不要标文件名。 */
+  let sessionAnchorPath: string | null = null;
   let unsubscribe: (() => void) | undefined;
   /** 每次 explain() 领一个号：慢的那次回来时若号已过期，就丢弃它的结果（见 explain） */
   let generation = 0;
@@ -368,6 +370,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         index: snapshot.index,
         state: snapshot.state,
         pointIndex: snapshot.pointIndex,
+        // 面板靠它判断"这个位置要不要标文件名"（S9a 起 location 可能在别的文件里，D69）
+        anchorPath: sessionAnchorPath,
       });
     });
     isolated('状态栏', () => {
@@ -377,12 +381,14 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     refreshStartOn(`${snapshot.state}|${snapshot.index}/${snapshot.total}|${snapshot.stale}`);
   }
 
-  function startSession(result: ExplanationResult): void {
+  function startSession(result: ExplanationResult, anchor: Anchor): void {
     // 先彻底收掉上一轮（正常情况下 explain() 已经 stop 过，这里是二次保险）：
     // 只覆盖 unsubscribe 而不退订，旧会话的监听器就会继续把 UI 拽回它那一步。
     unsubscribe?.();
     unsubscribe = undefined;
     session?.dispose();
+    // 面板要拿它判断"这个位置要不要标文件名"（D69）：PDF 锚点没有文件，给 null
+    sessionAnchorPath = isCodeLocation(anchor.location) ? anchor.location.filePath : null;
 
     const fresh = new WalkthroughSession(result);
     session = fresh;
@@ -735,7 +741,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const panel = sidebarOf();
     panel.post({ type: 'tooltrace:reset' });
     for (const entry of traceThisRun) panel.post({ type: 'tooltrace:append', entry });
-    startSession(result);
+    startSession(result, anchor);
   }
 
   /**

@@ -298,6 +298,12 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 **两道闸门的分工**：名字与范围这类**形状**判断在 `validateContextRequest`（同步纯函数，可单测）；
 大小与二进制这类**内容**判断在适配器（那里才有字节）。
 
+**跨文件落点怎么画（D69）**：`location` 允许落在别的文件，但**一拍只画一个文件** ——
+焦点 = 这一拍里最具体的那一个位置（有子高亮就跟子高亮，否则跟步骤），只画落在焦点文件里的框。
+理由：旧代码把 `specs[0]` 的文件当唯一目标、又把所有 spec 都画进去，于是 `protocol.h:16` 被画到
+`main.c:16` 上 —— **一个看起来很确定的假框**。别的文件的框这一拍不画（它们在侧边栏的标签里带着文件名）。
+打开目标文件一律 `ViewColumn.One` + `preview: true` + `preserveFocus: true`：同组、预览标签、不堆积、不抢焦点。
+
 **§3.3 的允许集合（S9a）**：`steps[].location.filePath` 可以是**锚点文件**或**本次真取过件的文件**
 （编排层从 `FetchedSpan` 收集，命令层从取件日志收集）—— 口径从"不许出去"变成
 "**出去过的地方才许写**"。别的文件的行号上界不由校验层判（它拿不到那些文件的行数），
@@ -523,7 +529,8 @@ interface CapturedGeometry {
 ```ts
 // 宿主 → webview
 type HostToSidebar =
-  | { type: 'session:update'; result: ExplanationResult; index: number; state: WalkthroughState }
+  | { type: 'session:update'; result: ExplanationResult; index: number; state: WalkthroughState
+      anchorPath: string | null }   // ← D69 追加：锚点文件（PDF 为 null），面板据此给别处的行号标文件名
   | { type: 'session:end' }
   | { type: 'tooltrace:reset' }                       // ← D68 追加
   | { type: 'tooltrace:append'; entry: ContextRequestLogEntry };
@@ -547,6 +554,11 @@ type SidebarToHost =
 宿主在 `webview.html = ...` 之后立刻 post 的消息会丢在它订阅之前，表现为"重开面板一片空白"。
 有了握手，宿主收到 `ui:ready` 就把最近的若干条消息（环形，上限 50）原样重放，
 webview 因此**不需要自己持久化任何状态**。
+
+**`anchorPath` 是 D69 追加的**：S9a 起 `location` 可以落在**别的文件**里，而面板一直把行号裸着显示成
+「[第 16 行]」—— 用户看到的就像"main.c 的第 16 行"，而它其实是 `protocol.h` 的第 16 行（他实测就是这么被绕住的）。
+客户端没有别的地方能拿到"锚点是哪个文件"，于是无从判断"这个位置要不要标文件名"。
+**不在锚点文件里的位置，标签一律带文件名**（步骤头与子高亮行都是）。
 
 **`session:update` 上的 `pointIndex` 是第二条（D48）**：`-1` = 正在铺整块底色，
 `0..n-1` = 正在扫该步的第几个逻辑点。非加不可：面板原来自己按 `index >= total - 1`
@@ -819,14 +831,14 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/orchestrator/ModelRouter.ts` | **S3 落地**。tier1/tier2 的成本分层（ARCHITECTURE §5） | `ModelTier`:11 `ModelRouteInput`:13 `ModelChoice`:22 `ModelRouterConfig`:29 `createModelRouter`:35 |
 | `packages/extension-anchor/src/orchestrator/toolSchema.ts` | **S3 落地，S9a 修订（D67：声明 `path`、`required` 补 `start`/`end`、描述去掉"当前文档"）**。§8 的工具定义 + 参数解析（自定义键一并带过） | `FETCH_CONTEXT_TOOL`:19 `openAITools`:47 `EXPLANATION_JSON_SHAPE`:52 `parseContextRequest`:86 |
 | `packages/extension-anchor/src/orchestrator/providers/{types,openAICompatible}.ts` | **S3 落地**。LLM 调用面的抽象 + OpenAI 兼容实现（一个实现覆盖 OpenAI/DeepSeek/通义/Ollama） | `ChatMessage`:11 `ToolCall`:20 `AssistantTurn`:27 `ChatRequest`:33 `ChatProvider`:44；`OpenAICompatibleOptions`:20 `createOpenAICompatibleProvider`:71 |
-| `packages/extension-anchor/src/prompts/index.ts` | **S3 落地，S8 加风格、S9a 加跨文件（D67 修：契约按 `crossFile` 换口径、候选清单真的进 prompt）**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:56 `buildSystemPrompt`:76 `describeAnchor`:181 `buildUserPrompt`:204 `buildRepairPrompt`:252 |
+| `packages/extension-anchor/src/prompts/index.ts` | **S3 落地，S8 加风格、S9a 加跨文件（D67 修：契约按 `crossFile` 换口径、候选清单真的进 prompt）**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:56 `buildSystemPrompt`:81 `describeAnchor`:186 `buildUserPrompt`:209 `buildRepairPrompt`:257 |
 | `packages/extension-anchor/src/config.ts` | **S3 落地，S8 加 `style`、S9a 加 `fetchScope`**。§6 配置的**纯映射**（可单测），vscode 读取在 `vscode/configSource.ts` | `ProviderSettings`:17 `AnchorConfig`:26 `DEFAULT_MAX_FETCH_ROUNDS`:42 `apiKeySecretName`:48 `resolveProvider`:74 `clampRounds`:99 `resolveConfig`:123 `describeConfig`:153 |
 | `packages/extension-anchor/src/vscode/configSource.ts` | **S3 落地**。设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 | `readAnchorConfig`:21 `storeApiKey`:50 `configuredProviderIds`:78 |
-| `packages/extension-anchor/src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **S8 的开始面板装配与 `showStart`** + **S9a 的 `fetchPolicyFor` 与第二道闸门**。**S3 起没有任何替身** | `registerCommands`:120 `askWhatToExplain`:748 `capture`:773（S8 新增的 `makeStartModel` / `runStartAction` / `showStart` 在文件后段） |
-| `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 三处边界守卫 + **S8 起状态词表（`STATE_WORD`）也在这里**（贴着 `WalkthroughState` 放，状态栏与开始面板共说一句话） | `WalkthroughState`:20 `STATE_WORD`:30 `HostToSidebar`:53 `SidebarToHost`:84 `HostToSelect`:96 `SelectToHost`:101 `HostToStart`:125 `StartToHost`:135 `isAnchorLike`:157 `parseSidebarMessage`:186 `parseStartMessage`:212 |
+| `packages/extension-anchor/src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **S8 的开始面板装配与 `showStart`** + **S9a 的 `fetchPolicyFor` 与第二道闸门**。**S3 起没有任何替身** | `registerCommands`:120 `askWhatToExplain`:754 `capture`:779（S8 新增的 `makeStartModel` / `runStartAction` / `showStart` 在文件后段） |
+| `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 三处边界守卫 + **S8 起状态词表（`STATE_WORD`）也在这里**（贴着 `WalkthroughState` 放，状态栏与开始面板共说一句话） | `WalkthroughState`:20 `STATE_WORD`:30 `HostToSidebar`:53 `SidebarToHost`:92 `HostToSelect`:104 `SelectToHost`:109 `HostToStart`:133 `StartToHost`:143 `isAnchorLike`:165 `parseSidebarMessage`:194 `parseStartMessage`:220 |
 | `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**）。S9a 起 `filePath` 允许落在**取过件的文件**里（`allowedPaths`），并在比对前把相对路径解析成绝对路径（D67） | `ValidationIssue`:52 `ExplanationOutline`:71 `ExplanationValidation`:78 `coerceEmphasis`:95 `parseMaybeJson`:105 `validateExplanation`:350 `describeIssues`:389 || `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
-| `packages/extension-anchor/src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策 | `DecorationSpec`:25 `EMPHASES`:32 `FALLBACK_EMPHASIS`:34 `planForBeat`:40 `primaryLocationOf`:60 |
-| `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档** | `CodeWalkthroughPlayer`:83 |
+| `packages/extension-anchor/src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策 | `DecorationSpec`:25 `EMPHASES`:32 `FALLBACK_EMPHASIS`:34 `planForBeat`:40 `primaryLocationOf`:60 `focusFileOf`:83 `specsInFile`:95 |
+| `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档**。S9a 修（D69）：**一拍只画焦点文件**（`focusFileOf`/`specsInFile`），打开目标文件用 `ViewColumn.One` + 预览标签 | `CodeWalkthroughPlayer`:83 |
 | `packages/extension-anchor/src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 | `SidebarHandlers`:17 `SidebarPanel`:28 |
 | `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（读用户实际绑定，并**交给侧边栏复用**）+ `probe()` 自检。**S8 起状态词来自 `protocol.ts`**，这里只剩图标表 | `StatusBarHandle`:24 `createStatusBar`:61 |
 | `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表（**S8 起两张：线1 的 `WALKTHROUGH_CHORDS` + 线2 的 `LINE2_CHORDS`，各有各的镜像锁**）+ JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:19 `WalkthroughChordSpec`:21 `WALKTHROUGH_CHORDS`:36 `LINE2_CHORDS`:105 `ResolvedChord`:119 `ResolvedChords`:120 `KeyBindingEntry`:122 `defaultChords`:129 `keybindingsPathFrom`:142 `stripJsonc`:159 `parseKeybindings`:218 `resolveChords`:234 `formatChord`:301 |
@@ -841,7 +853,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/media/walkthrough/*.md` | **S8 新增**。欢迎页「演练」卡片四步的正文（`contributes.walkthroughs` 的 `media.markdown`） | `setup.md` / `capture.md` / `flow.md` / `pdf.md` |
 | `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（**S2 起五个方法全部是真的**，没有覆盖层） | `createEditorPort`:25 |
 | `packages/extension-anchor/src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` | `createFileSystemPort`:12 `countLines`:38 |
-| `packages/extension-anchor/test/*.test.ts`（17 个，210 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter`，**S8 加 `startModel` / `startUi` / `describe` / `prompts`，S9a 加 `relatedFiles`，S9a 修（D67）加 14 条盯着"两道闸门同一套坐标"，D68 加 2 条盯着侧边栏那块取件日志** | — |
+| `packages/extension-anchor/test/*.test.ts`（17 个，214 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter`，**S8 加 `startModel` / `startUi` / `describe` / `prompts`，S9a 加 `relatedFiles`，S9a 修（D67）加 14 条盯着"两道闸门同一套坐标"，D68 加 2 条盯着侧边栏那块取件日志，D69 加 3 条盯着"一拍只画一个文件"** | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
 | `scripts/{make-fixture-pdf.mjs, devhost.mjs, link-extension.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**起开发宿主（绝对路径 + 先查产物，D59）**；**装成常驻扩展（目录联接，D60）**；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器。**S8 起产物冒烟也真跑一遍开始面板的宿主侧**（拿到 provider 驱动它） | — |

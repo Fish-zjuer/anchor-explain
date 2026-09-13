@@ -86,9 +86,18 @@ test('D68：取件日志要显示"哪个文件的哪几行"，不只是类型', 
   assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('describeEntry'), '缺指认那一段的渲染');
   assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('params.path'), '要读请求里的路径');
   assert.ok(
-    SIDEBAR_CLIENT_SCRIPT.includes('parts[parts.length - 1]'),
-    '只取文件名（面板窄；完整路径在输出面板「Anchor」里）',
+    SIDEBAR_CLIENT_SCRIPT.includes('shortTail'),
+    '要取路径末两段（两个同名文件分不清时，只看文件名等于没说）',
   );
   assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('行'), '缺行范围（截图问题 3.4 的验收就是这一句）');
   assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('页'), '缺 PDF 那条（按页取件也要指认得清）');
+});
+
+test('D69：不在锚点文件里的位置必须带上文件名（否则行号看起来像锚点文件的）', () => {
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('anchorPath'), '要从 session:update 拿锚点文件');
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('locTextWithFile'), '缺"带文件名的位置标签"');
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('normLoc'), '比较文件要忽略大小写与斜杠方向（与 samePath 同立场）');
+  // 两处标签都要走它：步骤头那一行，以及子高亮那一行
+  const uses = SIDEBAR_CLIENT_SCRIPT.split('locTextWithFile(').length - 1;
+  assert.ok(uses >= 3, `locTextWithFile 只被用了 ${uses - 1} 处（步骤头 + 子高亮都要用）`);
 });
