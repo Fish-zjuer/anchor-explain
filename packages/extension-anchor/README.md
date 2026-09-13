@@ -33,11 +33,13 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 
 ### 模型端点怎么配（§6）
 
-**两种都不用改代码。** 一个 OpenAI 兼容实现覆盖 OpenAI / DeepSeek / 通义 / Ollama，
-换厂商只是改 `baseUrl` 与模型名。
+**首选：命令面板 → `Anchor: 配置模型端点`**（或开始面板上那颗同名按钮）。
+三个输入框：provider id（没配过就直接用 `default`）、baseUrl、模型名 —— 带校验、带预填，
+写完直接在用户设置里生效，不用手写 JSON。
+
+想自己改也行（`settings.json`）：
 
 ```jsonc
-// settings.json
 {
   "anchorExplain.providers": {
     "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" }
@@ -47,9 +49,14 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 }
 ```
 
+> **`activeProvider` 是字符串，填的是 provider 的键名**（`"default"`），不是那整段对象 ——
+> 把它写成对象会让 `settings.json` 语法坏掉（这个错真的发生过，见 D62）。
+> `providers` 的每一个值才是 `{ baseUrl, tier1Model, … }`。
+
 再用命令 **`Anchor: 设置 API Key`** 把 key 存进 `SecretStorage`
 （**不进 settings.json**，因此不会被同步、被截图、被提交）。
 你也可以把 `apiKey` 直接写在 `providers.default` 里 —— 那是明文，仅当你确实想"一个文件管全部"时用。
+**`Anchor: 配置模型端点` 永远不会碰 `apiKey`**（密钥只有 `设置 API Key` 那一条路）。
 
 配好之后用 `Anchor: 显示状态` 核对一句：
 `模型：default：deepseek-chat @ https://api.deepseek.com/v1；最多取件 3 次`。
@@ -72,7 +79,8 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 | 面板上看到 | 其实就是 |
 |---|---|
 | 「讲解选中的代码」+ 一个键位徽章 | `anchorExplain.capture`。**徽章显示的是你自己绑的键**（改过 `keybindings.json` 就显示你那个；解绑了就不显示键） |
-| 「打开设置（配模型端点）」 | `anchorExplain.openSettings` → 打开设置并筛到 `anchorExplain`（**D61**：面板说"你还缺 providers"，就必须有一条去配它的路） |
+| 「打开设置」 | `anchorExplain.openSettings` → 打开设置并筛到 `anchorExplain`（要给"自己改"留一条路，D61） |
+| 「配置模型端点」 | `anchorExplain.configure` → 三个输入框写好 baseUrl 与模型名，**直接写进设置**（D62：这一步不该让人手写嵌套 JSON） |
 | 「设置 API Key」 | `anchorExplain.setApiKey`（没配端点时是灰的，理由会指出上面那颗「打开设置」） |
 | 「显示状态（自检）」 | `anchorExplain.showState` |
 | 「用 Anchor 打开 PDF」 | `anchorPdf.openInAnchorViewer`（**线2 装没装**决定它灰不灰） |
@@ -271,7 +279,8 @@ pnpm devhost:pdf      # 线2（PDF 视图）
 | 按 `Esc` 没反应、高亮清不掉 | 焦点在终端/别的输入框里，Esc 到不了命令 | 先点一下编区或侧边栏面板；或点面板里的「退出」；或命令面板 `Anchor: 退出讲解` |
 | 弹了「只放了光标，没有选中内容」 | 这就是 S2 的行为：没选区不猜，问你要不要讲整份 | 点「讲解整个文件」，或先选中一段再按一次 |
 | 确认框里写的行区间不是我选的 | 选区在弹框之前被改了（点了别处） | 重选一次；`Anchor: 显示状态` 的「上次捕获」是权威值 |
-| 弹了「Anchor：没有可用的 provider（activeProvider = …）」 | 还没配模型端点，或 `baseUrl`/`tier1Model` 有一个没填 | 照上面「第 0.5 步」配一遍；`Anchor: 显示状态` 会报当前读到的是什么 |
+| 弹了「Anchor：没有可用的 provider（activeProvider = …）」 | 还没配模型端点，或 `baseUrl`/`tier1Model` 有一个没填 | 跑 `Anchor: 配置模型端点`（三个输入框）；`Anchor: 显示状态` 会报当前读到的是什么 |
+| **`settings.json` 报"预期为文件结尾" / "应为属性"** | 手写 `providers` 时多了一层 `{`，或者把整段对象填进了 `anchorExplain.activeProvider`（那是个**字符串**设置） | 把那两行删掉，改用 `Anchor: 配置模型端点` 写一遍（它只会写对）；`activeProvider` 该填的是 provider 的**键名**，如 `"default"` |
 | 弹了「连不上 https://…」 | `baseUrl` 写错，或网络/代理不通 | 核对地址（要带 `/v1` 这类前缀，但不带 `/chat/completions`） |
 | 弹了「模型端点返回 401 / invalid api key」 | key 没存、存错了 provider、或已过期 | 重跑 `Anchor: 设置 API Key`（选对 provider id） |
 | 弹了「AI 输出未通过校验（重试一次后仍失败）」 | 模型没按 JSON 契约回话 | 换一个更强的 `tier1Model` 试试；具体哪条不合规会写在错误里 |
@@ -334,7 +343,7 @@ pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（会先 build，见上）
 pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 162 条 + 线2 12 条
+pnpm test             # 在根执行：core 28 条 + 本包 168 条 + 线2 12 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
 
@@ -346,8 +355,8 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（162 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
-| 产物冒烟（61 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示 → 「打开设置」真的落到内置设置命令） |
+| 单测（168 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
+| 产物冒烟（63 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示 → 「配置模型端点」「打开设置」都真的落到命令上） |
 | 链路冒烟（115 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
 
 这三层都只对**最外层边界**（`vscode` 模块）打桩，桩之外全是真代码。

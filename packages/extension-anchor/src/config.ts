@@ -132,3 +132,54 @@ export function describeConfig(config: AnchorConfig): string {
   const vision = config.provider.tier2Model ? `，视觉档 ${config.provider.tier2Model}` : '';
   return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次`;
 }
+
+/**
+ * `baseUrl` 的形状检查。返回 `null` 表示通过，否则返回给用户看的一句话。
+ *
+ * @anchor **只挡明确的错**，不挡"我猜你不知道"的东西：少了协议头、或者把完整端点
+ *         （`/chat/completions`）一起写进来 —— 这两个是真实发生过的错误，而且报出来的症状
+ *         离原因很远（前者是"连不上 https://xxx"，后者是 404）。其余一律放行：
+ *         端点长什么样是端点那边决定的，我们没资格替他判。
+ */
+export function checkBaseUrl(raw: string): string | null {
+  const value = raw.trim();
+  if (value === '') return '不能为空';
+  if (!/^https?:\/\//iu.test(value)) return '要带上协议头，例如 https://api.deepseek.com/v1';
+  if (/\/chat\/completions\/?$/iu.test(value)) return '不要带 /chat/completions —— 我们自己在后面拼它';
+  return null;
+}
+
+/** 结尾的斜杠要收掉：我们拼的是 `${baseUrl}/chat/completions`，多一个斜杠会变成 `//`。 */
+export function normalizeBaseUrl(raw: string): string {
+  return raw.trim().replace(/\/+$/u, '');
+}
+
+/**
+ * 把一个新配的 provider 并进已有的 `providers` 对象（`Anchor: 配置模型端点` 的纯逻辑）。
+ *
+ * 三条刻意的地方：
+ *   1. **只动这一个 id** —— 别的 provider、以及同一个 id 下的别的字段（`tier2Model`、
+ *      `extraHeaders`…）一律原样保留。配置命令不该变成"清空重写"。
+ *   2. **原值不是对象时从空对象开始** —— 用户手写坏过（把整段 JSON 填进 `activeProvider`、
+ *      或者对象里多一层 `{`），那种情况下 `providers` 读出来是 undefined 或垃圾；
+ *      这时候要的是"还能救回来"，不是"永远配不上"。
+ *   3. `replaced` 如实返回，好让提示说"更新了"还是"写入了一个新的"。
+ */
+export function mergeProvider(
+  raw: unknown,
+  id: string,
+  baseUrl: string,
+  tier1Model: string,
+): { providers: Record<string, unknown>; replaced: boolean } {
+  const current: Record<string, unknown> = isRecord(raw) ? { ...raw } : {};
+  const existing = current[id];
+  const replaced = isRecord(existing);
+
+  current[id] = {
+    ...(isRecord(existing) ? existing : {}),
+    baseUrl: normalizeBaseUrl(baseUrl),
+    tier1Model: tier1Model.trim(),
+  };
+
+  return { providers: current, replaced };
+}

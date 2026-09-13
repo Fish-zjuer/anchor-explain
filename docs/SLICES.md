@@ -494,6 +494,18 @@ S7 点名的两条验收都在：`fetchContext({type:'page_range', start:22, end
 
 详见 D61 与 `CONTRACTS` §5.5。数字：202 测 / `pnpm smoke` 61 项。
 
+### S8 的第二处补丁（同一个台阶卡了第二次，2026-09-13）
+
+用户接着手写 `settings.json` 配端点，把整段 JSON 填进了 `activeProvider`（那是个**字符串**设置），
+`settings.json` 语法坏了（"预期为文件结尾"）。
+
+**同一件事讲清楚两次还是做不对，说明它不该靠讲** —— `providers` 是嵌套对象，
+在设置界面里只能手写。于是新增命令 `anchorExplain.configure`：
+三个输入框（provider id、baseUrl、模型名）+ 校验 + 预填，直接写进用户设置。
+面板上「配置模型端点」放在「设置 API Key」前面，「打开设置」退到这一组最后。
+
+详见 D62、`CONTRACTS` §5.5 / §6。数字：208 测 / `pnpm smoke` 63 项。
+
 ## S8 固定按钮与开始界面
 
 - **目标**：给整个产品一个**固定的门厅** —— 活动栏一个图标，点开是「开始」面板
@@ -502,7 +514,7 @@ S7 点名的两条验收都在：`fetchContext({type:'page_range', start:22, end
 - **范围**：`package.json`（视图容器 / 视图 / 命令 / 键位 / 演练）、`assets/anchor.svg`、
   `media/walkthrough/*.md`、`src/start/*`、`src/protocol.ts`（§5.5）、`src/describe.ts`、
   `src/sidebar/keybindingResolve.ts`（线2 键位）、`src/commands.ts`（装配与刷新）
-- **验收标准**：自动化（201 测 + 三个冒烟）+ 用户实操 ——
+- **验收标准**：自动化（当时 201 测 + 三个冒烟；两处补丁后是 **208 测 + 63 冒烟**）+ 用户实操 ——
   点活动栏图标能出面板；面板上「讲解选中的代码」显示的是**你自己绑的键**；
   点「显示状态」有反应；`Ctrl+Alt+A` 能把它呼出来；没配模型/没装线2 时对应按钮是灰的**且说清缺什么**；
   欢迎页的「演练」里有「开始使用 Anchor」这张卡。

@@ -315,13 +315,17 @@ check(
 );
 check(startModel?.openChord === 'Ctrl+Alt+A', '面板顶部知道怎么再打开自己');
 
-// 门厅不许是死路（D61）：面板说"你还缺 anchorExplain.providers"，那就得有一条去配它的路，
-// 而且那条路**不受任何前置条件限制**
+// 门厅不许是死路（D61），而且**能一步做完的别让人去别处做**（D62）：面板说"你还缺
+// anchorExplain.providers"，那就得有一条**真的能配**的路，而且不受任何前置条件限制
 check(
   startModel?.sections?.some((section) =>
-    section.actions.some((a) => a.id === 'openSettings' && a.enabled),
+    section.actions.some((a) => a.id === 'configure' && a.enabled),
   ),
-  '没配模型时「打开设置」仍可点（否则面板把该做什么说清楚了、却一步也走不动）',
+  '「配置模型端点」始终可点（否则面板把该做什么说清楚了、却一步也走不动）',
+);
+check(
+  startModel?.sections?.some((section) => section.actions.some((a) => a.id === 'openSettings' && a.enabled)),
+  '「打开设置」也在（想自己改取件轮数/温度的人有路）',
 );
 
 // 点一个动作 → 真的执行了那条命令
@@ -336,6 +340,14 @@ const executedBefore = executedCommands.length;
 receiveFromPanel?.({ type: 'start:run', id: '并不是我们的动作' });
 await new Promise((resolve) => setTimeout(resolve, 20));
 check(executedCommands.length === executedBefore, '面板回传表里没有的 id 时，一条命令都不执行');
+
+// 面板点「配置模型端点」→ 命令层那条命令真的被调起来（输入框那三步不在这里跑，
+// 那是 F5 的事；这里守的是"按钮 → 命令"这一跳和命令已声明）
+receiveFromPanel?.({ type: 'start:run', id: 'configure' });
+check(
+  await waitFor(() => executedCommands.some((c) => c.id === 'anchorExplain.configure')),
+  '点「配置模型端点」→ 执行的是我们声明的那条命令',
+);
 
 // 面板点「打开设置」→ 命令层再去调 VS Code 的内置设置命令（参数在**命令里面**，不在面板里）
 receiveFromPanel?.({ type: 'start:run', id: 'openSettings' });

@@ -11,8 +11,11 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_MAX_FETCH_ROUNDS,
   apiKeySecretName,
+  checkBaseUrl,
   clampRounds,
   describeConfig,
+  mergeProvider,
+  normalizeBaseUrl,
   resolveConfig,
   resolveProvider,
 } from '../src/config.ts';
@@ -91,4 +94,68 @@ test('describeConfig：配好了就说清用了哪个模型、上限多少', () 
 
 test('apiKeySecretName：读写两侧共用同一个键名约定', () => {
   assert.equal(apiKeySecretName('default'), 'anchorExplain.apiKey.default');
+});
+
+// ─────────────────────────────────────────────────────────────
+// `Anchor: 配置模型端点` 的纯逻辑（D62）—— 它要**替用户写 settings.json**，
+// 所以"写坏了怎么办""会不会把别的 provider 冲掉"必须有单测，不能靠手感。
+// ─────────────────────────────────────────────────────────────
+
+test('mergeProvider：只动这一个 id，别的 provider 原样保留', () => {
+  const raw = {
+    default: { baseUrl: 'https://a.test/v1', tier1Model: 'm1', tier2Model: 'vision' },
+    work: { baseUrl: 'https://b.test/v1', tier1Model: 'm2' },
+  };
+  const { providers, replaced } = mergeProvider(raw, 'default', 'https://c.test/v1', 'm3');
+
+  assert.equal(replaced, true);
+  assert.deepEqual(providers.work, { baseUrl: 'https://b.test/v1', tier1Model: 'm2' }, '别的 provider 被改动了');
+  assert.equal((providers.default as Record<string, unknown>).baseUrl, 'https://c.test/v1');
+  assert.equal((providers.default as Record<string, unknown>).tier1Model, 'm3');
+  // 同一个 id 下的**别的字段**也要留着：用户手填的视觉档不该被我们的两个输入框抹掉
+  assert.equal((providers.default as Record<string, unknown>).tier2Model, 'vision');
+});
+
+test('mergeProvider：新增一个 id 时 replaced=false（提示要如实说"写入"还是"更新"）', () => {
+  const { providers, replaced } = mergeProvider({ default: { baseUrl: 'https://a.test/v1', tier1Model: 'm' } }, 'work', 'https://b.test/v1', 'm2');
+  assert.equal(replaced, false);
+  assert.deepEqual(Object.keys(providers).sort(), ['default', 'work']);
+});
+
+test('mergeProvider：原值坏掉时从空对象开始（用户手写坏过 —— 要能救回来，不是永远配不上）', () => {
+  for (const broken of [undefined, null, '一整段字符串', 42, []]) {
+    const { providers } = mergeProvider(broken, 'default', 'https://a.test/v1', 'm');
+    assert.deepEqual(providers, { default: { baseUrl: 'https://a.test/v1', tier1Model: 'm' } }, JSON.stringify(broken));
+  }
+  // 同一个 id 的值是垃圾时也照样覆盖
+  const { providers } = mergeProvider({ default: '垃圾' }, 'default', 'https://a.test/v1', 'm');
+  assert.deepEqual(providers.default, { baseUrl: 'https://a.test/v1', tier1Model: 'm' });
+});
+
+test('mergeProvider：顺手把多余的首尾空白与结尾斜杠收掉', () => {
+  const { providers } = mergeProvider({}, 'default', '  https://a.test/v1///  ', '  m  ');
+  assert.deepEqual(providers.default, { baseUrl: 'https://a.test/v1', tier1Model: 'm' });
+});
+
+test('checkBaseUrl：只挡"明确的错"，其余一律放行', () => {
+  // 两个真实发生过的错：少了协议头（症状是"连不上 xxx"）、把完整端点写进来（症状是 404）
+  assert.ok(checkBaseUrl('api.deepseek.com/v1')?.includes('协议头'));
+  assert.ok(checkBaseUrl('https://api.deepseek.com/v1/chat/completions')?.includes('/chat/completions'));
+  assert.ok(checkBaseUrl('') !== null);
+
+  // 端点长什么样是端点那边决定的，我们没资格替他判
+  for (const ok of [
+    'https://api.deepseek.com/v1',
+    'http://localhost:11434/v1',
+    'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    'https://gw.test/anthropic',
+  ]) {
+    assert.equal(checkBaseUrl(ok), null, ok);
+  }
+});
+
+test('normalizeBaseUrl：去掉结尾斜杠（我们拼的是 ${baseUrl}/chat/completions）', () => {
+  assert.equal(normalizeBaseUrl(' https://a.test/v1/ '), 'https://a.test/v1');
+  assert.equal(normalizeBaseUrl('https://a.test/v1'), 'https://a.test/v1');
+  assert.equal(normalizeBaseUrl('https://a.test///'), 'https://a.test');
 });

@@ -339,6 +339,7 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `anchorExplain.showStart` | 打开开始界面（把活动栏的「开始」视图聚焦出来，**S8 新增**） | `ctrl+alt+a` / `cmd+alt+a` | `!inputFocus` |
 | `anchorExplain.showState` | 显示当前状态（F2 的骨架验证命令） | — | — |
 | `anchorExplain.openSettings` | 打开设置并筛到 `anchorExplain`（**D61**：开始面板里那条"去配端点"的路） | — | — |
+| `anchorExplain.configure` | 三个输入框配好模型端点，写进用户设置（**D62**）。**只写 `providers[id]` 的 baseUrl 与 tier1Model，永不写 apiKey** | — | — |
 | `anchorExplain.setApiKey` | 把某个 provider 的 API Key 存进 `SecretStorage`（**S3 新增**） | — | — |
 | `anchorPdf.openInAnchorViewer` | 用 Anchor 的 PDF 视图打开 | — | — |
 | `anchorPdf.selectRegion` | 让当前 PDF 面板进入框选模式（**S5 新增**） | `ctrl+alt+s` / `cmd+alt+s` | `activeCustomEditorId == 'anchorPdf.view'` |
@@ -357,7 +358,7 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 两侧的值都写在 `contributes.keybindings` 的 `key` / `mac` 里，并由
 `test/keybindingResolve.test.ts` 的耦合锁与 `WALKTHROUGH_CHORDS` 逐字比对。
 
-**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 11 个 ext-A 命令；
+**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 12 个 ext-A 命令；
 `scripts/smoke-extension.mjs` 有一条锁断言「`package.json` 声明的命令 == 实际注册的命令」。
 
 **`showStart` 的 `when: !inputFocus`（S8）**：与 `stop` 同一个立场（D11）——"打开开始界面"
@@ -595,16 +596,31 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 `test/keybindingResolve.test.ts` 里那条对线2 `package.json` 的镜像锁。
 **显示一个写死的默认键，就是替用户断言一件我们并不知道的事**（D10 对线2 同样成立）。
 
-**门厅不许是死路（D61）**：面板上每个灰按钮的 `note` 必须**指出下一步按哪个按钮**，
-而且必须真的存在那样一个按钮。目前唯一的缺口是"还没配 `anchorExplain.providers`"，
-对应 `anchorExplain.openSettings` —— 它包住了 VS Code 的内置命令
-`workbench.action.openSettings`（带筛选词 `anchorExplain`），**参数放在命令里面，不放面板**：
-`start:run` 只回传 id，说不出"带什么参数"（这是刻意的）。包一层还有个好处 ——
-"动作表里的命令必须在所属扩展里声明过"那条锁继续守得住（内置命令没法声明）。
+**门厅不许是死路（D61/D62）**：面板上每个灰按钮的 `note` 必须**指出下一步按哪颗按钮**，
+而且那颗按钮必须真的存在、真的能把事办完。目前唯一的缺口是"还没配 `anchorExplain.providers`"，
+对应两颗：
+
+| 动作 | 命令 | 谁更适合 |
+|---|---|---|
+| 「配置模型端点」 | `anchorExplain.configure` | 绝大多数人：三个输入框（provider id、baseUrl、模型名），带校验与预填，**直接写进用户设置** |
+| 「打开设置」 | `anchorExplain.openSettings` | 要改别的项（取件轮数、温度、多个 provider）的人 |
+
+`configure` 会调 VS Code 的 `workbench.action.openSettings` 吗？不会 —— 它走
+`workspace.getConfiguration().update(..., Global)`，**只写扩展自己的配置节**。
+`openSettings` 才落到内置命令 `workbench.action.openSettings`（带筛选词 `anchorExplain`）：
+**参数放在命令里面，不放面板**（`start:run` 只回传 id，说不出"带什么参数"，这是刻意的）。
+包一层还有个好处 —— "动作表里的命令必须在所属扩展里声明过"那条锁继续守得住
+（内置命令没法声明）。
 
 ---
 
 ## §6 配置项（冻结）
+
+**写入侧（D62）**：`anchorExplain.configure` 是唯一会写这些设置的地方，它
+**只写 `providers[id]` 的 `baseUrl` 与 `tier1Model`**（同 id 下的别的字段原样保留），
+必要时把 `activeProvider` 指到刚配的那个 id。**它永不写 `apiKey`** ——
+密钥只有一条路：`Anchor: 设置 API Key` → `SecretStorage`。
+合并用 `inspect().globalValue` 而不是 `get()`：后者会把工作区级的值一起捞进来。
 
 | 配置 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -754,7 +770,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/media/walkthrough/*.md` | **S8 新增**。欢迎页「演练」卡片四步的正文（`contributes.walkthroughs` 的 `media.markdown`） | `setup.md` / `capture.md` / `flow.md` / `pdf.md` |
 | `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（**S2 起五个方法全部是真的**，没有覆盖层） | `createEditorPort`:25 |
 | `packages/extension-anchor/src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` | `createFileSystemPort`:12 `countLines`:38 |
-| `packages/extension-anchor/test/*.test.ts`（13 个，161 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter`，**S8 加 `startModel` / `startUi` / `describe`** | — |
+| `packages/extension-anchor/test/*.test.ts`（13 个，168 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter`，**S8 加 `startModel` / `startUi` / `describe`** | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
 | `scripts/{make-fixture-pdf.mjs, devhost.mjs, link-extension.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**起开发宿主（绝对路径 + 先查产物，D59）**；**装成常驻扩展（目录联接，D60）**；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器。**S8 起产物冒烟也真跑一遍开始面板的宿主侧**（拿到 provider 驱动它） | — |

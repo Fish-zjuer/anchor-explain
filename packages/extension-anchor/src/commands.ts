@@ -36,7 +36,7 @@ import { createPdfDocumentCache } from './adapters/pdf/pdfDocumentCache.ts';
 import { openPdfJsSource } from './adapters/pdf/pdfjsSource.ts';
 import { primaryLocationOf } from './playback/decorationPlan.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
-import { describeConfig } from './config.ts';
+import { DEFAULT_ACTIVE_PROVIDER, checkBaseUrl, describeConfig, normalizeBaseUrl } from './config.ts';
 import { captureSummary } from './describe.ts';
 import { createOrchestrator } from './orchestrator/Orchestrator.ts';
 import { createModelRouter } from './orchestrator/ModelRouter.ts';
@@ -53,7 +53,13 @@ import { StartViewProvider } from './start/StartViewProvider.ts';
 import { buildStartModel, findStartAction } from './start/startModel.ts';
 import type { StartModel } from './start/startModel.ts';
 import { samePath } from './paths.ts';
-import { configuredProviderIds, readAnchorConfig, storeApiKey } from './vscode/configSource.ts';
+import {
+  configuredProviderIds,
+  rawProvider,
+  readAnchorConfig,
+  storeApiKey,
+  writeProviderSettings,
+} from './vscode/configSource.ts';
 import { createEditorPort } from './vscode/ports/editorPort.ts';
 import { countLines, createFileSystemPort } from './vscode/ports/fileSystemPort.ts';
 
@@ -603,6 +609,61 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   /**
+   * `Anchor: 配置模型端点` —— 点三下把端点配好（D62）。
+   *
+   * @anchor 为什么值得一条专门命令，而不是让用户去设置里手写：
+   *         `providers` 是**嵌套对象**，在设置界面里不好改，用户于是手写 JSON ——
+   *         而这一步连续翻过两次车（第一次找不到入口，第二次把整段对象填进了
+   *         `activeProvider` 那个**字符串**设置里，整个 settings.json 语法都坏了）。
+   *         **一件事讲清楚两次还是做不对，就不该再靠讲**。三个输入框、带校验、带预填，
+   *         写完立刻能用，而且**永不碰 apiKey**（那个走 SecretStorage）。
+   */
+  async function configure(): Promise<void> {
+    const ids = configuredProviderIds();
+    let id = DEFAULT_ACTIVE_PROVIDER;
+
+    if (ids.length > 0) {
+      const picked = await vscode.window.showInputBox({
+        title: 'Anchor：给哪个 provider 配端点？',
+        prompt: `已有的：${ids.join(' / ')}（直接回车就改当前在用的那个）`,
+        value: (await readAnchorConfig(context)).providerId,
+        ignoreFocusOut: true,
+      });
+      if (picked === undefined) return; // Esc = 什么都不做
+      id = picked.trim() || DEFAULT_ACTIVE_PROVIDER;
+    }
+
+    // 预填已有的值：改一个字段不该重打整行
+    const before = rawProvider(id);
+    const baseUrl = await vscode.window.showInputBox({
+      title: `Anchor：providers.${id}.baseUrl`,
+      prompt: 'OpenAI 兼容端点（不带 /chat/completions）',
+      value: typeof before?.baseUrl === 'string' ? before.baseUrl : '',
+      placeHolder: 'https://api.deepseek.com/v1',
+      validateInput: (value) => checkBaseUrl(value),
+      ignoreFocusOut: true,
+    });
+    if (baseUrl === undefined) return;
+
+    const model = await vscode.window.showInputBox({
+      title: `Anchor：providers.${id}.tier1Model`,
+      prompt: '端点那边认的模型 id',
+      value: typeof before?.tier1Model === 'string' ? before.tier1Model : '',
+      placeHolder: 'deepseek-chat',
+      validateInput: (value) => (value.trim() === '' ? '模型名不能为空' : null),
+      ignoreFocusOut: true,
+    });
+    if (model === undefined) return;
+
+    const { replaced, activeChanged } = await writeProviderSettings(id, baseUrl, model);
+    void vscode.window.showInformationMessage(
+      `Anchor：已${replaced ? '更新' : '写入'}用户设置 anchorExplain.providers.${id}` +
+        `（${model.trim()} @ ${normalizeBaseUrl(baseUrl)}）` +
+        `${activeChanged ? `，并把 activeProvider 指到 ${id}` : ''}。下一步：设置 API Key。`,
+    );
+  }
+
+  /**
    * 存 API Key 进 `SecretStorage`（D25）。
    *
    * @anchor 这条命令不是为了方便，而是**默认走安全路径的必要条件**：
@@ -710,6 +771,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.playPause', playPause),
     vscode.commands.registerCommand('anchorExplain.showStart', showStart),
     vscode.commands.registerCommand('anchorExplain.openSettings', openSettings),
+    vscode.commands.registerCommand('anchorExplain.configure', configure),
     vscode.commands.registerCommand('anchorExplain.showState', showState),
     vscode.commands.registerCommand('anchorExplain.setApiKey', setApiKey),
 

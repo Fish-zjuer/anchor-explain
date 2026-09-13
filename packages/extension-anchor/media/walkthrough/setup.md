@@ -1,15 +1,22 @@
 ### 1. 填一个端点
 
-在设置里搜 `anchorExplain.providers`，填 baseUrl 与模型名 —— 一个 OpenAI 兼容实现同时覆盖
-OpenAI / DeepSeek / 通义 / 本地 Ollama，端点与模型名由你选。
+按下面这颗按钮，三个输入框就配好了（带校验、带预填，不用手写 JSON）：
+
+[配置模型端点](command:anchorExplain.configure)
+
+想自己写 `settings.json` 也行：
 
 ```json
-{ "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" } }
+{
+  "anchorExplain.providers": {
+    "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" }
+  }
+}
 ```
 
-懒得搜就点这里（会把设置筛到 `anchorExplain`）：
-
-[打开设置](command:anchorExplain.openSettings)
+一个 OpenAI 兼容实现同时覆盖 OpenAI / DeepSeek / 通义 / 本地 Ollama，
+端点与模型名由你选。**注意 `activeProvider` 是字符串，填 provider 的键名**（`"default"`），
+不是那整段对象 —— 写错会让 `settings.json` 语法坏掉。
 
 ### 2. 存 Key
 

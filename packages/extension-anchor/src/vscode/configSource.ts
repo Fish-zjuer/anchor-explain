@@ -12,7 +12,7 @@
  */
 
 import * as vscode from 'vscode';
-import { apiKeySecretName, resolveConfig } from '../config.ts';
+import { apiKeySecretName, mergeProvider, resolveConfig } from '../config.ts';
 import type { AnchorConfig } from '../config.ts';
 
 const SECTION = 'anchorExplain';
@@ -72,4 +72,41 @@ export function configuredProviderIds(): string[] {
   const providers = vscode.workspace.getConfiguration(SECTION).get('providers');
   if (typeof providers !== 'object' || providers === null) return [];
   return Object.keys(providers as Record<string, unknown>);
+}
+
+/** 某个 provider 的原始值。配置命令拿它预填输入框，免得"只改一个字段"要重打整行。 */
+export function rawProvider(id: string): Record<string, unknown> | undefined {
+  const providers = vscode.workspace.getConfiguration(SECTION).inspect<unknown>('providers')?.globalValue;
+  if (typeof providers !== 'object' || providers === null) return undefined;
+  const value = (providers as Record<string, unknown>)[id];
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+/**
+ * `Anchor: 配置模型端点` 的**写入侧**：把 baseUrl 与模型名写进用户设置的 `providers[id]`。
+ *
+ * @anchor 为什么允许写设置（别处我们一律不碰用户的东西）：
+ *         这一步本来就是用户必须做的事，而"让他手写一段嵌套 JSON"已经连续坑了两次
+ *         （先是没有入口、后是 `activeProvider` 里塞了整段对象 —— D62）。
+ *         约束仍然很紧：**只写扩展自己的配置节**、走官方 API（等价于他在设置界面里手改）、
+ *         而且**只写 baseUrl 与模型名，永不写 apiKey**（那个只进 SecretStorage）。
+ *
+ * `inspect().globalValue` 而不是 `get()`：后者会把工作区级的值与默认值一起捞进来，
+ * 一次"配置端点"就把别人的设置复制进用户设置 —— 那是污染，不是配置。
+ */
+export async function writeProviderSettings(
+  id: string,
+  baseUrl: string,
+  tier1Model: string,
+): Promise<{ replaced: boolean; activeChanged: boolean }> {
+  const settings = vscode.workspace.getConfiguration(SECTION);
+  const merged = mergeProvider(settings.inspect<unknown>('providers')?.globalValue, id, baseUrl, tier1Model);
+  await settings.update('providers', merged.providers, vscode.ConfigurationTarget.Global);
+
+  // 配完不指过去，用户会遇到最气人的一种失败：配置明明写对了，讲解却说"没有可用的 provider"
+  const active = settings.inspect<string>('activeProvider')?.globalValue;
+  const activeChanged = active !== id;
+  if (activeChanged) await settings.update('activeProvider', id, vscode.ConfigurationTarget.Global);
+
+  return { replaced: merged.replaced, activeChanged };
 }

@@ -19,6 +19,7 @@ import type { WalkthroughState } from '../protocol.ts';
 
 export type StartActionId =
   | 'capture'
+  | 'configure'
   | 'openSettings'
   | 'setApiKey'
   | 'showState'
@@ -72,14 +73,14 @@ export const START_ACTIONS: readonly StartActionSpec[] = [
     chordId: 'capture',
   },
   {
-    // **门厅不许是死路**（D61）。用户第一眼看到的常常是"设置 API Key 不可用 + 说你还缺 providers"，
-    // 那就必须有一条去配 providers 的路 —— 否则面板把该做什么说清楚了，却一步也走不动。
-    // 放在「设置 API Key」**上面**：顺序本身就是那句"先配端点、再存 key"。
-    id: 'openSettings',
+    // **门厅不许是死路**（D61），而且**能一步做完的就别让人去别处做**（D62）。
+    // 用户在这个台阶上连续卡了两次（找不到入口 → 手写 JSON 把 settings.json 写坏），
+    // 所以"配端点"从"带你去看设置"升级成"点三下配好"。
+    id: 'configure',
     group: 'start',
-    title: '打开设置（配模型端点）',
-    detail: '填 anchorExplain.providers：baseUrl 与一个模型名就够（端点由你选，一个 OpenAI 兼容实现覆盖多家）',
-    command: 'anchorExplain.openSettings',
+    title: '配置模型端点',
+    detail: '三个输入框：provider id、baseUrl、模型名 —— 直接写进设置，写完就能用',
+    command: 'anchorExplain.configure',
   },
   {
     id: 'setApiKey',
@@ -95,6 +96,14 @@ export const START_ACTIONS: readonly StartActionSpec[] = [
     title: '显示状态（自检）',
     detail: '模型配置、上次捕获的范围、状态栏此刻的文案',
     command: 'anchorExplain.showState',
+  },
+  {
+    // 放在这一组的**最后**：前四条是"把事做完"，这条是"我要自己改"。
+    id: 'openSettings',
+    group: 'start',
+    title: '打开设置',
+    detail: '要改别的项（取件轮数、温度、多个 provider）时用这个',
+    command: 'anchorExplain.openSettings',
   },
   {
     id: 'openPdf',
@@ -178,9 +187,9 @@ export interface StartModelInput {
 }
 
 const REQUIREMENT_REASON: Record<StartRequirement, string> = {
-  // 说清缺什么，并**指出下一步按哪个按钮**（D61）：灰按钮只写"缺钱"不写"去哪儿取"，
-  // 就是把这句提示变成一句废话。
-  provider: '还没有配 anchorExplain.providers —— 先用上面那颗「打开设置」填 baseUrl 与 tier1Model',
+  // 说清缺什么，并**指出下一步按哪颗按钮**（D61）：灰按钮只写"缺钱"不写"去哪儿取"，
+  // 就是把这句提示变成一句废话。名字必须写全 —— 面板上的顺序会变，"上面那颗"会过期。
+  provider: '还没有配 anchorExplain.providers —— 先用「配置模型端点」填一下（三个输入框）',
   peer: '没有安装线2（anchor.anchor-pdf）',
   session: '现在没有进行中的讲解',
 };
