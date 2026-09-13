@@ -7,7 +7,6 @@
 import { readFileSync } from 'node:fs';
 
 const TARGETS = {
-  'packages/extension-anchor/src/paths.ts': ['normPath', 'samePath', 'basenameOf', 'countTextLines'],
   'packages/extension-anchor/src/adapters/CodeAdapter.ts': [
     'CaptureScope',
     'CodeAdapter',
@@ -83,7 +82,6 @@ const TARGETS = {
   'packages/extension-anchor-pdf/src/anchor/rectToNormalizedBBox.ts': [
     'PixelRect',
     'PageRect',
-    'intersectRects',
     'pickDominantPage',
     'rectToNormalizedBBox',
     'resolveSelection',
@@ -98,6 +96,28 @@ const TARGETS = {
     'CaptureInput',
     'buildPdfAnchor',
     'describePdfAnchor',
+  ],
+  'packages/extension-anchor/src/relatedFiles.ts': [
+    'MAX_CANDIDATES',
+    'includeNamesIn',
+    'orderRelatedFiles',
+  ],
+  'packages/extension-anchor/src/vscode/relatedFiles.ts': ['listRelatedFiles'],
+  'packages/extension-anchor/src/adapters/CodeAdapter.ts': [
+    'CaptureScope',
+    'CodeAdapter',
+    'CodeAdapterDeps',
+    'createCodeAdapter',
+    'fetchContext',
+  ],
+  'packages/extension-anchor/src/orchestrator/validateContextRequest.ts': [
+    'FetchScope',
+    'ContextFetchPolicy',
+    'RESTRICTED_POLICY',
+    'FetchedSpan',
+    'ContextFetchState',
+    'ContextDecision',
+    'validateContextRequest',
   ],
   'packages/extension-anchor/src/protocol.ts': [
     'WalkthroughState',
@@ -202,7 +222,18 @@ const TARGETS = {
   ],
   'packages/extension-anchor/src/adapters/pdf/pdfjsSource.ts': ['openPdfJsSource'],
   'packages/core/src/rect.ts': ['Rect', 'rectArea', 'intersectRects'],
-  'packages/core/src/paths.ts': ['normPath', 'samePath', 'basenameOf', 'countTextLines'],
+  'packages/core/src/paths.ts': [
+    'normPath',
+    'samePath',
+    'basenameOf',
+    'countTextLines',
+    'isAbsolutePath',
+    'dirnameOf',
+    'joinPath',
+    'isInsidePath',
+    'resolveCandidatePaths',
+    'relativeToPath',
+  ],
   'packages/extension-anchor/src/vscode/ports/editorPort.ts': ['createEditorPort'],
   'packages/extension-anchor/src/vscode/ports/fileSystemPort.ts': ['createFileSystemPort', 'countLines'],
   'packages/extension-anchor/src/commands.ts': ['registerCommands', 'askWhatToExplain', 'capture'],
