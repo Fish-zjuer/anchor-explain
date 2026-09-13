@@ -12,7 +12,10 @@
 
 ## 现在能跑什么
 
-**S3 阶段：线1 已经接上真实 AI。** 打开 `main.c`、**选中一段**、按 `Ctrl+Shift+A`，
+**S5 阶段：线1 已接真实 AI，线2 的 PDF 框选也能用了。**
+在 Anchor 的 PDF 视图里 `Ctrl+Alt+S` 拖一个矩形 → 位置变成锚点交给线1 讲解。
+
+**线1**： 打开 `main.c`、**选中一段**、按 `Ctrl+Shift+A`，
 先弹一个确认（「讲解这段 / 整个文件」，只放光标时改为提示 + 一个按钮），
 确认后**调你配的模型端点**产出讲解：编辑器里出现**均匀的浅色块**，
 `Alt+]` 让一个荧光在块内**逐个小逻辑点扫过去**，侧边栏同步出讲解，`Esc` 退出。
@@ -25,6 +28,11 @@
 
 （S1/S2 里的两个替身 —— 假选区、假 AI —— 都已退出产物，现在只在 `test/` 与 `scripts/` 里
 作为"边界上的替身"存在。判据是 `pnpm smoke` 直接查产物里有没有替身独有的字面量。）
+
+**线2**：`packages/extension-anchor-pdf/` 是 [`mathematic-inc/vscode-pdf`](https://github.com/mathematic-inc/vscode-pdf)
+的 fork。**不劫持**（`customEditors` 是 `priority: "option"`，你的默认 PDF 打开方式不变），
+想看它就用 `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures`
+再跑 `Anchor: 用 Anchor 打开 PDF`。改动逐条见该包的 `MODIFICATIONS.md`。
 
 ## 仓库结构
 
@@ -49,10 +57,10 @@ pnpm fixtures     # 重新生成 test/fixtures/sample-30p.pdf（零依赖，已�
 pnpm build        # esbuild 打包扩展，产物落在各自 packages/<包名>/dist/extension.cjs
 pnpm watch        # 同上，watch 模式；F5 的 preLaunchTask 用的就是这个
 pnpm typecheck    # tsc --noEmit，只做类型检查，不出产物
-pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 113
+pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 113 + pdf 11
 pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（30 项断言）
 pnpm smoke:chain  # 链路冒烟：跑一次完整讲解（真编排循环，只有 fetch 是桩）（105 项断言）
-pnpm smoke:pdf    # 线2 产物冒烟：不劫持 / 改名改干净 / 打开命令真能用（35 项断言）
+pnpm smoke:pdf    # 线2 产物冒烟：不劫持 / 改名 / **框选整条链路**（66 项断言）
 pnpm check        # 上面最后六件事串起来：typecheck → test → build → smoke → smoke:chain → smoke:pdf
 ```
 

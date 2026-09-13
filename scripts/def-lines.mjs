@@ -80,6 +80,25 @@ const TARGETS = {
   ],
   'packages/extension-anchor-pdf/src/extension.ts': ['openInAnchorViewer', 'activate', 'deactivate'],
   'packages/extension-anchor-pdf/src/pdf-viewer-provider.ts': ['PDFViewerProvider'],
+  'packages/extension-anchor-pdf/src/anchor/rectToNormalizedBBox.ts': [
+    'PixelRect',
+    'PageRect',
+    'intersectRects',
+    'pickDominantPage',
+    'rectToNormalizedBBox',
+    'resolveSelection',
+  ],
+  'packages/extension-anchor-pdf/src/anchor/bridge.ts': [
+    'HostToSelect',
+    'CapturedGeometry',
+    'SelectToHost',
+    'parseSelectMessage',
+  ],
+  'packages/extension-anchor-pdf/src/anchor/captureAnchor.ts': [
+    'CaptureInput',
+    'buildPdfAnchor',
+    'describePdfAnchor',
+  ],
   'packages/extension-anchor/src/protocol.ts': [
     'WalkthroughState',
     'HostToSidebar',

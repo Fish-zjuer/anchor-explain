@@ -35,13 +35,38 @@ const registeredCommands = new Map();
 const executed = [];
 const editorProviders = [];
 const openDialogs = [];
+const warnings = [];
+const posted = [];
 let activeTextEditor;
+let peerInstalled = true;
+
+const makeUri = (p) => {
+  const uri = {
+    scheme: 'file',
+    fsPath: p,
+    path: p.replace(/\\/g, '/'),
+    query: '',
+    fragment: '',
+    toString: () => `file://${p}`,
+    // 上游的 resolveCustomEditor 会用 `document.uri.with({path: ...})` 掐掉文件名
+    with(patch) {
+      const next = makeUri(p);
+      if (patch.path !== undefined) next.path = patch.path;
+      if (patch.fragment !== undefined) next.fragment = patch.fragment;
+      return next;
+    },
+  };
+  return uri;
+};
 
 const vscodeStub = {
   Uri: {
-    file: (p) => ({ scheme: 'file', fsPath: p, path: p, toString: () => `file://${p}` }),
-    joinPath: (base, ...segs) => ({ ...base, fsPath: path.join(base.fsPath, ...segs) }),
-    parse: (s) => ({ toString: () => s }),
+    file: makeUri,
+    joinPath: (base, ...segs) => makeUri(path.join(base.fsPath, ...segs)),
+    parse: (s) => ({ ...makeUri(s), toString: () => s }),
+  },
+  extensions: {
+    getExtension: (id) => (peerInstalled && id === 'anchor.anchor-explain' ? { id } : undefined),
   },
   window: {
     get activeTextEditor() {
@@ -55,8 +80,10 @@ const vscodeStub = {
       openDialogs.push(options);
       return Promise.resolve(undefined);
     },
-    showInformationMessage: () => Promise.resolve(undefined),
-    showErrorMessage: () => Promise.resolve(undefined),
+    showInformationMessage: (m) => (warnings.push(m), Promise.resolve(undefined)),
+    showWarningMessage: (m) => (warnings.push(m), Promise.resolve(undefined)),
+    showErrorMessage: (m) => (warnings.push(m), Promise.resolve(undefined)),
+    showInputBox: () => Promise.resolve(undefined),
   },
   commands: {
     registerCommand(id, handler) {
@@ -71,6 +98,7 @@ const vscodeStub = {
   workspace: {
     getConfiguration: () => ({ get: (_k, d) => d }),
     onDidChangeConfiguration: () => ({ dispose() {} }),
+    fs: { readFile: () => Promise.resolve(new TextEncoder().encode('PDF-BYTES')) },
   },
 };
 
@@ -202,6 +230,160 @@ check(
 check(bundleText.includes('pdf-view-config'), 'viewer.html 内联进了产物（id=pdf-view-config 那一段是我们注入的）');
 check(bundleText.includes("default-src 'none'"), '宿主注入的 CSP 在产物里');
 check(bundleText.includes("base-uri 'none'") && bundleText.includes("form-action 'none'"), 'CSP 的两条收紧指令都在');
+
+// ---- 5. S5/S6：框选整条链路（消息 → 守卫 → 几何 → Anchor → 交给线1） -------
+// 这一节真的开了个面板、真的灌了一条 `anchor:captured` 进去，所以它验的是
+// "框选结果能不能变成锚点并交出去"，而不只是"代码里有没有这些字符串"。
+const panel = {
+  webview: {
+    cspSource: 'vscode-webview://smoke',
+    html: '',
+    options: {},
+    asWebviewUri: (uri) => ({ toString: () => `vscode-webview://smoke${uri.path}` }),
+    postMessage: (message) => (posted.push(message), Promise.resolve(true)),
+    onDidReceiveMessage: (cb) => ((onWebviewMessage = cb), { dispose() {} }),
+  },
+  onDidDispose: () => ({ dispose() {} }),
+  onDidChangeViewState: () => ({ dispose() {} }),
+  active: true,
+};
+let onWebviewMessage;
+
+const provider = editorProviders[0]?.provider;
+check(typeof provider?.resolveCustomEditor === 'function', '拿到了 provider 实例');
+
+const PDF_PATH = 'C:\\repo\\test\\fixtures\\sample-30p.pdf';
+const stubDocument = { uri: vscodeStub.Uri.file(PDF_PATH) };
+provider?.resolveCustomEditor(stubDocument, panel);
+
+check(typeof panel.webview.html === 'string' && panel.webview.html.length > 0, '拼出了 webview HTML');
+check(panel.webview.html.includes('anchor-select.js'), 'S5：框选脚本被注入进 HTML（不是靠改 assets/pdf.js）');
+check(
+  panel.webview.html.includes('assets/pdf.js/build/pdf.mjs') && panel.webview.html.includes('assets/main.mjs'),
+  '上游自己的两个脚本仍在（注入是追加，不是替换）',
+);
+check(panel.webview.html.includes("default-src 'none'"), 'CSP 仍然只有一份（注入没有破坏它的唯一性）');
+check(
+  panel.webview.html.indexOf('assets/main.mjs') < panel.webview.html.indexOf('anchor-select.js'),
+  '框选脚本排在上游脚本之后（要靠 pdf.js 的 DOM 才能算位置）',
+);
+
+// 进入框选模式：命令 → context key + 推给页面。
+// 注意面板此刻**还没握过手**（页面可能还在加载），所以宿主应当先记下、不推。
+executed.length = 0;
+posted.length = 0;
+await registeredCommands.get('anchorPdf.selectRegion')?.();
+check(
+  executed.some((c) => c.id === 'setContext' && c.args[0] === 'anchorPdf.selectMode' && c.args[1] === true),
+  '进入框选模式时把 anchorPdf.selectMode 置为 true（键位的 when 靠它）',
+  JSON.stringify(executed.map((c) => c.args)),
+);
+check(posted.length === 0, '未握手时先不推（推了也石沉大海）');
+
+await onWebviewMessage?.({ type: 'anchor:ready' });
+check(
+  posted.at(-1)?.type === 'anchor:enterSelectMode',
+  '握手时补发 enterSelectMode（没有这道握手，表现是"第一次点框选没反应，再点一次才行"）',
+  JSON.stringify(posted.at(-1)),
+);
+
+// 已经握过手之后，再点就是即时生效
+posted.length = 0;
+await registeredCommands.get('anchorPdf.selectRegion')?.();
+check(posted.at(-1)?.type === 'anchor:enterSelectMode', '已握手时即时推给页面（§5.2 的宿主→注入脚本方向）');
+
+// 框选结果：宿主用 geometry 重算，而不是照抄脚本给的 bbox
+executed.length = 0;
+const captured = {
+  type: 'anchor:captured',
+  page: 1,
+  bbox: [0.9, 0.9, 0.99, 0.99], // 刻意给一个**错的** bbox：宿主要用 geometry 覆盖它
+  geometry: {
+    dragged: { x: 200, y: 400, width: 100, height: 200 },
+    pages: [{ page: 23, rect: { x: 100, y: 200, width: 400, height: 800 } }],
+  },
+};
+await onWebviewMessage?.(captured);
+
+const handed = executed.find((c) => c.id === 'anchorExplain.explainAnchor');
+check(Boolean(handed), '框选结果交给了线1（§5.1 的 anchorExplain.explainAnchor）');
+const anchor = handed?.args?.[0];
+check(anchor?.sourceType === 'pdf', '交出去的是 PDF 锚点', String(anchor?.sourceType));
+check(anchor?.location?.page === 23, '页号来自 geometry 重算，不是照抄脚本给的 page=1', String(anchor?.location?.page));
+check(
+  Array.isArray(anchor?.location?.bbox) && anchor.location.bbox[0] === 0.25 && anchor.location.bbox[2] === 0.5,
+  'bbox 是 geometry 重算的结果（0.25–0.5），脚本给的那个被覆盖了',
+  JSON.stringify(anchor?.location?.bbox),
+);
+check(anchor?.sourceName === 'sample-30p.pdf', 'sourceName 是 basename', String(anchor?.sourceName));
+check(typeof anchor?.sourceId === 'string' && anchor.sourceId.length === 40, 'sourceId 是文档指纹（sha1 40 位）', String(anchor?.sourceId));
+check(
+  executed.some((c) => c.id === 'setContext' && c.args[0] === 'anchorPdf.selectMode' && c.args[1] === false),
+  '框选完成后把 selectMode 落回 false（不留"还在框选"的假状态）',
+);
+
+// 对端没装：明确提示，不静默失败（§5.1）
+peerInstalled = false;
+executed.length = 0;
+warnings.length = 0;
+await onWebviewMessage?.(captured);
+check(!executed.some((c) => c.id === 'anchorExplain.explainAnchor'), '对端缺失时不去 executeCommand（会抛"命令未找到"）');
+check(warnings.some((w) => w.includes('没有安装线1')), '对端缺失时明确提示', warnings.at(-1) ?? '');
+peerInstalled = true;
+
+// 取消：落回 false，且什么都不交
+executed.length = 0;
+await onWebviewMessage?.({ type: 'anchor:cancelled' });
+check(!executed.some((c) => c.id === 'anchorExplain.explainAnchor'), '取消时一个锚点都不交');
+check(
+  executed.some((c) => c.id === 'setContext' && c.args[0] === 'anchorPdf.selectMode' && c.args[1] === false),
+  '取消也把 selectMode 落回 false',
+);
+
+// 坏几何：不崩、不交，给一句人话
+executed.length = 0;
+warnings.length = 0;
+await onWebviewMessage?.({
+  type: 'anchor:captured',
+  page: 5,
+  bbox: [0.1, 0.1, 0.2, 0.2],
+  geometry: { dragged: { x: 0, y: 0, width: 5, height: 5 }, pages: [{ page: 9, rect: { x: 500, y: 500, width: 100, height: 100 } }] },
+});
+check(!executed.some((c) => c.id === 'anchorExplain.explainAnchor'), '框在页外时不交锚点');
+check(warnings.some((w) => w.includes('没有落在任何一页')), '框在页外时给一句人话', warnings.at(-1) ?? '');
+
+// 脏消息：一律丢掉，绝不把 page:"三" 之类的值带进 PDFLocation
+executed.length = 0;
+for (const bad of [null, 42, {}, { type: 'anchor:captured' }, { type: 'anchor:captured', page: '三', bbox: [0, 0, 1, 1] }]) {
+  await onWebviewMessage?.(bad);
+}
+check(executed.length === 0, '五条脏消息一条都没漏进去');
+
+// S6 的 revealPage：滚页，不是画框
+executed.length = 0;
+posted.length = 0;
+await registeredCommands.get('anchorPdf.revealPage')?.(23);
+check(posted.at(-1)?.type === 'anchor:gotoPage' && posted.at(-1)?.page === 23, 'revealPage 推的是 gotoPage（滚动，不画框）', JSON.stringify(posted.at(-1)));
+posted.length = 0;
+await registeredCommands.get('anchorPdf.revealPage')?.('不是数字');
+check(posted.length === 0, '页号不合法时什么都不推（它会去问用户，而不是瞎滚一页）');
+
+// ---- 6. 「PDF 上不出现任何高亮框」的结构性保证 -----------------------------
+check(
+  !bundleText.includes('createTextEditorDecorationType') && !bundleText.includes('TextEditorDecorationType'),
+  '线2 的产物里根本没有 decoration API（"不画框"不是靠自觉，是没有可画的东西）',
+);
+const overlay = readFileSync(path.join(PKG_DIR, 'media', 'anchor-select.js'), 'utf8');
+check(existsSync(path.join(PKG_DIR, 'media', 'anchor-select.js')), 'media/anchor-select.js 在（运行时从扩展目录读）');
+check(
+  overlay.includes('anchor:captured') && overlay.includes('anchor:enterSelectMode') && overlay.includes('anchor:gotoPage'),
+  '注入脚本用的是 §5.2 冻结的三个消息名，没有自创字段',
+);
+check(
+  !/classList\.add\(['"]anchor-active['"]\)[\s\S]{0,400}?post\(/.test(overlay) === false ||
+    overlay.includes('exitSelectMode'),
+  '注入脚本有明确的退出口（否则橡皮筋会留在屏幕上）',
+);
 
 ext.deactivate();
 check(true, 'deactivate 可调用');

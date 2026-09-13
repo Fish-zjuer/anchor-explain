@@ -22,6 +22,8 @@
  *   2. 新增命令 `anchorPdf.openInAnchorViewer`（"用 Anchor 打开 PDF"）。
  *      它是 S4 验收的唯一入口：**默认打开方式不受影响**（customEditors 里是
  *      `priority: "option"`），只有显式走这个命令才用我们的视图。
+ *   3. **S5/S6**：新增 `anchorPdf.selectRegion`（让当前 PDF 面板进入框选模式）
+ *      与 `anchorPdf.revealPage`（跨扩展入口：把 PDF 滚到第 N 页）。
  * ---------------------------------------------------------------------------
  */
 
@@ -60,10 +62,23 @@ async function pickPdf(): Promise<Uri | undefined> {
   return picked?.[0];
 }
 
+/**
+ * 跨扩展入口（§5.1）：线1 的侧边栏点了某一步 → 把 PDF 滚到那一页。
+ *
+ * @anchor 这里**只滚动，不画框**（约束 1 / `SLICES` S6）。所以这个函数短得可疑，
+ *         而它正是"线2 不做高亮流转"这条约束在代码里的落点。
+ */
+function revealPage(page: number, filePath?: string): void {
+  PDFViewerProvider.revealPage(page, filePath);
+}
+
 export function activate(context: ExtensionContext): void {
   context.subscriptions.push(
     PDFViewerProvider.register(context),
     commands.registerCommand("anchorPdf.openInAnchorViewer", openInAnchorViewer),
+    commands.registerCommand("anchorPdf.selectRegion", () => PDFViewerProvider.startSelectRegion()),
+    // 注意：**不注册成 executeCommand 的返回值依赖**（§5.1：单向）。
+    commands.registerCommand("anchorPdf.revealPage", revealPage),
   );
 }
 

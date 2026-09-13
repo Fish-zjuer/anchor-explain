@@ -308,7 +308,8 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `anchorExplain.showState` | 显示当前状态（F2 的骨架验证命令） | — | — |
 | `anchorExplain.setApiKey` | 把某个 provider 的 API Key 存进 `SecretStorage`（**S3 新增**） | — | — |
 | `anchorPdf.openInAnchorViewer` | 用 Anchor 的 PDF 视图打开 | — | — |
-| `anchorPdf.revealPage` | 滚动 PDF 到指定页（跨扩展调用） | — | — |
+| `anchorPdf.selectRegion` | 让当前 PDF 面板进入框选模式（**S5 新增**） | `ctrl+alt+s` / `cmd+alt+s` | `activeCustomEditorId == 'anchorPdf.view'` |
+| `anchorPdf.revealPage` | 滚动 PDF 到指定页（跨扩展调用，**S6**） | — | — |
 
 **`stop` 的 `when` 自 S1 起是 `sessionOpen`，不是 `walkthroughActive`（D46）。** 原表写的是后者，
 但两者合起来会产生一个用户可见的死键：`alt+]` 走到最后一步 → `done` → §4.2 要求
@@ -428,9 +429,23 @@ type HostToSelect =
 type SelectToHost =
   | { type: 'anchor:ready' }
   | { type: 'anchor:captured'; page: number; bbox: [number,number,number,number];
-      capturedImage?: string; extractedText?: string }
+      capturedImage?: string; extractedText?: string;
+      geometry?: CapturedGeometry }          // ← S5 追加，可选
   | { type: 'anchor:cancelled' };
+
+// 【S5 追加，非规范原文】原始像素几何。加它是为了让"归一化"这件事由**有单测的宿主代码**定案：
+// 注入脚本不参与类型检查、也没法被单测，让它独自承担唯一有对错的那门换算等于让它失去覆盖。
+// 只给 page+bbox 的"老式"脚本仍然能用（宿主退回用 coerceBBox 校验它）。
+interface CapturedGeometry {
+  dragged: { x: number; y: number; width: number; height: number };   // 屏幕坐标
+  pages: { page: number; rect: { x: number; y: number; width: number; height: number } }[];
+}
 ```
+
+**宿主对 `anchor:captured` 的处置（S5 定）**：`geometry` 在就用 `resolveSelection` **重算**
+（页号与 bbox 都以重算结果为准，脚本给的那两个值被覆盖）；不在就退回它给的 `page`/`bbox`。
+两条路都要过 `parseSelectMessage` 的守卫：`coerceBBox` + `isValidBBox` ——
+**一个零面积的框进不了 `PDFLocation`**（它会卡在 §3.3 的 bbox 校验上，或变成一个谁也看不见的锚点）。
 
 ### §5.3 ext-A 内部：宿主 ↔ 侧边栏 webview
 
@@ -648,7 +663,12 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
 | `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器 | — |
-| `packages/extension-anchor-pdf/`（整树） | 线2：`mathematic-inc/vscode-pdf` 的 fork（**Apache-2.0**）。改动逐条见本包 `MODIFICATIONS.md` | `src/extension.ts`：`openInAnchorViewer`:43 `activate`:63 `deactivate`:70；`src/pdf-viewer-provider.ts`：`PDFViewerProvider`:62（`viewType = "anchorPdf.view"`） |
+| `packages/extension-anchor-pdf/`（整树） | 线2：`mathematic-inc/vscode-pdf` 的 fork（**Apache-2.0**）。改动逐条见本包 `MODIFICATIONS.md` | `src/extension.ts`：`openInAnchorViewer`:45 `activate`:75 `deactivate`:85；`src/pdf-viewer-provider.ts`：`PDFViewerProvider`:99（`viewType = "anchorPdf.view"`） |
+| `packages/extension-anchor-pdf/src/anchor/rectToNormalizedBBox.ts` | **S5 新增**。像素矩形 → 「第几页 + 归一化 bbox」的**全部**换算（注入脚本一行业务数学都不做，就是为了让这门换算有单测） | `PixelRect`:17 `PageRect`:24 `intersectRects`:35 `pickDominantPage`:52 `rectToNormalizedBBox`:77 `resolveSelection`:91 |
+| `packages/extension-anchor-pdf/src/anchor/bridge.ts` | **S5 新增**。§5.2 两个联合类型的 TS 落地 + 边界守卫（注入脚本的输出和 AI 输出一样不可信） | `HostToSelect`:17 `CapturedGeometry`:33 `SelectToHost`:40 `parseSelectMessage`:92 |
+| `packages/extension-anchor-pdf/src/anchor/captureAnchor.ts` | **S5 新增**。框选 → `Anchor`（线2 版的 `CodeAdapter.capture()`） | `CaptureInput`:15 `buildPdfAnchor`:28 `describePdfAnchor`:49 |
+| `packages/extension-anchor-pdf/media/anchor-select.js` | **S5 新增**。注入式框选 overlay。**不是 TS、不参与类型检查、不进 bundle**（运行时从扩展目录读）。只做"跟手的事"：画橡皮筋、报像素几何 | — |
+| `packages/core/src/paths.ts` | **S5 新增**。路径归一/比较/显示名/行数 —— 从线1 的 `paths.ts` 搬上来，因为线2 也要用了 | `normPath`:13 `samePath`:17 `basenameOf`:27 `countTextLines`:37 |
 | `packages/extension-anchor-pdf/{assets,patches}/` | **上游 vendored 源码，必须提交、绝不 ignore**（根 `.gitignore` 里有专门注释；`dist/` 也因此写成 `packages/*/dist/`） | `assets/pdf.js/`（23MB）、`patches/pdf.js.patch` |
 | `packages/extension-anchor-pdf/tools/check_pdfjs.mjs` | 上游的不变式守卫（CSP 恰好一次、pdf.js 补丁在位）。**S4 接成了本包的 `test` 脚本** | — |
 | `packages/extension-anchor-pdf/{MODIFICATIONS.md,LICENSE,README.md}` | fork 的义务件：改动声明 / 上游 Apache-2.0 原文 / 本包入口与边界 | — |
@@ -666,8 +686,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/adapters/CodeAdapter.ts` 的 `detect()` | 兑现完整的 `SourceAdapter`（`capture` / `fetchContext` 已落） | S7（出现第二个 adapter 时才有真假之别） |
 | `packages/extension-anchor/src/adapters/PDFAdapter.ts` + `adapters/pdf/*` | PDF 无头取件 | S7 |
 | `packages/extension-anchor-pdf/`（整树） | 线2 fork | S4 |
-| `packages/extension-anchor-pdf/media/anchor-select.js` | 注入式框选 overlay | S5 |
-| `packages/extension-anchor-pdf/src/anchor/*` | bbox 换算 / Anchor 组装 / 消息桥 | S5 / S6 |
+| `packages/extension-anchor-pdf/src/anchor/pdfText.ts` | PDF 文字层取件（`page_range`） | S7 |
 
 ### 9.3 已知结构债
 

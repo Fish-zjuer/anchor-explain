@@ -15,7 +15,18 @@
 
 ## 现在到哪了
 
-**S4：fork 骨架**。改名、不劫持、能打开。框选 overlay 是 S5，框选 → 讲解是 S6。
+**S5：框选能用了**。改名 / 不劫持 / 能打开（S4）→ 现在还能**拖一个矩形**，
+把它变成 `Anchor` 交给线1 讲解（S5）。点击侧边栏滚动定位是 S6。
+
+### 怎么框选
+
+1. `Ctrl+Alt+S`（或命令面板 `Anchor: 框选一块并讲解（PDF）`）→ 进入框选模式，光标变成十字
+2. 在页面上拖一个矩形。**抬手就结束**：矩形消失、框选模式退出、屏幕上不留任何东西
+3. 拖到页外/页缝 → 提示「没有落在任何一页上」，不会留下垃圾状态
+4. 中途不想选了：`Esc`
+5. 交给线1 之后侧边栏会出讲解（没装线1 会明确提示）
+
+**跨页拖**（从第 1 页底部拖到第 2 页里）会判给**盖得多的那一页**，不是按起点判。
 
 ## 源码入口表
 
@@ -26,6 +37,10 @@
 | `src/pdf-document.ts` | 文档模型（变更/删除事件） | 逐字未改 |
 | `src/webview-collection.ts` | 一个文档对应多个 webview 的集合 | 逐字未改 |
 | `src/disposable.ts` / `src/utils.ts` / `src/types.ts` | 小工具；`*.html` 的模块声明 | 逐字未改 |
+| `src/anchor/rectToNormalizedBBox.ts` | **S5 新增**。像素矩形 → 「第几页 + 归一化 bbox」的**全部**换算（零 vscode 依赖，11 条单测） |
+| `src/anchor/bridge.ts` | **S5 新增**。§5.2 消息的 TS 落地 + 边界守卫 |
+| `src/anchor/captureAnchor.ts` | **S5 新增**。框选 → `Anchor`；`describePdfAnchor` 把 bbox 说成人话 |
+| `media/anchor-select.js` | **S5 新增**。注入式框选 overlay。**不参与类型检查、不进 bundle**（运行时从扩展目录读）。**一行业务数学都不做** |
 | `assets/` | **页面运行时的全部资源**：`main.css` / `main.mjs` / vendored `pdf.js`（23MB） | 逐字未改，**必须提交** |
 | `patches/pdf.js.patch` | 上游给 pdf.js 打的补丁（拆掉 pdf.js 自带 CSP） | 逐字未改，**必须提交** |
 | `tools/check_pdfjs.mjs` | 上游的不变式守卫（CSP 恰好一次、pdf.js 补丁在位） | 逐字未改，**接进了本包的 `test`** |
@@ -35,7 +50,8 @@
 ```bash
 pnpm install                       # 仓库根
 pnpm build                         # 产物落在本包 dist/extension.cjs（根 esbuild.mjs 的 TARGETS 里）
-pnpm --filter anchor-pdf test      # 跑 tools/check_pdfjs.mjs（上游的不变式守卫）
+pnpm --filter anchor-pdf test      # 跑 test/anchor.test.ts（11 条）+ tools/check_pdfjs.mjs（上游的不变式守卫）
+pnpm smoke:pdf                     # 产物冒烟：不劫持 / 改名 / 命令 / **框选整条链路**（66 项）
 pnpm --filter anchor-pdf typecheck # tsc --noEmit
 ```
 

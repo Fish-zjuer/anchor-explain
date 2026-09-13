@@ -15,13 +15,19 @@
  *
  * ---------------------------------------------------------------------------
  * 本文件已被 anchor-explain 修改（Apache-2.0 §4(b) 要求的显著声明）。
- * 改动只有三处，逐条见 MODIFICATIONS.md：
+ * 改动逐条见 MODIFICATIONS.md：
  *   1. `viewType` 由 "pdf.view" 改为 "anchorPdf.view"（避免与上游扩展抢同一个视图类型）
  *   2. 读取配置的命名空间由 "pdf" 改为 "anchorPdf"
- *   3. 上面的版权声明之后追加了本段
+ *   3. **S5**：多注入一个 `media/anchor-select.js`（框选 overlay，见该文件顶部的分工说明），
+ *      并处理它发回来的消息（`CONTRACTS` §5.2）。注入方式是**在 HTML 末尾追加一个 script 标签** ——
+ *      `assets/pdf.js/` 一个字都没动，所以将来升级 pdf.js 不用重做这件事。
+ *   4. **S6**：把框选结果交给线1 讲解（`anchorExplain.explainAnchor`），
+ *      并接受线1 的 `anchorPdf.revealPage` 请求（滚动，不是画框）。
+ *   5. 上面的版权声明之后追加了本段
  * ---------------------------------------------------------------------------
  */
 
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 import {
@@ -29,6 +35,7 @@ import {
   commands,
   type Disposable,
   type ExtensionContext,
+  extensions,
   Uri,
   type Webview,
   type WebviewPanel,
@@ -36,7 +43,12 @@ import {
   workspace,
 } from "vscode";
 
+import { basenameOf, samePath } from "@anchor/core";
 import rawViewerHtml from "../assets/pdf.js/web/viewer.html";
+import { parseSelectMessage } from "./anchor/bridge";
+import type { HostToSelect, SelectToHost } from "./anchor/bridge";
+import { buildPdfAnchor, describePdfAnchor } from "./anchor/captureAnchor";
+import { resolveSelection } from "./anchor/rectToNormalizedBBox";
 import { disposeAll } from "./disposable";
 import { PDFDocument } from "./pdf-document";
 import { escapeAttribute } from "./utils";
@@ -54,6 +66,31 @@ const viewerHtml = rawViewerHtml
 
 const resourcePathRegex = /\/[^/]+?\.\w+$/u;
 
+/** 线1 的扩展 ID。`CONTRACTS` §5.1 要求对端缺失时**明确提示，不静默失败**。 */
+const PEER_EXTENSION_ID = "anchor.anchor-explain";
+const PEER_MISSING_MESSAGE =
+  "Anchor：没有安装线1（anchor.anchor-explain）扩展，框选结果无处可交。请先安装它。";
+
+function extAInstalled(): boolean {
+  return extensions.getExtension(PEER_EXTENSION_ID) !== undefined;
+}
+
+/**
+ * 文档指纹（内容哈希），用于 `Anchor.sourceId`。
+ *
+ * 取不到（文件被删/无权限）返回 null，让 `buildPdfAnchor` 退化成路径 ——
+ * 与线1 的 `documentTextHash` 同一条理由：没有指纹只损失会话记忆，不该把框选打断。
+ * 这里不复用线1 的端口，是因为两个扩展各自独立安装，线2 不该依赖线1 的代码。
+ */
+async function documentFingerprint(uri: Uri): Promise<string | null> {
+  try {
+    const bytes = await workspace.fs.readFile(uri);
+    return createHash("sha1").update(bytes).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 function withTrailingSlash(uri: Uri): string {
   const value = uri.toString();
   return value.endsWith("/") ? value : `${value}/`;
@@ -63,19 +100,32 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
   static readonly viewType = "anchorPdf.view";
 
   static register(context: ExtensionContext) {
-    return window.registerCustomEditorProvider(
-      PDFViewerProvider.viewType,
-      new PDFViewerProvider(context),
-      {
-        supportsMultipleEditorsPerDocument: false,
-      },
-    );
+    const provider = new PDFViewerProvider(context);
+    // 记下实例：两个静态入口（`selectRegion` / `revealPage`）要靠它找到活着的面板。
+    // 一个扩展只会注册一次 provider，所以这里不需要处理"多个实例"。
+    PDFViewerProvider.current = provider;
+    return window.registerCustomEditorProvider(PDFViewerProvider.viewType, provider, {
+      supportsMultipleEditorsPerDocument: false,
+    });
   }
 
   /** Tracks all known webviews */
   private readonly webviews = new WebviewCollection();
 
   private readonly extensionRoot: Uri;
+
+  /**
+   * 已经握过手（发过 `anchor:ready`）的 webview。
+   *
+   * @anchor 为什么需要它：用户点了「框选」时，页面可能**还没加载完**，
+   *         这时 `enterSelectMode` 发出去就石沉大海（脚本还没注册监听器）。
+   *         所以宿主记着"哪些面板还没准备好"，等它 ready 了补发一次。
+   *         没有这道握手，表现是"第一次点框选没反应，再点一次才行"。
+   */
+  private readonly readyPanels = new WeakSet<WebviewPanel>();
+
+  /** 记着"这个面板的框选是用户点名要的"，好在 ready 之后补发 */
+  private readonly pendingSelect = new WeakSet<WebviewPanel>();
 
   constructor(context: ExtensionContext) {
     this.extensionRoot = Uri.file(context.extensionPath);
@@ -109,6 +159,18 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
     // Add the webview to our internal set of active webviews
     this.webviews.add(document.uri, webviewPanel);
 
+    // S5/S6：宿主自己再记一份（上游那个集合只有"按文档找面板"这一个方向）
+    this.panels.set(webviewPanel, document.uri);
+    this.focused = webviewPanel;
+    webviewPanel.onDidDispose(() => {
+      this.panels.delete(webviewPanel);
+      if (this.focused === webviewPanel) this.focused = undefined;
+    });
+    // 同时开两份 PDF 时，"框选"该作用在他刚才看的那一份上
+    webviewPanel.onDidChangeViewState((event) => {
+      if (event.webviewPanel.active) this.focused = event.webviewPanel;
+    });
+
     // Setup initial content for the webview
     const resourceRoot = document.uri.with({
       path: document.uri.path.replace(resourcePathRegex, "/"),
@@ -126,6 +188,14 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
     );
 
     webviewPanel.webview.onDidReceiveMessage(async (message: unknown) => {
+      // S5/S6 的框选消息先过一遍守卫（§5.2）。它和下面那条上游的 `{open}` 消息
+      // 各自看各自的字段，互不干扰。
+      const select = parseSelectMessage(message);
+      if (select) {
+        await this.handleSelectMessage(select, document, webviewPanel);
+        return;
+      }
+
       if (
         typeof message !== "object" ||
         message === null ||
@@ -158,6 +228,170 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
       }
     });
   }
+
+  /**
+   * §5.2 收进来的框选消息。
+   *
+   * @anchor 这里是线2 的**出口**：一个框选在这里被组装成 `Anchor`，然后交给线1。
+   *         值得注意的是它**不做任何位置数学** —— 那件事在 `resolveSelection` 里（有单测）。
+   */
+  private async handleSelectMessage(
+    message: SelectToHost,
+    document: PDFDocument,
+    webviewPanel: WebviewPanel,
+  ): Promise<void> {
+    switch (message.type) {
+      case "anchor:ready":
+        this.readyPanels.add(webviewPanel);
+        // 用户可能在我们还没准备好时就点了框选 —— 补发
+        if (this.pendingSelect.has(webviewPanel)) {
+          this.pendingSelect.delete(webviewPanel);
+          this.post(webviewPanel, { type: "anchor:enterSelectMode" });
+        }
+        return;
+
+      case "anchor:cancelled":
+        await this.setSelectMode(false);
+        return;
+
+      case "anchor:captured": {
+        await this.setSelectMode(false);
+
+        // 优先用原始像素几何重算（`geometry` 是 S5 的追加字段）：
+        // 注入脚本不参与类型检查、也没法被单测，所以那门换算**不由它定案**。
+        // 没带几何的老式脚本退回它给的 `bbox`（`parseSelectMessage` 已经用 `coerceBBox` 验过）。
+        const resolved = message.geometry
+          ? resolveSelection(message.geometry.dragged, message.geometry.pages)
+          : { page: message.page, bbox: message.bbox };
+
+        if (!resolved) {
+          // 几何算不出（拖到了页外、或页容器尺寸为 0）→ 明确告诉用户，而不是静默丢掉
+          void window.showWarningMessage("Anchor：这次框选没有落在任何一页上，请重新框选。");
+          return;
+        }
+
+        const anchor = buildPdfAnchor({
+          filePath: document.uri.fsPath,
+          sourceName: basenameOf(document.uri.fsPath),
+          sourceId: await documentFingerprint(document.uri),
+          page: resolved.page,
+          bbox: resolved.bbox,
+        });
+
+        if (!extAInstalled()) {
+          void window.showWarningMessage(PEER_MISSING_MESSAGE);
+          return;
+        }
+        // §5.1：单向 executeCommand，不依赖返回值
+        await commands.executeCommand("anchorExplain.explainAnchor", anchor);
+        return;
+      }
+
+      default:
+        // 联合类型穷尽了；真走到这里说明 §5.2 加了新消息而这里没跟上
+        void describePdfAnchor;
+        return;
+    }
+  }
+
+  private post(panel: WebviewPanel, message: HostToSelect): void {
+    void panel.webview.postMessage(message);
+  }
+
+  /** 进入/退出框选模式：**同时**推给页面与 context key（后者供键位的 `when` 用）。 */
+  private async setSelectMode(active: boolean): Promise<void> {
+    await commands.executeCommand("setContext", "anchorPdf.selectMode", active);
+  }
+
+  /**
+   * 让当前可见的 PDF 面板进入框选模式（`anchorPdf.selectRegion` 命令的实现）。
+   *
+   * 找不到面板时明确提示：用户可能在编辑器里点了个 `.ts` 文件然后敲快捷键，
+   * 那时"什么都没发生"是最糟的反馈。
+   */
+  static async startSelectRegion(): Promise<void> {
+    const instance = PDFViewerProvider.current;
+    if (!instance) {
+      void window.showWarningMessage(
+        "Anchor：没有打开的 Anchor PDF 视图。先用命令 `Anchor: 用 Anchor 打开 PDF` 打开一份。",
+      );
+      return;
+    }
+
+    const panel = instance.lastFocusedPanel();
+    if (!panel) {
+      void window.showWarningMessage("Anchor：先点一下 PDF 面板，再开始框选。");
+      return;
+    }
+
+    await instance.setSelectMode(true);
+    if (instance.readyPanels.has(panel)) {
+      instance.post(panel, { type: "anchor:enterSelectMode" });
+    } else {
+      // 页面还没握过手。记下来，等它 `anchor:ready` 时补发 ——
+      // 否则用户看到的是"第一次点没反应，再点一次才行"。
+      instance.pendingSelect.add(panel);
+    }
+  }
+
+  /**
+   * 跨扩展入口（§5.1）：把某份 PDF 滚到第 N 页。**滚动，不是画框**（约束 1）。
+   *
+   * 它同时是命令面板里的一项（`Anchor: 跳到指定页（PDF）`）。所以 `page` 不合法时
+   * **问一句**而不是默默什么都不做 —— 一个点了没反应的面板项比没有这一项更糟。
+   */
+  static async revealPage(page: unknown, filePath?: string): Promise<void> {
+    const instance = PDFViewerProvider.current;
+    if (!instance) {
+      void window.showWarningMessage(
+        "Anchor：没有打开的 Anchor PDF 视图。先用命令 `Anchor: 用 Anchor 打开 PDF` 打开一份。",
+      );
+      return;
+    }
+
+    const target =
+      typeof page === "number" && Number.isInteger(page) && page >= 1
+        ? page
+        : Number(await window.showInputBox({ title: "跳到第几页？", prompt: "输入一个 ≥1 的整数" }));
+    if (!Number.isInteger(target) || target < 1) return;
+
+    const panels = instance.panelsFor(filePath);
+    if (panels.length === 0) {
+      void window.showWarningMessage("Anchor：没有打开的 Anchor PDF 视图可以定位。");
+      return;
+    }
+    for (const panel of panels) instance.post(panel, { type: "anchor:gotoPage", page: target });
+  }
+
+  /**
+   * 最近一次被聚焦过的面板；没有焦点信息时退化成"最后一个"。
+   *
+   * 为什么要有焦点概念：用户可能同时开着两份 PDF（对比着看），
+   * 按下"框选"时该作用在哪一份上，唯一合理的答案是"他刚才在看的那一份"。
+   */
+  private lastFocusedPanel(): WebviewPanel | undefined {
+    if (this.focused && this.panels.has(this.focused)) return this.focused;
+    const all = [...this.panels.keys()];
+    return all[all.length - 1];
+  }
+
+  private panelsFor(filePath: string | undefined): WebviewPanel[] {
+    const entries = [...this.panels.entries()];
+    if (filePath === undefined) return entries.map(([panel]) => panel);
+    return entries.filter(([, uri]) => samePath(uri.fsPath, filePath)).map(([panel]) => panel);
+  }
+
+  /** 当前活着的 provider 实例。`register` 时记下来，供两个静态入口用。 */
+  private static current: PDFViewerProvider | undefined;
+
+  /**
+   * 面板 → 文档 uri。与上游那个 `WebviewCollection` 并存是**刻意的**：
+   * 那个集合只提供 `get(uri)`（按文档找面板），而这里要的是反过来的查询
+   * （"所有活着的面板"、"这个面板对应哪个文件"）。为了不去改上游文件，宿主自己再记一份。
+   */
+  private readonly panels = new Map<WebviewPanel, Uri>();
+
+  private focused: WebviewPanel | undefined;
 
   private getHtmlForWebview(document: PDFDocument, webview: Webview, resourceRoot: Uri): string {
     const resolveUri = this.UriResolver(webview);
@@ -196,6 +430,10 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
 
 <script src="${resolvePdfJsURI("build", "pdf.mjs")}" type="module"></script>
 <script src="${resolveAssetURI("main.mjs")}" type="module"></script>
+
+<!-- S5：框选 overlay。**放在上游脚本后面**，且是独立文件 ——
+     assets/pdf.js/ 一个字节都没动，所以这条注入在将来升级 pdf.js 时不用重做。 -->
+<script src="${resolveUri("media", "anchor-select.js")}" type="module"></script>
 
 <link rel="resource" type="application/l10n" href="${resolvePdfJsURI(
           "web",

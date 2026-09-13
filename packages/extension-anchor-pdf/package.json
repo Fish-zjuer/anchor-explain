@@ -21,13 +21,26 @@
   ],
   "main": "./dist/extension.cjs",
   "activationEvents": [
-    "onCommand:anchorPdf.openInAnchorViewer"
+    "onCommand:anchorPdf.openInAnchorViewer",
+    "onCommand:anchorPdf.selectRegion",
+    "onCommand:anchorPdf.revealPage"
   ],
   "contributes": {
     "commands": [
       {
         "command": "anchorPdf.openInAnchorViewer",
         "title": "用 Anchor 打开 PDF",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorPdf.selectRegion",
+        "title": "框选一块并讲解（PDF）",
+        "category": "Anchor",
+        "enablement": "activeCustomEditorId == 'anchorPdf.view'"
+      },
+      {
+        "command": "anchorPdf.revealPage",
+        "title": "跳到指定页（PDF）",
         "category": "Anchor"
       }
     ],
@@ -39,7 +52,18 @@
           "type": "string",
           "default": "auto",
           "scope": "resource",
-          "enum": ["auto", "page-actual", "page-fit", "page-width", "50", "75", "100", "125", "150", "200"],
+          "enum": [
+            "auto",
+            "page-actual",
+            "page-fit",
+            "page-width",
+            "50",
+            "75",
+            "100",
+            "125",
+            "150",
+            "200"
+          ],
           "enumDescriptions": [
             "Automatic",
             "Actual size",
@@ -58,8 +82,22 @@
           "type": "number",
           "default": 0,
           "scope": "resource",
-          "enum": [-1, 0, 1, 2, 3, 4],
-          "enumDescriptions": ["Restore previous state", "None", "Thumbnails", "Outline", "Attachments", "Layers"],
+          "enum": [
+            -1,
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "enumDescriptions": [
+            "Restore previous state",
+            "None",
+            "Thumbnails",
+            "Outline",
+            "Attachments",
+            "Layers"
+          ],
           "description": "打开 PDF 时显示的侧栏面板。"
         }
       }
@@ -75,15 +113,26 @@
         ],
         "priority": "option"
       }
+    ],
+    "keybindings": [
+      {
+        "command": "anchorPdf.selectRegion",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "activeCustomEditorId == 'anchorPdf.view'"
+      }
     ]
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node tools/check_pdfjs.mjs"
+    "test": "node --test \"test/*.test.ts\" && node tools/check_pdfjs.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "1.90.0",
     "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@anchor/core": "workspace:*"
   }
 }

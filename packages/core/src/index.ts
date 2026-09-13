@@ -33,6 +33,8 @@ export { clamp01, normalizeBBox, coerceBBox, isValidBBox, bboxArea } from './nor
 
 export { formatLineRange, locationLabel } from './locationLabel.ts';
 
+export { basenameOf, countTextLines, normPath, samePath } from './paths.ts';
+
 export type { AnchorErrorCode } from './errors.ts';
 export { AnchorError, isAnchorError, describeError } from './errors.ts';
 

@@ -44,6 +44,10 @@ importers:
         version: 5.9.3
 
   packages/extension-anchor-pdf:
+    dependencies:
+      '@anchor/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@types/node':
         specifier: ^22.10.0

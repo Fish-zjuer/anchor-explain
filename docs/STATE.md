@@ -11,8 +11,8 @@
 
 ## 当前切片
 
-**S4（PDF fork 骨架）— 代码与自动化验收完成，tag `slice-S4`。等用户实操。**
-（S3 也仍在等用户配 key 走通一次；两片的实操心不冲突，可以一起做。）
+**S5（PDF 注入 overlay 框选）— 代码与自动化验收完成，tag `slice-S5`。等用户确认拖拽手感。**
+（S3 的配 key、S4 的开 PDF 也还挂着；三片的实操心互不依赖，可以一起做。）
 
 ## 已完成切片
 
@@ -25,23 +25,29 @@
 | S2 | 线1 触发与确认 UI：真选区 + QuickPick 确认 + `capture` 搬进 `adapters/CodeAdapter.ts` | `slice-S2` | 2026-09-13 |
 | S3 | 线1 接真实 AI：编排循环 + §3.2 取件闸门 + §3.3 双闸门 + repair + §6 配置 + SecretStorage | `slice-S3` | 2026-09-13 |
 | S4 | 线2 fork `mathematic-inc/vscode-pdf`：改名 / **不劫持** / 移除品牌 / `MODIFICATIONS.md` | `slice-S4` | 2026-09-13 |
+| S5 | 线2 注入式框选 overlay：像素→归一化换算（有单测）+ `anchorPdf.selectRegion` | `slice-S5` | 2026-09-13 |
 
 **线1（代码编辑器）的功能面到此完整**：真选区 → 真适配器 → 真 AI（带取件）→ 真校验 → 真渲染。
 **产物里已经没有任何替身。**
 
 ## 下次第一件事
 
-**S5：PDF 注入 overlay 框选。** 范围与验收见 `SLICES.md` 的 S5 一节。落地清单：
+**S6：框选 → 侧边栏讲解 + 点击滚动定位。** 范围与验收见 `SLICES.md` 的 S6 一节。
 
-1. `packages/extension-anchor-pdf/media/anchor-select.js` —— 注入式 overlay（**不碰 `assets/pdf.js/`**）：
-   在 viewer 的页面容器上盖一层，拖拽画矩形，把像素矩形交回去
-2. `src/anchor/rectToNormalizedBBox.ts` —— 纯函数，像素矩形 → `[0,1]` 归一化 bbox（`@anchor/core`
-   的 `normalizeBBox` 已有，这里只做"相对哪一页、页面矩形从哪来"的换算）
-3. `src/anchor/bridge.ts` —— 宿主 ↔ 注入脚本的消息（`CONTRACTS` §5.2）
-4. 接线点：`pdf-viewer-provider.ts` 的 `getHtmlForWebview` 末尾追加 `<script src=media/anchor-select.js>`
-   与 overlay 的 CSS（**这一处是唯一要动上游文件的地方**，改完要在 `MODIFICATIONS.md` 补一行）
+线2 → 线1 那半**已经在 S5 接通了**（`anchorPdf` 收到 `anchor:captured` 就
+`executeCommand('anchorExplain.explainAnchor', anchor)`）。S6 要补的是**另一半**：
 
-**S3 的实操验收也还挂着**（配 key 走一次，见下）。两件事互不依赖，谁先都行。
+1. 线1 的侧边栏为 PDF 锚点显示位置标签「第 N 页」—— `locationLabel` 已经支持，确认它真的被用上
+2. 侧边栏每条 step 被点击时，**滚 PDF 到对应页**（不是画框）：
+   `SidebarHandlers.onRevealStep` 现在只调 `playerOf().revealStep(step)`，
+   要为 PDF 锚点改成 `executeCommand('anchorPdf.revealPage', page, filePath)`；
+   对端缺失时明确提示（`CONTRACTS` §5.1）
+3. **线1 的 `deck`：`decorationPlan.ts` 已经会过滤掉所有非 `CodeLocation`**（约束 20），
+   所以 PDF 锚点天然不会被画框 —— 但要有一条**断言**把它钉住（现在只有代码保证，没有测试保证）
+4. 线1 的 `explainAnchor` 目前对 PDF 锚点走的是同一条 `explain()`：确认
+   `makeOutline` 会传 `pageCount`（现在恒为 null），否则 §3.3 的页码上界检查被跳过
+
+**S3/S4/S5 的实操验收都还挂着**，见下。互不依赖，谁先都行。
 
 ### S3 的验收怎么走（多了一步配置，只做一次）
 
@@ -103,7 +109,12 @@
 38. **线2 的 `assets/` 与 `patches/` 是上游 vendored 源码，必须提交、绝不 ignore**（23MB，含 168 个 `.bcmap` / 10 个 `.pfb` / 4 个 `.wasm`）。本包另有一份 `.gitattributes` 把它们标成 `binary` —— 那些文件的字节偏移是算出来的，被换行转换动一个字节就会在某类 PDF 上炸。改 `.gitignore` 时别把 `dist/` 写回泛匹配（根文件里有注释说明）。
 39. **线2 的 `tsconfig.json` 是全仓唯一的 `moduleResolution: "Bundler"` 例外**（D53 第 7 条）：上游源码的相对导入不带扩展名，改成 `NodeNext` 等于重写一遍 fork。别为了"统一"去改它。
 40. **fork 的改动必须同步 `MODIFICATIONS.md`**（Apache-2.0 §4(b) 的义务，也是与上游对齐的唯一依据）。改 `src/` 里任何文件之前先看那份文件里"改动清单"有没有它；改完在那一节补一行。
-41. **`pnpm --filter anchor-pdf test` 是上游的 pdf.js 不变式守卫**，不是我们的测试。它检查"CSP 恰好注入一次 + pdf.js 补丁在位"。将来升级 pdf.js 时**先跑它**——它红了就是补丁没打上，而不是 PDF 有问题。
+41. **`pnpm --filter anchor-pdf test` 跑两件事**：`test/anchor.test.ts`（我们的几何/守卫单测）+ 上游的 `tools/check_pdfjs.mjs`（pdf.js 补丁的不变式）。将来升级 pdf.js 时**先看后者**——它红了就是补丁没打上，而不是 PDF 有问题。
+42. **注入脚本（`media/anchor-select.js`）里不许写业务数学**（D54 第 2 条）：它不参与类型检查、也没法被单测，所以"落在第几页、占那一页的百分之几"必须留在 `src/anchor/rectToNormalizedBBox.ts`（有 11 条单测）。它只做"跟手的事"：画橡皮筋、报像素几何。
+43. **`anchor:ready` 握手不许省**（D54 第 4 条）：用户点框选时页面可能还在加载，不握手就会丢消息，表现是"第一次点没反应，再点一次才行"。`smoke:pdf` 两条断言分别钉住"未握手不推"与"握手后补推"。
+44. **宿主对框选结果优先用 `geometry` 重算**（D54 第 3 条），不要图省事直接用脚本给的 `bbox`：那等于让唯一有对错的换算由没有测试覆盖的代码定案。冒烟里专门喂了一个**错的** bbox 来钉这件事。
+45. **"不画框"的结构性判据在 `smoke:pdf` 里**：它查线2 产物里**有没有** `TextEditorDecorationType` 这个 API。"线2 不做高亮流转"这条约束因此不是靠自觉。
+46. **路径工具在 `@anchor/core`（`packages/core/src/paths.ts`）**：`normPath` / `samePath` / `basenameOf` / `countTextLines`。线1 的 `src/paths.ts` 只是转发（保留它是不想改十几个导入路径）。**新增代码直接从 `@anchor/core` 导入。**
 
 ## 待补 docs
 
@@ -133,5 +144,5 @@
 
 ## 最后更新
 
-2026-09-13，S4 收工（等用户实操：打开 PDF / 验证不劫持 / 看配置节）。
-S3 的配 key 实操也还挂着，两件事互不依赖。
+2026-09-13，S5 收工（等用户确认拖拽手感）。
+S3 的配 key、S4 的开 PDF、S5 的拖拽三件实操心都还挂着，互不依赖。

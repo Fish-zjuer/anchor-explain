@@ -20,7 +20,7 @@
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | 代码与自动化完成 `slice-S3`，**待用户配 key 实操** |
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | — |
 | S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | 代码与自动化完成 `slice-S4`，**待用户实操** |
-| S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | — |
+| S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | 代码与自动化完成 `slice-S5`，**待用户实操** |
 | S6 | PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位） | 自动化 + 用户实操 | — |
 | S7 | PDF 取件（page_range 取附近页文字） | 自动化 | — |
 
@@ -330,6 +330,41 @@ fork 基线：`1153346694f457bc7b4c73c9b0e95b629f02dc03`（上游 `0.2.5`，2026
 - **范围**：`packages/extension-anchor-pdf/media/anchor-select.js`、`src/anchor/{rectToNormalizedBBox.ts, captureAnchor.ts, bridge.ts}`
 - **验收标准**：**用户实操（拖拽手感必须本人确认）** + 自动化（`rectToNormalizedBBox` 纯函数单测）。
 - **回退点**：`slice-S4`
+
+### S5 落地结果（2026-09-13，tag `slice-S5`）
+
+| 声明范围内 | 落地 |
+|---|---|
+| `packages/extension-anchor-pdf/media/anchor-select.js` | **新增**。注入式 overlay：橡皮筋、四个退出口、§5.2 三个消息名。**一行业务数学都不做** |
+| `src/anchor/rectToNormalizedBBox.ts` | **新增**。像素矩形 → 「第几页 + 归一化 bbox」的全部换算（`intersectRects` / `pickDominantPage` / `rectToNormalizedBBox` / `resolveSelection`） |
+| `src/anchor/captureAnchor.ts` | **新增**。框选 → `Anchor`（线2 版的 `capture()`）+ `describePdfAnchor`（线2 不画框，位置只能用文字交代） |
+| `src/anchor/bridge.ts` | **新增**。§5.2 两个联合类型的 TS 落地 + 边界守卫 |
+| `pdf-viewer-provider.ts` | 注入脚本（**追加**，不是替换）；多接一类消息；宿主自己记一份"面板 → uri" |
+| `extension.ts` + `package.json` | 新增 `anchorPdf.selectRegion`（含 `ctrl+alt+s`）与 `anchorPdf.revealPage`（S6 的入口，同时也进命令面板） |
+| **新增** `test/anchor.test.ts` | 11 条：几何（跨页判定 / 裁剪 / 退化 / 平局）、§5.2 消息守卫（15 种坏输入）、Anchor 组装 |
+| `scripts/smoke-pdf-extension.mjs` | 35 → **66 项**。真的开了一个面板、灌了一条 `anchor:captured` 进去 |
+| `packages/core/src/paths.ts` | **新增**（未在范围内，见偏离 2）。路径工具从线1 搬上来，两条线共用 |
+
+**两处偏离，均已声明**：
+
+1. **`anchor:captured` 追加了可选字段 `geometry`。** §5.2 的冻结字段一个没动（旧式脚本仍可用），
+   加它是为了让"归一化由谁定案"不依赖注入脚本的正确性。见 D54 第 3 条。
+2. **`packages/core/src/paths.ts` 是新增文件**（原范围只管线2）。
+   线2 要用 `samePath` / `basenameOf`，与其复制一份不如搬进 core；线1 的 `paths.ts` 保留为转发。
+
+**自动化验收结果**：`pnpm check` 全绿 —— **152 测**（core 28 + ext 113 + pdf 11）
++ `pnpm smoke` 30 项 + `pnpm smoke:chain` 105 项 + `pnpm smoke:pdf` **66 项**。
+其中三条是 S5 的硬判据：「脚本给一个**错的** bbox，宿主交出去的仍是 geometry 重算的结果」、
+「未握手不推 / 握手后补推」、「产物里**根本没有** decoration API（不画框不是靠自觉）」。
+
+**验收靠**：**用户实操**，手感只能本人确认：
+`code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures` → 打开 `sample-30p.pdf`
+→ `Ctrl+Alt+S`（或命令面板 `Anchor: 框选一块并讲解（PDF）`）→ 拖一个矩形。要看四件事：
+1. 拖的时候跟手；**抬手之后屏幕上不留任何东西**（没有残留的框）
+2. 拖到页缝/页外 → 提示"没有落在任何一页上"，不留垃圾状态
+3. **跨页拖**（从第 1 页底部拖到第 2 页）→ 交给线1 的锚点应是"盖得多的那一页"
+4. 装不装线1 都试：没装线1 时应明确提示"没有安装线1"，而不是静默失败
+（`sample-30p.pdf` 是 30 页，够跨页试。）
 
 ## S6 PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位）
 

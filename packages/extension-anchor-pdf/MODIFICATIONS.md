@@ -62,9 +62,28 @@
 2. **配置命名空间：`getConfiguration("pdf")` → `getConfiguration("anchorPdf")`。**
    同时 `package.json` 里的两个配置项改名 `pdf.*` → `anchorPdf.*`。
    否则装了上游扩展的用户会发现两个扩展抢同一份配置。
+3. **S5：`getHtmlForWebview` 末尾追加一个 `<script src="media/anchor-select.js">`。**
+   这是框选 overlay 的注入点。选这个做法的关键是 **`assets/pdf.js/` 一个字节都没动** ——
+   overlay 是独立文件，框选逻辑不往 pdf.js 里塞代码，所以将来升级 pdf.js 时这条注入不用重做
+   （升级流程见本文档 §四）。
+4. **S5：`onDidReceiveMessage` 多接一类消息。** 上游只看 `{open: string}`（页面里的链接），
+   我们多接 §5.2 的框选消息；两类消息各看各的字段，`parseSelectMessage` 返回 null 就落回上游那条路。
+   **没有改动上游原有的那段处理**，是在它前面加了一个分支。
+5. **S5：宿主自己多记一份"面板 → 文档 uri"。** 上游的 `WebviewCollection` 只提供
+   `get(uri)`（按文档找面板），而跨扩展定位（`revealPage`）要的是反过来的查询
+   （"所有活着的面板"）。为了**不改上游那个文件**，宿主在自己的字段里再记一份。
+   `src/webview-collection.ts` 因此仍然逐字未改。
 
 （上面两个文件在版权声明之后都追加了一段"本文件已被修改"的显著声明，即 Apache-2.0 §4(b) 的要求。
 未列出的文件就是逐字未改的。）
+
+### `src/extension.ts`（续）
+
+3. **S5/S6：新增两个命令** `anchorPdf.selectRegion`（让当前面板进入框选模式）
+   与 `anchorPdf.revealPage`（跨扩展入口：把 PDF 滚到第 N 页）。
+   后者也声明进了 `contributes.commands`（标题「跳到指定页（PDF）」）：
+   **"注册了但没声明"是最坏的一种状态** —— 命令面板里根本看不见，
+   而一个看不见的入口等于没有。没有参数时它会问用户要页号，所以手动调用也有意义。
 
 ### `package.json`
 
@@ -80,7 +99,10 @@
 | `version` | `0.2.5` | `0.0.0` | 本仓库的约定（`private: true`，不发布 Marketplace） |
 | `engines.vscode` | `^1.134.0` | `^1.90.0` | 与线1 一致。上游用的是更新的 API，但**实际用到的都是 1.90 就有的**（`registerCustomEditorProvider` / `asWebviewUri` / `openWith`），类型面因此钉在 `@types/vscode@1.90.0` |
 | `main` | `./dist/extension.js` | `./dist/extension.cjs` | 本仓库的打包约定（CommonJS + `.cjs` 后缀，见 `CONTRACTS` §9.4） |
-| `scripts` | tsup / oxlint / vsce / hk… | `typecheck` + `test` | 打包统一由根 `esbuild.mjs` 负责（见下） |
+| `scripts` | tsup / oxlint / vsce / hk… | `typecheck` + `test`（单测 + 上游的 pdf.js 守卫） | 打包统一由根 `esbuild.mjs` 负责（见下） |
+| `dependencies` | 无 | `@anchor/core`（workspace） | S5 起线2 用它的 `normalizeBBox` / `coerceBBox` / `isValidBBox` 与 `basenameOf` / `samePath` —— 那是"两条线共用的位置数学"，不该复制一份 |
+| `contributes.commands` | 无 | 三个（打开 / 框选 / 跳页） | 见 `src/extension.ts` 那几条 |
+| `contributes.keybindings` | 无 | `ctrl+alt+s`（框选） | `when: activeCustomEditorId == 'anchorPdf.view'`，只在我们自己的视图里生效 |
 | `customEditors[0].priority` | 无 | `"option"` | **不劫持**：我们的视图只是候选项之一，用户的默认 PDF 打开方式不变 |
 | `contributes.commands` | 无 | 加上 `anchorPdf.openInAnchorViewer` | 没有它，`priority: "option"` 就意味着"用户根本进不来" |
 | `devDependencies` | typescript 7 / tsup / oxlint / oxfmt / vsce | 与本仓库其它包一致 | 一个仓库一套工具链 |
@@ -98,6 +120,15 @@
 | `tools/{download,patching,prepare}_pdfjs.sh` | 需要 `gh` + 网络才能跑，是上游更新 pdf.js 的流程。`patches/pdf.js.patch` 与 `pdfjs_version.txt` 已经把"打了什么补丁、基于哪个版本"记全了 |
 | `README.md` / `icon.png` | 上游的说明与品牌资产（README 换成了我们的，见下） |
 | `.gitignore` / `.gitattributes` / `.gitmodules` | 仓库级的，归仓库根。本包另有一份**只关于字节敏感资源**的 `.gitattributes`（`*.bcmap` / `*.pfb` / `*.wasm` / `*.ttf` 标 binary） |
+
+### 新增的目录（我们写的，不是上游的）
+
+| 路径 | 说明 |
+|---|---|
+| `src/anchor/` | 框选相关的**可测**部分：像素→归一化换算（`rectToNormalizedBBox.ts`）、§5.2 消息守卫（`bridge.ts`）、Anchor 组装（`captureAnchor.ts`）。三个都**零 vscode 依赖**，所以能被 `node --test` 覆盖 |
+| `media/anchor-select.js` | 注入式框选 overlay。**不参与类型检查、也不进 bundle**（运行时从扩展目录读）。所以它的纪律是：**一行业务数学都不做**，只做"跟手的事"（画橡皮筋、报像素几何） |
+| `test/anchor.test.ts` | 上面三个模块的单测（11 条） |
+| `.gitattributes` | 字节敏感资源标 `binary`（见 D53 第 9 条） |
 
 ## 三、许可与署名
 
