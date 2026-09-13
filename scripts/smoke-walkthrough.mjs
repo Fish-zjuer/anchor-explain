@@ -85,9 +85,108 @@ const reveals = [];
 const webviews = [];
 const statusItems = [];
 const quickPicks = [];
+const outputLines = [];
+const fetchCalls = [];
 let applyEditCalls = 0;
 let receiveFromWebview;
 let onCloseDocument;
+
+// ── S3：模型端点也是桩 ──────────────────────────────────────────────────────
+// 从 S3 起 `capture` 走的是**真的编排循环 + 真的 OpenAI 兼容实现**，
+// 唯一被换掉的是最外面那一跳 `fetch`。于是"取件轮数、拒绝回灌、输出闸门"
+// 这些逻辑在冒烟里跑的是真代码，只有字节没有真的过网线。
+let fetchMode = 'with-fetch';
+let fetchFail;
+
+/** main.c 第 40-48 行的三个步骤（内容对应 rb_pop）——这就是"模型返回什么" */
+const EXPLANATION_JSON = JSON.stringify({
+  title: '环形队列的出队路径',
+  summary: '这 9 行是一个标准的环形队列出队：先挡住空队列，再从 head 取值并把指针往前推，最后维护 count。',
+  confidence: 0.9,
+  steps: [
+    {
+      location: { filePath: MAIN_C, lineStart: 40, lineEnd: 42 },
+      title: '出队前先挡住空队列',
+      intro: 'rb_pop 要先回答一个问题：队列里还有东西吗？',
+      text: '第 40 行是函数签名，第 42 行是提前返回：count 为 0 时直接返回 -1。',
+      highlights: [
+        { location: { filePath: MAIN_C, lineStart: 40, lineEnd: 40 }, narration: 'out 是出参指针。', emphasis: 'context' },
+        { location: { filePath: MAIN_C, lineStart: 42, lineEnd: 42 }, narration: '空队列返回 -1。', emphasis: 'definition' },
+      ],
+    },
+    {
+      location: { filePath: MAIN_C, lineStart: 44, lineEnd: 45 },
+      title: '取值，并把 head 往前推',
+      intro: '数据在 head 指向的位置，取走之后 head 必须跟着走。',
+      text: '第 44 行取值，第 45 行推进 head 并对 RB_CAPACITY 取模。',
+      highlights: [
+        { location: { filePath: MAIN_C, lineStart: 44, lineEnd: 44 }, narration: '*out 是解引用赋值。', emphasis: 'primary' },
+        { location: { filePath: MAIN_C, lineStart: 45, lineEnd: 45 }, narration: '取模实现回绕。', emphasis: 'definition' },
+      ],
+    },
+    {
+      location: { filePath: MAIN_C, lineStart: 46, lineEnd: 48 },
+      title: '维护计数并报告成功',
+      intro: '指针动了，count 也得动。',
+      text: '第 46 行把 count 减一，第 47 行返回 0 表示成功。',
+      highlights: [
+        { location: { filePath: MAIN_C, lineStart: 46, lineEnd: 46 }, narration: 'count 是唯一权威。', emphasis: 'caveat' },
+        { location: { filePath: MAIN_C, lineStart: 47, lineEnd: 47 }, narration: '返回 0 表示成功。', emphasis: 'context' },
+      ],
+    },
+  ],
+});
+
+function toolCallTurn() {
+  return {
+    content: '',
+    tool_calls: [
+      {
+        id: 'call_1',
+        type: 'function',
+        function: {
+          name: 'fetch_context',
+          arguments: JSON.stringify({
+            request_type: 'file',
+            start: 1,
+            end: 5,
+            reason: '想先看看文件头部有哪些定义',
+            // §8 的 schema 里没有 path，模型很可能自己加上 —— 这里刻意加上，好验证它被带到了校验那一步
+            path: fetchMode === 'roam' ? path.join(FIXTURES, 'sample-30p.pdf') : MAIN_C,
+          }),
+        },
+      },
+    ],
+  };
+}
+
+/** 假端点：只看"对话里有没有 tool 结果"来决定回哪一轮，因此无状态、可重入 */
+function cannedCompletion(body) {
+  const seen = (body.messages ?? []).map((m) => m.role);
+  if (fetchMode === 'always-fetch') return toolCallTurn();
+  if (!seen.includes('tool')) return toolCallTurn();
+  return { content: EXPLANATION_JSON };
+}
+
+globalThis.fetch = (url, init) => {
+  const body = JSON.parse(String(init?.body ?? '{}'));
+  fetchCalls.push({ url, body, headers: init?.headers ?? {} });
+  if (fetchFail) return Promise.reject(new Error(fetchFail));
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    text: () => Promise.resolve(JSON.stringify({ choices: [{ message: cannedCompletion(body) }] })),
+  });
+};
+
+/** S3 的配置桩。`providers.default` 齐了，所以 `makeProvider()` 不会报"还没配置" */
+let settingsValues = {
+  providers: { default: { baseUrl: 'https://example.test/v1', tier1Model: 'test-cheap' } },
+  activeProvider: 'default',
+  maxFetchRounds: 3,
+  preferSecretStorage: true,
+};
+let secretValue = 'sk-from-secret-storage';
 
 // S2：capture 现在走**真选区**（`window.activeTextEditor.selection`），所以桩必须真的给一个，
 // 而且要能改 —— "只放光标没选内容"、QuickPick 里选哪一项，都是靠改下面这几个变量走的。
@@ -169,6 +268,12 @@ const vscodeStub = {
       // undefined 表示用户按了 Esc，那条路径也要能跑（取消不该起会话）。
       return Promise.resolve(items.find((i) => i.label === quickPickAnswer));
     },
+    createOutputChannel: (name) => ({
+      name,
+      appendLine: (line) => outputLines.push(line),
+      append: (line) => outputLines.push(line),
+      dispose() {},
+    }),
     openTextDocument: () => Promise.resolve(editor.document),
     showTextDocument: () => Promise.resolve(editor),
     createTextEditorDecorationType(options) {
@@ -240,6 +345,8 @@ const vscodeStub = {
     workspaceFolders: [{ uri: { fsPath: FIXTURES }, name: 'fixtures', index: 0 }],
     textDocuments: [],
     asRelativePath: (uri) => path.relative(FIXTURES, uri.fsPath).split(path.sep).join('/'),
+    // S3：命令层每次讲解都现读配置（改完设置不必重载窗口），所以这个桩是必经之路
+    getConfiguration: () => ({ get: (key) => settingsValues[key] }),
     applyEdit() {
       applyEditCalls += 1;
       return Promise.resolve(true);
@@ -290,6 +397,18 @@ const subscriptions = [];
 ext.activate({
   subscriptions: { push: (...items) => subscriptions.push(...items) },
   globalStorageUri: { fsPath: path.join(ROOT, '.tmp-smoke', 'User', 'globalStorage', 'anchor.anchor-explain') },
+  // S3：apiKey 默认从 SecretStorage 读（§6 的 preferSecretStorage），所以桩必须有一个
+  secrets: {
+    get: () => Promise.resolve(secretValue),
+    store: (name, value) => {
+      secretValue = value;
+      return Promise.resolve();
+    },
+    delete: () => {
+      secretValue = undefined;
+      return Promise.resolve();
+    },
+  },
 });
 
 check(decorationTypes.length === 0, '激活阶段不建 decoration type（延迟到第一次讲解）');
@@ -653,6 +772,96 @@ vscodeStub.window.activeTextEditor = editor;
 quickPickAnswer = '讲解这段';
 selectionStartLine = 39;
 selectionEndLine = 47;
+
+// ---- 10. S3：真编排循环（只有 fetch 这一跳是桩） ---------------------------
+// 这一节的价值在于：从 `capture` 命令到"模型返回的那份 JSON"，中间跑的是
+// 真的 Orchestrator、真的 §3.2 校验、真的 §3.3 闸门、真的 openAICompatible，
+// 唯一被换掉的只有最外面那一跳 `fetch`。
+quickPickAnswer = '讲解这段';
+selectionStartLine = 39;
+selectionEndLine = 47;
+fetchMode = 'with-fetch';
+fetchCalls.length = 0;
+outputLines.length = 0;
+
+const postedBeforeS3 = webviews[0].webview.posted.length;
+await registered.get('anchorExplain.capture')?.();
+
+check(webviews[0].webview.posted.length > postedBeforeS3, 'S3 主路径：讲解照常起来了');
+check(fetchCalls.length === 2, '取件一轮 = 两次模型调用（先要上下文，再给答案）', `${fetchCalls.length}`);
+
+const firstCall = fetchCalls[0] ?? {};
+check(firstCall.url === 'https://example.test/v1/chat/completions', '打的是配置里的 baseUrl（§6）', firstCall.url ?? '');
+check(
+  firstCall.headers?.authorization === 'Bearer sk-from-secret-storage',
+  'apiKey 来自 SecretStorage，不是 settings 里的明文（§6 的 preferSecretStorage）',
+  String(firstCall.headers?.authorization),
+);
+check(
+  firstCall.body?.tools?.[0]?.function?.name === 'fetch_context',
+  '§8 的工具定义随请求发出去了（不发出去模型永远没法要求取件）',
+);
+check(firstCall.body?.model === 'test-cheap', '用的是 tier1Model', String(firstCall.body?.model));
+
+const secondMessages = fetchCalls[1]?.body?.messages ?? [];
+const toolResult = secondMessages.find((m) => m.role === 'tool');
+check(Boolean(toolResult), '模型要的上下文以 role=tool 回灌进了对话');
+check(toolResult?.tool_call_id === 'call_1', 'tool 结果归属到了那次 tool_call（少了它端点会报错）');
+check(
+  /行 1-5（共 75 行）/.test(String(toolResult?.content ?? '')),
+  '回灌的是 main.c 第 1-5 行、且报了全文行数',
+  String(toolResult?.content ?? '').split('\n')[1] ?? '',
+);
+check(/\n\s*1\t/.test(String(toolResult?.content ?? '')), '取件内容带行号（模型要靠它算 location）');
+
+const s3Update = webviews[0].webview.posted.at(-1);
+check(s3Update?.result?.steps?.length === 3, '模型给的 JSON 过闸门后变成 3 个 step', `${s3Update?.result?.steps?.length}`);
+check(
+  linesOf(typeByBackground('editor.selectionHighlightBackground')).join() === '40-42',
+  'S3 的结果与 S1/S2 画在同一处（同一个样本，同一条链路）',
+  linesOf(typeByBackground('editor.selectionHighlightBackground')).join() || '(空)',
+);
+check(outputLines.some((l) => l.includes('取件')), '取件落进了输出通道（§7 要求每次取件都记录）', outputLines.at(-1) ?? '');
+
+// 越界取件：模型去读别的文件 → 拒绝 + 回灌原因，但讲解仍然要走完（§3.2 + D29）
+fetchMode = 'roam';
+fetchCalls.length = 0;
+await registered.get('anchorExplain.capture')?.();
+const roamTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
+check(/请求被拒绝/.test(String(roamTool?.content ?? '')), '漫游到别的文件被拒，原因是回灌而不是抛错', String(roamTool?.content ?? '').slice(0, 60));
+check(/只允许取锚点所在的文件/.test(String(roamTool?.content ?? '')), '拒绝原因说清了是哪条规则');
+check(webviews[0].webview.posted.at(-1)?.type === 'session:update', '被拒之后整次讲解仍然继续（不是整段失败）');
+check(outputLines.some((l) => l.includes('拒绝')), '被拒的取件也落了日志（被拒原因正是要看的）');
+
+// 一直要上下文：必须在有限轮之后收场，并给用户一句人话
+fetchMode = 'always-fetch';
+settingsValues = { ...settingsValues, maxFetchRounds: 1 };
+await registered.get('anchorExplain.capture')?.();
+check(messages.at(-1)?.[0] === 'error', '模型一直要上下文 → 明确报错而不是转圈', messages.at(-1)?.[1] ?? '');
+check(/取件 1 次之后/.test(String(messages.at(-1)?.[1] ?? '')), '错误里说清了上限是多少（能照做）');
+check(fetchCalls.length <= 8, '调用次数有界，不会无限循环', `${fetchCalls.length}`);
+settingsValues = { ...settingsValues, maxFetchRounds: 3 };
+fetchMode = 'with-fetch';
+
+// 没配置 provider：明确报错，不静默什么都不做
+const savedProviders = settingsValues.providers;
+settingsValues = { ...settingsValues, providers: {} };
+await registered.get('anchorExplain.capture')?.();
+check(/没有可用的 provider/.test(String(messages.at(-1)?.[1] ?? '')), '没配 provider 时给的是"去改哪个设置键"', messages.at(-1)?.[1] ?? '');
+settingsValues = { ...settingsValues, providers: savedProviders };
+
+// 网络层失败：转成一句带端点地址的人话
+fetchFail = 'getaddrinfo ENOTFOUND example.test';
+await registered.get('anchorExplain.capture')?.();
+check(/连不上/.test(String(messages.at(-1)?.[1] ?? '')), '连不上端点时错误里带上了地址', messages.at(-1)?.[1] ?? '');
+fetchFail = undefined;
+
+// 图省事而漏掉的一环：确认框取消时**一次网络请求都不该发**
+quickPickAnswer = undefined;
+const fetchCallsBeforeCancel = fetchCalls.length;
+await registered.get('anchorExplain.capture')?.();
+check(fetchCalls.length === fetchCallsBeforeCancel, '取消确认时一次网络请求都不发（不白花钱）');
+quickPickAnswer = '讲解这段';
 
 // ---- 收尾 -----------------------------------------------------------------
 Module._load = originalLoad;

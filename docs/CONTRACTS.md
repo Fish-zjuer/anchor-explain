@@ -216,12 +216,12 @@ interface SourceAdapter {
 | `PDFAdapter` | `['page_range']` | 存在已打开的 PDF 会话 | `PDFLocation` + `capturedImage`（拖拽裁出的截图） |
 | `WebAdapter` | — | **本次不实现** | — |
 
-**`SourceAdapter` 分两步兑现（S2 落了第一步，接口本身没动）**：
+**`SourceAdapter` 分两步兑现（S2 落 `capture`，S3 落 `fetchContext`，`detect()` 归 S7）**：
 
 `packages/extension-anchor/src/adapters/CodeAdapter.ts` 现有 `type` / `capabilities` /
-`capture(scope?)`，**尚无** `detect()` 与 `fetchContext()` —— 它们的调用方（适配器注册表、
-§3.2 取件校验）S3 才存在，现在写出来就是没有消费者的死码。`SLICES.md` 对 S3 的范围里本就列着
-`CodeAdapter` 的 `fetchContext`，这是一次**分期落地**，不是接口变更。
+`capture(scope?)` / **`fetchContext(req)`**，**尚无** `detect()` ——
+一个适配器的时候"谁适用"是句废话，等 S7 出现 `PDFAdapter` 才第一次有真假之别。
+接口本身是冻结的，这是**分期落地**，不是接口变更。
 
 `capture()` 比冻结的零参形式多一个**可选**参数：
 
@@ -232,6 +232,11 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 可选参数在 TS 里仍可赋值给零参签名（有单测 `capture 的形状仍满足 §3 的 SourceAdapter` 钉住），
 所以 `CodeAdapter` 照样满足 `SourceAdapter`。这样"范围从哪来"（由确认 UI 拍板）
 不必污染冻结的接口，也不必让适配器去读 UI（`adapters/` 不许 import 'vscode'）。
+
+**`fetchContext` 的产出形状（S3 定）**：纯文本，且**每一行前面带 1-based 行号**，
+形如 `文件：<path>\n行 1-5（共 75 行）：\n 1\t<源码>`。
+行号不是装饰：模型要靠它算出 `location`，而 §3.3 的越界检查只在超出文件范围时才拦得住 ——
+不给行号，模型给的区间就全靠猜。
 
 ### §3.2 取件校验规则（冻结）
 
@@ -245,6 +250,20 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 
 **拒绝不抛错**：回灌一条工具结果「请求被拒绝：<reason>，请基于现有信息作答」，让模型自我纠正。
 **每次取件必须落日志**（见 §7）。
+
+#### §3.2 的实现约定（S3 定，都不改上表五条判据，只把边界说清楚）
+
+| 情形 | 处置 | 为什么 |
+|---|---|---|
+| `file` 请求**没给** `params.path` | 视为"就要锚点这个文件"，**放行**，并在返回的请求里补上路径 | §8 的工具 schema 里**没有声明 `path`**（只有 `request_type`/`start`/`end`/`reason`），模型很可能不给。若把"没给"当成不匹配，`file` 取件就永远走不通（S3 踩过：全部请求被判"只允许取锚点所在的文件"，因为 path 在参数解析那一步就丢了 —— 解析侧也已经改成把自定义键一并带过去） |
+| `path` 给了，但大小写/斜杠方向与锚点不同 | **算同一个文件**，放行 | 与 §3.3 规则 3 同一个立场：Windows 上严格比较会把同一个文件判成两个（实现用 `paths.ts` 的 `samePath`） |
+| `file` 的 `end` 超过文档总行数 | 拒绝 | 上表规则 3 只冻结了 `path` 一项；行上界是本条补的。总行数取不到（`null`）时**跳过这一项**检查，不是跳过整条校验 |
+| `start > end` | 拒绝 | 上表规则 2 原文就有 `start ≤ end`；这里把它提到两种类型共用的形状检查里，`file` 也一并管住 |
+| 去重（规则 4）与频率（规则 5）**同时命中** | **按去重处理**，把已取内容回灌 | 回灌内容比一句"已达上限"对模型有用得多，且**不花任何额外成本**（不发起新的读取）。所以执行顺序是 类型 → 形状/边界 → 去重 → 频率 |
+| 请求里的类型不在能力矩阵内 | 拒绝，理由里列出支持哪些 | §3.1 就是这张表，不另找地方声明 |
+
+**`validateContextRequest` 放行时返回的是归一化过的请求**（`file` 补上锚点路径），
+好让 `fetchContext` 拿到的 `params` 一定是完整的 —— 适配器不必再猜"没给 path 是什么意思"。
 
 ### §3.3 输出校验规则（冻结）
 
@@ -287,6 +306,7 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `anchorExplain.playPause` | 播放 / 暂停 | `ctrl+shift+space` | `anchorExplain.walkthroughActive` |
 | `anchorExplain.explainAnchor` | 接受外部 Anchor 并起讲解（跨扩展入口） | — | — |
 | `anchorExplain.showState` | 显示当前状态（F2 的骨架验证命令） | — | — |
+| `anchorExplain.setApiKey` | 把某个 provider 的 API Key 存进 `SecretStorage`（**S3 新增**） | — | — |
 | `anchorPdf.openInAnchorViewer` | 用 Anchor 的 PDF 视图打开 | — | — |
 | `anchorPdf.revealPage` | 滚动 PDF 到指定页（跨扩展调用） | — | — |
 
@@ -490,6 +510,30 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 | `anchorExplain.preferSecretStorage` | boolean | `true` | `apiKey` 优先从 `SecretStorage` 读，取不到再回落配置里的 `apiKey` |
 | `anchorPdf.*` | — | — | 沿用 fork 原有配置项，仅改命名空间前缀 |
 
+**S3 新增一项（非规范原文）**：
+
+| 配置 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `anchorExplain.temperature` | number | 未设置 | 透传给端点。留空就用端点的默认值 —— 不给默认值是刻意的：不同端点对 temperature 的合理取值不一样 |
+
+以上全部声明在 `packages/extension-anchor/package.json` 的 `contributes.configuration` 里
+（S3 落地），所以它们在设置界面里可见可改，而不是只能手写 JSON。
+
+**`providers` 的形状**（`package.json` 里带了 schema，写错会有提示）：
+
+```jsonc
+{
+  "anchorExplain.providers": {
+    "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" }
+  },
+  "anchorExplain.activeProvider": "default"
+}
+```
+
+`apiKey` **建议留空**，改用命令 `Anchor: 设置 API Key` 存进 `SecretStorage`
+（键名 `anchorExplain.apiKey.<providerId>`，由 `config.ts` 的 `apiKeySecretName` 统一给出）。
+`providers[id].apiKey` 是明文，留着只是为了"我就想一个文件管全部"的人。
+
 `extraHeaders` / `extraBody` 原样透传进请求，用于兼容任意 OpenAI 兼容端点（OpenAI / DeepSeek / 通义 / Ollama）。
 
 ---
@@ -527,6 +571,11 @@ function createContextRequestLogger(opts?: {
 
 所有条目进环形缓冲（上限 `CONTEXT_LOG_LIMIT`），并在侧边栏 `ToolTrace` 面板可视。
 
+**S3 落地的落点**：`ToolTrace` 面板**还没做**（不在任何切片范围内），所以现在走 `sink`：
+命令层传一个写到 **OutputChannel「Anchor」** 的回调（`outputLines`）。
+格式：`[时间] 第 N 轮 取件/拒绝（原因） <type> <params> — <reason>（<字数>）`。
+排查"模型为什么讲歪了"时这是唯一能看的东西，所以它落在最容易看到的地方，而不是只在内存环形缓冲里。
+
 ---
 
 ## §8 工具定义（给 LLM，冻结）
@@ -548,11 +597,16 @@ function createContextRequestLogger(opts?: {
 }
 ```
 
+**注意：这个 schema 里没有 `path` 参数** —— 但 §3.2 规则 3 要检查 `params.path`。
+两者靠两条实现约定接上（S3）：解析侧把自定义键**原样带过去**（不丢 `path`），
+校验侧把"没给 `path`"当成"就要锚点这个文件"。见 §3.2 的实现约定表。
+**不要为了"对齐"而给 schema 加 `path`**：§8 是冻结原文，且模型本来也没有别的文件可选。
+
 ---
 
 ## §9 模块路径映射与落地行号
 
-### 9.1 已落地（F1 契约类 / F2 骨架与替身 / S1 线1 最小可视 / S2 真选区与确认 UI）——行号 = 实体定义所在行
+### 9.1 已落地（F1 契约 / F2 骨架与替身 / S1 最小可视 / S2 真选区与确认 UI / S3 真 AI）——行号 = 实体定义所在行
 
 | 路径 | 职责 | 关键实体行号 |
 |---|---|---|
@@ -567,13 +621,21 @@ function createContextRequestLogger(opts?: {
 | `packages/core/test/{types,locationLabel,normalizeBBox,fakes}.test.ts` | 单测（`node --test`） | — |
 | `packages/core/src/fakes/fakeProvider.ts` | 假 AI。S3 被 orchestrator 替换 | `FAKE_TARGET_LINE_START`:29 `FAKE_TARGET_LINE_END`:30 `FALLBACK_FILE_PATH`:33 `createFakeProvider`:161 `fakeProvider`:176 |
 | `packages/core/src/fakes/fakeEditorPort.ts` | 假选区（写死 40-48 行）。**S2 已从产物里退出**，现在只被单测引用 | `FAKE_FILE_PATH`:18 `FAKE_LINE_START`:19 `FAKE_LINE_END`:20 `FAKE_SELECTION_TEXT`:27 `FAKE_DOCUMENT_HASH`:39 `FAKE_DOCUMENT_LINE_COUNT`:47 `FAKE_DOCUMENT_TEXT`:48 `createFakeEditorPort`:77 |
+| `packages/core/src/fakes/fakeFileSystemPort.ts` | 假文件系统（**S3 新增**）。让 `fetchContext` 的决策可单测，且测试不依赖 fixture 内容 | `FakeFileSystemPortOptions`:14 `FakeFileSystemPort`:21 `createFakeFileSystemPort`:31 |
 | `packages/extension-anchor/src/extension.ts` | activate → `registerCommands`（入口保持极薄） | `activate`:11 `deactivate`:16 |
 | `packages/extension-anchor/src/paths.ts` | 路径归一 / 比较 / 显示名 / 行数（vscode-free，四条链路共用一份） | `normPath`:11 `samePath`:15 `basenameOf`:26 `countTextLines`:37 |
-| `packages/extension-anchor/src/adapters/CodeAdapter.ts` | **S2 落地**。代码来源适配器：`capture(scope?)` 把「选区 / 整文件」变成 `Anchor`。零 vscode 依赖 | `CaptureScope`:31 `CodeAdapter`:33 `CodeAdapterDeps`:46 `createCodeAdapter`:50（`detect`/`fetchContext` 归 S3） |
-| `packages/extension-anchor/src/commands.ts` | §4.1 八个命令 + 四层装配 + 捕获确认（§4.1.1）。**全项目唯一的假货接线点**（见 §2.1，S2 后只剩 `provider` 一行） | `registerCommands`:42 `askWhatToExplain`:234 `capture`:259 |
+| `packages/extension-anchor/src/adapters/CodeAdapter.ts` | **S2 落 `capture`，S3 落 `fetchContext`**。代码来源适配器：把「选区 / 整文件」变成 `Anchor`、按行取件。零 vscode 依赖 | `CaptureScope`:33 `CodeAdapter`:35 `CodeAdapterDeps`:53 `createCodeAdapter`:58 `fetchContext`:102（`detect` 归 S7） |
+| `packages/extension-anchor/src/orchestrator/Orchestrator.ts` | **S3 落地**。编排循环：取件循环（≤maxFetchRounds）→ §3.3 闸门 → repair 一次。**它就是 S1/S2 里那个 `fakeProvider` 的真身** | `REJECT_PREFIX`:37 `OrchestratorAdapter`:39 `OrchestratorDeps`:44 `createOrchestrator`:69 |
+| `packages/extension-anchor/src/orchestrator/validateContextRequest.ts` | **S3 落地**。§3.2 五条规则的实现（**模型不许漫游的唯一闸门**） | `FetchedSpan`:19 `ContextFetchState`:28 `ContextDecision`:42 `validateContextRequest`:72 |
+| `packages/extension-anchor/src/orchestrator/ModelRouter.ts` | **S3 落地**。tier1/tier2 的成本分层（ARCHITECTURE §5） | `ModelTier`:11 `ModelRouteInput`:13 `ModelChoice`:22 `ModelRouterConfig`:29 `createModelRouter`:35 |
+| `packages/extension-anchor/src/orchestrator/toolSchema.ts` | **S3 落地**。§8 的工具定义 + 参数解析（自定义键一并带过） | `FETCH_CONTEXT_TOOL`:14 `openAITools`:30 `EXPLANATION_JSON_SHAPE`:35 `parseContextRequest`:68 |
+| `packages/extension-anchor/src/orchestrator/providers/{types,openAICompatible}.ts` | **S3 落地**。LLM 调用面的抽象 + OpenAI 兼容实现（一个实现覆盖 OpenAI/DeepSeek/通义/Ollama） | `ChatMessage`:11 `ToolCall`:20 `AssistantTurn`:27 `ChatRequest`:33 `ChatProvider`:44；`OpenAICompatibleOptions`:20 `createOpenAICompatibleProvider`:71 |
+| `packages/extension-anchor/src/prompts/index.ts` | **S3 落地**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:24 `buildSystemPrompt`:40 `describeAnchor`:67 `buildUserPrompt`:81 `buildRepairPrompt`:102 |
+| `packages/extension-anchor/src/config.ts` | **S3 落地**。§6 配置的**纯映射**（可单测），vscode 读取在 `vscode/configSource.ts` | `ProviderSettings`:13 `AnchorConfig`:22 `DEFAULT_MAX_FETCH_ROUNDS`:31 `apiKeySecretName`:37 `resolveProvider`:63 `clampRounds`:88 `resolveConfig`:108 `describeConfig`:128 |
+| `packages/extension-anchor/src/vscode/configSource.ts` | **S3 落地**。设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 | `readAnchorConfig`:20 `storeApiKey`:49 `configuredProviderIds`:71 |
+| `packages/extension-anchor/src/commands.ts` | §4.1 九个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel。**S3 起没有任何替身** | `registerCommands`:46 `askWhatToExplain`:297 `capture`:322 |
 | `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 两处边界守卫 | `WalkthroughState`:19 `HostToSidebar`:35 `SidebarToHost`:54 `HostToSelect`:66 `SelectToHost`:71 `isAnchorLike`:102 `parseSidebarMessage`:131 |
-| `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**） | `ValidationIssue`:35 `ExplanationOutline`:42 `ExplanationValidation`:49 `coerceEmphasis`:66 `parseMaybeJson`:76 `validateExplanation`:299 `describeIssues`:336 |
-| `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
+| `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**） | `ValidationIssue`:35 `ExplanationOutline`:42 `ExplanationValidation`:49 `coerceEmphasis`:66 `parseMaybeJson`:76 `validateExplanation`:299 `describeIssues`:336 || `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
 | `packages/extension-anchor/src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策 | `DecorationSpec`:25 `EMPHASES`:32 `FALLBACK_EMPHASIS`:34 `planForBeat`:40 `primaryLocationOf`:60 |
 | `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档** | `CodeWalkthroughPlayer`:83 |
 | `packages/extension-anchor/src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 | `SidebarHandlers`:17 `SidebarPanel`:28 |
@@ -582,7 +644,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
 | `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（**S2 起五个方法全部是真的**，没有覆盖层） | `createEditorPort`:25 |
 | `packages/extension-anchor/src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` | `createFileSystemPort`:12 `countLines`:38 |
-| `packages/extension-anchor/test/*.test.ts`（6 个，72 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 新增 `CodeAdapter.test.ts` | — |
+| `packages/extension-anchor/test/*.test.ts`（9 个，113 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter.test.ts`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config` | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
 | `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器 | — |
@@ -596,10 +658,7 @@ function createContextRequestLogger(opts?: {
 
 | 路径 | 职责 | 落地切片 |
 |---|---|---|
-| `packages/extension-anchor/src/adapters/CodeAdapter.ts` 的 `detect()` / `fetchContext()` | 兑现完整的 `SourceAdapter`（`capture` 已落） | S3 |
-| `packages/extension-anchor/src/orchestrator/*`（其余） | §3.2 取件校验、编排循环、ModelRouter | S3 |
-| `packages/extension-anchor/src/prompts/*` | 所有 prompt（含 §3.3 第 5 条的 repair） | S3 |
-| `packages/extension-anchor/src/config.ts` | §6 配置读取 + SecretStorage 覆盖 | S3 |
+| `packages/extension-anchor/src/adapters/CodeAdapter.ts` 的 `detect()` | 兑现完整的 `SourceAdapter`（`capture` / `fetchContext` 已落） | S7（出现第二个 adapter 时才有真假之别） |
 | `packages/extension-anchor/src/adapters/PDFAdapter.ts` + `adapters/pdf/*` | PDF 无头取件 | S7 |
 | `packages/extension-anchor-pdf/`（整树） | 线2 fork | S4 |
 | `packages/extension-anchor-pdf/media/anchor-select.js` | 注入式框选 overlay | S5 |
@@ -655,12 +714,17 @@ webview 的 HTML/客户端脚本活到了产物里。
 
 **链路冒烟**：`pnpm smoke:chain`（`scripts/smoke-walkthrough.mjs`，S1 新增）同样只桩 `vscode`，
 但把 `anchorExplain.capture` **从选区一路跑到 decoration**：真读磁盘上的 `main.c`（所以行数上界
-用的是真数据）→ 真 `fakeProvider` → 真 `validateExplanation` → 真会话 → 真玩家决策（只记下
-`setDecorations`）。它断言三件用户在 F5 才会发现的事：
+用的是真数据）→ 真 `validateExplanation` → 真会话 → 真玩家决策（只记下 `setDecorations`）。
+**S3 起它还跑真的编排循环**：真的 `Orchestrator`、真的 §3.2 校验、真的 OpenAI 兼容实现，
+唯一被换掉的是最外面那一跳 `fetch`（`globalThis.fetch` 换成桩）。
+它断言三件用户在 F5 才会发现的事：
 
 1. 每一步画在**哪几行**、用的是**哪一档配色**（即 §4.3 映射本身）
 2. 退出时所有 decoration type 都被清空（不留残影）、`ui:ready` 会触发全量重放
 3. **`main.c` 字节未变**、`workspace.applyEdit` 从未被调用（"纯视觉"的硬要求）
+
+S3 之后还多守四件：apiKey 确实取自 SecretStorage、§8 的工具定义确实发出去了、
+取件内容以 `role=tool` 回灌且带行号、越界的取件被拒之后**整次讲解仍然继续**。
 
 `pnpm check` 把它们排在 `build` 之后。**F5 仍然不可省**：配色好不好看、流转顺不顺是手感评审，
 `pnpm smoke:chain` 只能保证"画对了行、用对了档、退出清干净"。

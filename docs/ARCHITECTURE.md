@@ -123,22 +123,25 @@ CodeAdapter.capture()
 **下游一行不动**（`DECISIONS.md` D17）。这就是"假货只放在最外层边界"的兑现方式 ——
 换掉的是**一个来源**，不是一条链路。
 
-**S2 之后的实际形态与上图的一处差异**（尚未落地，不是改了架构）：
+**S3 之后的实际形态与上图的一处差异**（尚未落地，不是改了架构）：
 
-`Orchestrator.run()` 整个不存在 —— 现在是 `commands.ts` 里一行
-`const provider: ExplainProvider = fakeProvider;`（`ExplainProvider` 就是"编排层"的替身接口）。
-S3 换成编排循环时，同样只改那一行。
+`Orchestrator.run(anchor)` 现在**存在**（`src/orchestrator/Orchestrator.ts` 的 `createOrchestrator`），
+它兑现 `ExplainProvider`（`(anchor) => Promise<ExplanationResult>`）。
+与上图不同的一点：它不是在激活时建一次留着用，而是**每次讲解现读配置、现建**
+（`commands.ts` 的 `makeProvider()`）—— 这样改完设置立刻生效，不必重载窗口。
 
 于是现在的命令回调实际读作：
-`askWhatToExplain → CodeAdapter.capture(scope) → provider → validateExplanation → WalkthroughSession → {player, sidebar, statusBar}`，
-其中**除了 `provider` 这一处替身，每一环都是真的** —— 包括 S2 刚接上的真选区与真适配器。
+`askWhatToExplain → CodeAdapter.capture(scope) → Orchestrator.run → §3.3 → WalkthroughSession → {player, sidebar, statusBar}`，
+**每一环都是真的**。`fakeProvider` 只在 `test/` 与 `scripts/` 里作为"模型的替身"存在。
 
-两处细节与上图不同（都不影响架构，只是尚未填）：
+三处细节与上图不同（都不影响架构）：
 
 1. **确认那一步**：上图从"用户选区"直接进 `capture()`。实际多一个 `askWhatToExplain()`
    （QuickPick「讲解这段 / 整个文件」），它决定 `scope`；只有光标时改为提示 + 按钮（§4.1.1）。
-2. **`Anchor.neighborHint` 目前不填**：它是可选字段，第一个消费者是 S3 的 prompt。
-   现在填一个没有消费者的字符串属凭空猜形状 —— 与 S1 不提前抽 `SourceAdapter` 是同一条理由。
+2. **取件那一环多一道闸门**：上图只画了 `validateContextRequest`。实际是"校验不过就**回灌拒绝原因**，
+   不抛错"（D29/D52）—— 模型的一次越界不该等于整次讲解失败。
+3. **`Anchor.neighborHint` 目前不填**：它是可选字段，目前没有消费者。
+   填一个没人读的字符串属凭空猜形状。
 
 ### 4.2 线2：PDF
 
@@ -198,14 +201,18 @@ provider 配置由用户在 settings JSON 自填（`baseUrl` / `apiKey` / `tier1
 S1:  [假选区] → CodeAdapter → Orchestrator([FakeProvider]) → 校验 → Session → 渲染
 S2:  [真选区] → CodeAdapter → Orchestrator([FakeProvider]) → 校验 → Session → 渲染
 S3:  [真选区] → CodeAdapter → Orchestrator([openAICompatible]) → 校验 → Session → 渲染
-      ↑ S2 换掉了这个           ↑ S3 换掉这个，也是最后一处替身
+      ↑ S2 换掉了这个           ↑ S3 换掉这个 —— 到此没有任何替身
 ```
 
 **渲染层在 S1~S3 完全不变。** 这就是"先建基础、上层构建、最后把基础换成成熟版本"的具体形态（`DECISIONS.md` D17/D18）。
 
-**S2 的实际观感**：把假选区换成真选区，**只动了两处来源**（`EditorPort` 的真实现、`commands.ts` 里的确认流程），
+**S2 的观感**：把假选区换成真选区，只动了两处来源（`EditorPort` 的真实现、`commands.ts` 的确认流程），
 外加把 `capture()` 从装配层搬进 `adapters/CodeAdapter.ts`（第一次可被 `node --test` 覆盖）。
-播放器、会话、侧边栏、状态栏、键位**一行都没改** —— 这正是 S1 把假货关在边界上换来的东西。
+
+**S3 的观感**：把假 AI 换成真编排循环。**`commands.ts` 里删掉的仍然只有一行**，
+但这一行后面长出了一整层（`orchestrator/` + `prompts/` + `config.ts`）——
+这些是**新增**的，不是把已有的东西改掉。播放器、会话、侧边栏、状态栏、键位**一行都没改**：
+S1 那次"把假货关在最外层边界"的决定，到 S3 才真正兑现出它的价值。
 
 ---
 

@@ -23,7 +23,8 @@
     "onCommand:anchorExplain.stop",
     "onCommand:anchorExplain.goto",
     "onCommand:anchorExplain.playPause",
-    "onCommand:anchorExplain.showState"
+    "onCommand:anchorExplain.showState",
+    "onCommand:anchorExplain.setApiKey"
   ],
   "contributes": {
     "commands": [
@@ -66,6 +67,11 @@
         "command": "anchorExplain.showState",
         "title": "显示状态",
         "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.setApiKey",
+        "title": "设置 API Key（存进 SecretStorage）",
+        "category": "Anchor"
       }
     ],
     "keybindings": [
@@ -105,7 +111,50 @@
         "mac": "cmd+shift+space",
         "when": "anchorExplain.walkthroughActive"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Anchor",
+      "properties": {
+        "anchorExplain.providers": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "模型端点。键是 provider id，值是 `{ baseUrl, tier1Model, tier2Model?, apiKey?, extraHeaders?, extraBody? }`。\n\n例：`{ \"default\": { \"baseUrl\": \"https://api.deepseek.com/v1\", \"tier1Model\": \"deepseek-chat\" } }`\n\n**`apiKey` 建议留空**，改用命令 `Anchor: 设置 API Key` 存进 SecretStorage —— 那个位置不进 settings.json，也就不会被同步、被截图、被提交。",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "baseUrl": { "type": "string" },
+              "tier1Model": { "type": "string" },
+              "tier2Model": { "type": "string" },
+              "apiKey": { "type": "string" },
+              "extraHeaders": { "type": "object" },
+              "extraBody": { "type": "object" }
+            },
+            "required": ["baseUrl", "tier1Model"]
+          }
+        },
+        "anchorExplain.activeProvider": {
+          "type": "string",
+          "default": "default",
+          "description": "用 anchorExplain.providers 里的哪一个。"
+        },
+        "anchorExplain.maxFetchRounds": {
+          "type": "number",
+          "default": 3,
+          "maximum": 20,
+          "minimum": 0,
+          "description": "AI 请求额外上下文的次数上限。超过之后取件请求会被拒绝，并让它基于现有信息作答。"
+        },
+        "anchorExplain.preferSecretStorage": {
+          "type": "boolean",
+          "default": true,
+          "description": "apiKey 优先从 SecretStorage 读，取不到才回落到 providers 里的 apiKey。"
+        },
+        "anchorExplain.temperature": {
+          "type": "number",
+          "description": "透传给模型端点。留空则用端点的默认值。"
+        }
+      }
+    }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

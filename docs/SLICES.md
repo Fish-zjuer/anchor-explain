@@ -16,7 +16,8 @@
 | F1 | 契约冻结：`packages/core` 类型与 ports 落地 | 自动化 | 完成 `slice-F1` |
 | F2 | 走通骨架 + 测试台（能装能编能跑能测 + 假货 + fixture） | 自动化 | 完成 `slice-F2` |
 | S1 | 线1 最小可视：F5 → main.c → FakeProvider 写死 3 step → 高亮流转 → ESC 清除 | **用户实操确认** | 完成 `slice-S1`（用户四轮实测反馈后通过） |
-| S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 | 代码与自动化完成 `slice-S2`，**待用户 F5 确认** |
+| S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 | 完成 `slice-S2` |
+| S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | 代码与自动化完成 `slice-S3`，**待用户配 key 实操** |
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | — |
 | S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | — |
 | S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | — |
@@ -244,6 +245,46 @@
 - **范围**：`src/orchestrator/{Orchestrator.ts, ModelRouter.ts, toolSchema.ts, validateContextRequest.ts, providers/{types.ts, openAICompatible.ts}}`、`src/prompts/*`、`src/adapters/CodeAdapter.ts` 的 `fetchContext`、`src/config.ts`
 - **验收标准**：自动化（mock 驱动的编排循环测试：≤3 轮、取件命中、非法请求走拒绝路径）+ **用户实操**（真 key 下走通一次）
 - **回退点**：`slice-S2`
+
+### S3 落地结果（2026-09-13，tag `slice-S3`）
+
+| 声明范围内 | 落地 |
+|---|---|
+| `src/orchestrator/Orchestrator.ts` | **新增**。取件循环（≤maxFetchRounds）→ §3.3 闸门 → repair 一次。**它就是 `fakeProvider` 的真身** |
+| `src/orchestrator/validateContextRequest.ts` | **新增**。§3.2 五条规则的实现 |
+| `src/orchestrator/ModelRouter.ts` | **新增**。tier1/tier2 成本分层 |
+| `src/orchestrator/toolSchema.ts` | **新增**。§8 工具定义 + 参数解析 |
+| `src/orchestrator/providers/{types,openAICompatible}.ts` | **新增**。LLM 调用面抽象 + OpenAI 兼容实现（`fetchImpl` 可注入） |
+| `src/prompts/index.ts` | **新增**。system / user / repair 三段指令 + 输出契约 |
+| `src/config.ts` | **新增**。§6 配置的纯映射 |
+| `src/vscode/configSource.ts` | **新增**（未在范围内，见偏离 3）。设置 + SecretStorage 的读取侧 |
+| `src/adapters/CodeAdapter.ts` | 补 `fetchContext()`（带行号）；`detect()` 归 S7 |
+| `src/commands.ts` | 删掉最后一行替身；`explain()` 改成现读配置现建编排器；取件日志落 OutputChannel；`showState` 增报模型配置；新增 `setApiKey` 命令 |
+| `packages/core/src/fakes/fakeFileSystemPort.ts` | **新增**（未在范围内，见偏离 4）。让 `fetchContext` 的决策可单测 |
+| `package.json` | `contributes.configuration`（§6 的五项）+ `setApiKey` 命令 + 激活事件 |
+| **新增测试 4 个文件 41 条** | `validateContextRequest`（§3.2 五条规则各一条 + 两个顺序约定）、`orchestrator`（14 条，含 repair 一次、MAX_ROUNDS、拒绝回灌）、`provider`（6 条，含四种失败路径）、`config`（7 条） |
+| `scripts/smoke-walkthrough.mjs` | 桩补 `getConfiguration` / `secrets` / `createOutputChannel` + `globalThis.fetch`；新增第 10 节 20 项 |
+| `scripts/smoke-extension.mjs` | 桩补配置；`showState` 改成 await（它现在是异步的）；新增 7 项（**两个替身都已退出产物** + 真编排循环在产物里） |
+
+**四处偏离，均已声明**：
+
+1. **`prompts/` 合成一个模块**（`prompts/index.ts`）而不是三个文件。理由：输出契约那一段必须在
+   system 与 repair 两处**逐字一致**，拆成两个文件迟早会出现"repair 里少写了一条规则"。
+2. **`CodeAdapter.detect()` 仍未落**，改归 S7：一个适配器的时候"谁适用"是句废话，
+   等出现 `PDFAdapter` 才第一次有真假之别。属分期兑现，不是接口变更。
+3. **新增 `src/vscode/configSource.ts`**（原范围只写了 `src/config.ts`）。
+   拆开的理由是"读 vscode"与"算配置"必须分层，否则配置映射的几条分支永远只有肉眼覆盖。
+4. **新增 `packages/core/src/fakes/fakeFileSystemPort.ts`**：`fetchContext` 要读文件，
+   没有替身就只能靠真 fixture，那会让"取哪几行"这件事变成不可单测的。
+
+**自动化验收结果**：`pnpm check` 全绿 —— 141 测（core 28 + ext 113）→ `pnpm smoke` 30 项
+→ `pnpm smoke:chain` 105 项。**链路的 S3 一节跑的是真编排循环**，
+只有 `globalThis.fetch` 是桩，所以六条路径（取件一轮 / 越界被拒 / 一直要上下文 / 没配 provider /
+连不上端点 / 取消确认不发请求）都在冒烟里真的走过。
+
+**验收靠**：**用户实操**，需要一把真 key：
+`Anchor: 设置 API Key` 存 key → 在设置里填 `anchorExplain.providers`（`baseUrl` + `tier1Model`）
+→ 选中一段 → `Ctrl+Shift+A`。`Anchor: 显示状态` 会报当前用的是哪个模型。
 
 ## S4 PDF fork 骨架
 

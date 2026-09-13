@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AnchorError, isCodeLocation } from '@anchor/core';
-import type { Anchor, CodeLocation } from '@anchor/core';
+import type { Anchor, CodeLocation, ContextRequest } from '@anchor/core';
 import {
   createFakeEditorPort,
   FAKE_DOCUMENT_HASH,
@@ -18,13 +18,22 @@ import {
   FAKE_FILE_PATH,
   FAKE_SELECTION_TEXT,
 } from '@anchor/core/fakes/fakeEditorPort';
+import { createFakeFileSystemPort } from '@anchor/core/fakes/fakeFileSystemPort';
 import { createCodeAdapter } from '../src/adapters/CodeAdapter.ts';
 
-const adapterWith = (opts: Parameters<typeof createFakeEditorPort>[0] = {}) =>
-  createCodeAdapter({ editor: createFakeEditorPort(opts) });
+const SAMPLE = ['line one', 'line two', 'line three', 'line four', 'line five'].join('\n');
+
+const adapterWith = (
+  opts: Parameters<typeof createFakeEditorPort>[0] = {},
+  files: Record<string, string> = { [FAKE_FILE_PATH]: SAMPLE },
+) => createCodeAdapter({ editor: createFakeEditorPort(opts), fs: createFakeFileSystemPort({ files }) });
 
 async function captureAnchor(scope?: 'selection' | 'whole-file'): Promise<Anchor> {
   return adapterWith().capture(scope);
+}
+
+function fileRequest(over: Partial<ContextRequest['params']> = {}): ContextRequest {
+  return { type: 'file', params: { path: FAKE_FILE_PATH, start: 2, end: 3, ...over }, reason: '看不全' };
 }
 
 /** 线1 的锚点定位必须是 CodeLocation；这里顺带把类型窄化掉，省得每个断言都写一遍 */
@@ -96,4 +105,43 @@ test('capture 的形状仍满足 §3 的 SourceAdapter（可选参数不算改�
   const zeroArg: () => Promise<Anchor> = adapterWith().capture;
   const anchor = await zeroArg();
   assert.equal(codeLocationOf(anchor).lineStart, 40);
+});
+
+test('fetchContext: 只读请求里给的那个文件，且带上 1-based 行号', async () => {
+  const adapter = adapterWith();
+  const text = await adapter.fetchContext(fileRequest());
+
+  assert.match(text, /line two/, '取到了请求的行');
+  assert.match(text, /2\t/, '带上了行号（模型要靠它算 location）');
+  assert.match(text, /共 5 行/, '报了总行数');
+  assert.doesNotMatch(text, /line one/, '区间外的行不该出现');
+});
+
+test('fetchContext: 区间被夹在文件范围内，不会多读也不会崩', async () => {
+  // 编排层的 §3.2 已经拦过越界，但适配器自己也不该在收到越界值时读到 undefined
+  const text = await adapterWith().fetchContext(fileRequest({ start: 1, end: 999 }));
+  assert.match(text, /line five/);
+  assert.match(text, /行 1-5/, `区间应被夹到 1-5，实际：${text.split('\n')[1]}`);
+
+  const empty = await adapterWith().fetchContext(fileRequest({ start: 9, end: 12 }));
+  assert.match(empty, /没有内容/, '完全越界时给一句人话，而不是空串');
+});
+
+test('fetchContext: 参数不完整直接抛 CONTEXT_REJECTED（不静默返回空串）', async () => {
+  await assert.rejects(
+    () => adapterWith().fetchContext({ type: 'file', params: { path: FAKE_FILE_PATH }, reason: 'x' }),
+    (err: unknown) => err instanceof AnchorError && err.code === 'CONTEXT_REJECTED',
+  );
+});
+
+test('fetchContext: 只读了被请求的那一个文件（模型不许漫游的最后一米）', async () => {
+  const fs = createFakeFileSystemPort({ files: { [FAKE_FILE_PATH]: SAMPLE, '/etc/passwd': 'root:x:0:0' } });
+  const adapter = createCodeAdapter({ editor: createFakeEditorPort(), fs });
+
+  await adapter.fetchContext(fileRequest());
+  assert.deepEqual(fs.readCalls, [FAKE_FILE_PATH], '除了请求的文件，一个字节都不该读');
+
+  // 真去读别的文件时（§3.2 已经拦过，这里是纵深防御的观察点）：读的是它，不是锚点文件
+  await adapter.fetchContext(fileRequest({ path: '/etc/passwd' }));
+  assert.deepEqual(fs.readCalls, [FAKE_FILE_PATH, '/etc/passwd']);
 });

@@ -1,29 +1,32 @@
 /**
  * 四层装配 + §4.1 全部命令。事实源：docs/CONTRACTS.md §4.1。
  *
- * @anchor 本文件是整个线1 里**唯一**知道"假货在哪"的地方。S1 有两个替身，
- *         **S2 已收掉一个**（假选区 → 真选区），现在只剩一个：
+ * @anchor **本文件已经没有任何替身**（S3 收掉了最后一个）。
  *
- *         S3 接线点：`const provider: ExplainProvider = fakeProvider;` 那一行。
- *         换成 orchestrator 循环后，中间链路（校验 → 会话 → decoration → 侧边栏 → 状态栏）
- *         一行不用动。
+ *         S1 有两处（假选区 / 假 AI），S2 删掉假选区，S3 删掉假 AI ——
+ *         两次删除都只动了"来源"，中间链路
+ *         （校验 → 会话 → decoration → 侧边栏 → 状态栏）一行没改。
+ *         这就是把假货关在最外层边界想要的结果（D17/D18）。
  *
  * 装配顺序（STATE.md 里写死的）：commands → sidebar → playback → statusbar。
  */
 
 import * as vscode from 'vscode';
-import { AnchorError, describeError, isCodeLocation, locationLabel } from '@anchor/core';
+import { AnchorError, createContextRequestLogger, describeError, isCodeLocation, locationLabel } from '@anchor/core';
 import type {
   Anchor,
   CodeLocation,
+  ContextRequestLogger,
   EditorPort,
-  ExplainProvider,
   ExplanationResult,
   FileSystemPort,
 } from '@anchor/core';
-import { fakeProvider } from '@anchor/core/fakes/fakeProvider';
 import { createCodeAdapter } from './adapters/CodeAdapter.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
+import { describeConfig } from './config.ts';
+import { createOrchestrator } from './orchestrator/Orchestrator.ts';
+import { createModelRouter } from './orchestrator/ModelRouter.ts';
+import { createOpenAICompatibleProvider } from './orchestrator/providers/openAICompatible.ts';
 import { describeIssues, validateExplanation } from './orchestrator/validateExplanation.ts';
 import { isAnchorLike } from './protocol.ts';
 import { CodeWalkthroughPlayer } from './playback/CodeWalkthroughPlayer.ts';
@@ -33,6 +36,7 @@ import { SidebarPanel } from './sidebar/SidebarPanel.ts';
 import type { SidebarHandlers } from './sidebar/SidebarPanel.ts';
 import { createStatusBar } from './sidebar/statusBar.ts';
 import { samePath } from './paths.ts';
+import { configuredProviderIds, readAnchorConfig, storeApiKey } from './vscode/configSource.ts';
 import { createEditorPort } from './vscode/ports/editorPort.ts';
 import { countLines, createFileSystemPort } from './vscode/ports/fileSystemPort.ts';
 
@@ -45,12 +49,29 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   // 真选区（S2）。这里不再有任何覆盖：命令层拿到的就是编辑器里那个选区，
   // 以及（「整个文件」分支要的）当前文档的全文与行数。
   const editorPort: EditorPort = createEditorPort();
-  const codeAdapter = createCodeAdapter({ editor: editorPort });
-
-  // ★ S3 接线点（唯一）：换成 orchestrator 循环（真实 AI + fetch_context 取件）。
-  const provider: ExplainProvider = fakeProvider;
+  const codeAdapter = createCodeAdapter({ editor: editorPort, fs: fsPort });
 
   const status = createStatusBar(context);
+
+  /**
+   * 取件日志的落点（§7 要求每个 `ContextRequest` 都记录，含被拒的）。
+   * 侧边栏的 ToolTrace 面板还没做（不在任何切片范围内），所以先落到输出通道 ——
+   * 排查"模型为什么讲歪了"时，这张表是唯一能看的东西。
+   */
+  let output: vscode.OutputChannel | undefined;
+  const loggerOf = (): ContextRequestLogger => {
+    output ??= vscode.window.createOutputChannel('Anchor');
+    return createContextRequestLogger({
+      sink: (entry) => {
+        const verdict = entry.accepted ? '取件' : `拒绝（${entry.rejectReason ?? ''}）`;
+        output?.appendLine(
+          `[${new Date(entry.at).toLocaleTimeString()}] 第 ${entry.round} 轮 ${verdict} ` +
+            `${entry.request.type} ${JSON.stringify(entry.request.params)} — ${entry.request.reason}` +
+            (entry.resultChars !== undefined ? `（${entry.resultChars} 字）` : ''),
+        );
+      },
+    });
+  };
 
   let player: CodeWalkthroughPlayer | undefined;
   let sidebar: SidebarPanel | undefined;
@@ -189,6 +210,48 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 否则渲染面的一次异常会走进下面这个 catch，把好不容易拿到的讲解当成失败丢掉，
    * 还顺手把 context key 落成 false（用户按 Esc 就真没反应了）。
    */
+  /**
+   * §3.3 的 `ctx`：文档总行数（代码）或总页数（PDF）。取不到返回 null，
+   * 校验会**跳过那一项上界**而不是跳过整条 location 校验。
+   */
+  async function makeOutline(anchor: Anchor): Promise<{ documentLineCount: number | null; pageCount: number | null }> {
+    if (!isCodeLocation(anchor.location)) return { documentLineCount: null, pageCount: null };
+    return { documentLineCount: await countLines(fsPort, anchor.location.filePath), pageCount: null };
+  }
+
+  /**
+   * 现读配置、现建编排器。
+   *
+   * @anchor 为什么**不是**在激活时建一次留着用：用户改完设置应该立刻生效，
+   *         而不是"改设置 → 重载窗口 → 再试"。`ExplainProvider` 就是"一个函数"，
+   *         重建它的成本只有两次对象字面量。
+   *
+   * 没有可用配置时**明确报错**，不静默退化成"什么都不发生" ——
+   * 后者让人以为是扩展坏了，而不是"我还没填 baseUrl"。
+   */
+  async function makeProvider(): Promise<ReturnType<typeof createOrchestrator>> {
+    const cfg = await readAnchorConfig(context);
+    if (!cfg.provider) throw new AnchorError('PROVIDER_ERROR', describeConfig(cfg));
+
+    return createOrchestrator({
+      chat: createOpenAICompatibleProvider({
+        baseUrl: cfg.provider.baseUrl,
+        apiKey: cfg.provider.apiKey,
+        extraHeaders: cfg.provider.extraHeaders,
+        extraBody: cfg.provider.extraBody,
+      }),
+      routeModel: createModelRouter({
+        tier1Model: cfg.provider.tier1Model,
+        tier2Model: cfg.provider.tier2Model,
+      }),
+      adapter: codeAdapter,
+      makeOutline,
+      maxFetchRounds: cfg.maxFetchRounds,
+      temperature: cfg.temperature,
+      logger: loggerOf(),
+    });
+  }
+
   async function explain(anchor: Anchor): Promise<void> {
     stop();
     const gen = (generation += 1);
@@ -196,16 +259,16 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
     let result: ExplanationResult;
     try {
+      const provider = await makeProvider();
       const produced = await provider(anchor);
       // 期间用户又发起了一次：这次的结果已经过期，直接丢掉。
-      // 没有这道闸，先发后到的那次会把 UI 拽回旧讲解（S3 接上真 AI 后必然遇到）。
+      // 没有这道闸，先发后到的那次会把 UI 拽回旧讲解（真 AI 下必然遇到）。
       if (gen !== generation) return;
 
-      const outline = isCodeLocation(anchor.location)
-        ? { documentLineCount: await countLines(fsPort, anchor.location.filePath), pageCount: null }
-        : { documentLineCount: null, pageCount: null };
-
-      const verdict = validateExplanation(produced, anchor, outline);
+      // 第二道闸：编排层内部已经过了一次 §3.3，这里再查一次。
+      // 不是不信任它，而是"渲染层只消费校验过的数据"这条规矩不该有例外 ——
+      // 编排层将来多一条产出路径（比如缓存命中），这里仍然拦得住。
+      const verdict = validateExplanation(produced, anchor, await makeOutline(anchor));
       if (!verdict.ok) {
         throw new AnchorError('SCHEMA_VIOLATION', `AI 输出未通过校验：${describeIssues(verdict.issues)}`, {
           issues: verdict.issues,
@@ -319,14 +382,39 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   /**
+   * 存 API Key 进 `SecretStorage`（D25）。
+   *
+   * @anchor 这条命令不是为了方便，而是**默认走安全路径的必要条件**：
+   *         §6 规定 apiKey 优先从 SecretStorage 读，但如果没有一条写入的路，
+   *         用户就只能把它填进 settings.json 的明文里 —— 那份文件会被同步、被截图、被提交。
+   */
+  async function setApiKey(): Promise<void> {
+    const ids = configuredProviderIds();
+    const providerId =
+      ids.length > 1
+        ? await vscode.window.showQuickPick(ids, { title: 'Anchor：给哪个 provider 存 key？' })
+        : (ids[0] ?? (await readAnchorConfig(context)).providerId);
+
+    if (!providerId) {
+      void vscode.window.showWarningMessage(
+        'Anchor：先在设置里配置 anchorExplain.providers（至少要有 baseUrl 与 tier1Model），再存 key。',
+      );
+      return;
+    }
+    await storeApiKey(context, providerId);
+  }
+
+  /**
    * 骨架自检命令（F2 遗留）。它同时是一次**接线验证**：
    * `locationLabel` 来自 `@anchor/core`，能正常输出就说明 workspace 链接与打包都通了。
    *
-   * S1 起它多报两件事，都是"只有肉眼可见、脚本判不了"的东西：
+   * 它还报三件"只有肉眼可见、脚本判不了"的东西：
    *   - 讲解当前是否活着、扫到第几步第几点（用来核对 UI 有没有跟上状态机）
    *   - 状态栏项实际显示成什么（用来分辨"提示没显示"与"提示显示了但没找到"）
+   *   - **上次捕获的范围**（真选区接上后，这是唯一能复核锚点区间的观测点，D51）
+   *   - **模型配置**（配错了要能一眼看出来，而不是等讲解失败）
    */
-  function showState(): void {
+  async function showState(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     const selection = editor?.selection;
 
@@ -358,6 +446,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       parts.push('还没有捕获过');
     }
 
+    parts.push(`模型：${describeConfig(await readAnchorConfig(context))}`);
+
     const step = session?.snapshot;
     parts.push(
       step
@@ -382,6 +472,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.goto', goto),
     vscode.commands.registerCommand('anchorExplain.playPause', playPause),
     vscode.commands.registerCommand('anchorExplain.showState', showState),
+    vscode.commands.registerCommand('anchorExplain.setApiKey', setApiKey),
 
     // staleness：讲解期间文档被改动 → 标记失效，由状态栏如实告诉用户，而不是继续画错位的框
     vscode.workspace.onDidChangeTextDocument((e) => {
@@ -402,6 +493,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         player?.dispose();
         status.dispose();
         sidebar?.dispose();
+        output?.dispose();
       },
     },
   );

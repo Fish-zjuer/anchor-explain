@@ -13,6 +13,70 @@ const TARGETS = {
     'CodeAdapter',
     'CodeAdapterDeps',
     'createCodeAdapter',
+    'fetchContext',
+  ],
+  'packages/extension-anchor/src/orchestrator/Orchestrator.ts': [
+    'REJECT_PREFIX',
+    'OrchestratorAdapter',
+    'OrchestratorDeps',
+    'createOrchestrator',
+  ],
+  'packages/extension-anchor/src/orchestrator/validateContextRequest.ts': [
+    'FetchedSpan',
+    'ContextFetchState',
+    'ContextDecision',
+    'validateContextRequest',
+  ],
+  'packages/extension-anchor/src/orchestrator/ModelRouter.ts': [
+    'ModelTier',
+    'ModelRouteInput',
+    'ModelChoice',
+    'ModelRouterConfig',
+    'createModelRouter',
+  ],
+  'packages/extension-anchor/src/orchestrator/toolSchema.ts': [
+    'FETCH_CONTEXT_TOOL',
+    'EXPLANATION_JSON_SHAPE',
+    'openAITools',
+    'parseContextRequest',
+  ],
+  'packages/extension-anchor/src/orchestrator/providers/types.ts': [
+    'ChatMessage',
+    'ToolCall',
+    'AssistantTurn',
+    'ChatRequest',
+    'ChatProvider',
+  ],
+  'packages/extension-anchor/src/orchestrator/providers/openAICompatible.ts': [
+    'OpenAICompatibleOptions',
+    'createOpenAICompatibleProvider',
+  ],
+  'packages/extension-anchor/src/prompts/index.ts': [
+    'explainOutputContract',
+    'buildSystemPrompt',
+    'describeAnchor',
+    'buildUserPrompt',
+    'buildRepairPrompt',
+  ],
+  'packages/extension-anchor/src/config.ts': [
+    'ProviderSettings',
+    'AnchorConfig',
+    'DEFAULT_MAX_FETCH_ROUNDS',
+    'apiKeySecretName',
+    'resolveProvider',
+    'clampRounds',
+    'resolveConfig',
+    'describeConfig',
+  ],
+  'packages/extension-anchor/src/vscode/configSource.ts': [
+    'readAnchorConfig',
+    'storeApiKey',
+    'configuredProviderIds',
+  ],
+  'packages/core/src/fakes/fakeFileSystemPort.ts': [
+    'FakeFileSystemPortOptions',
+    'FakeFileSystemPort',
+    'createFakeFileSystemPort',
   ],
   'packages/extension-anchor/src/protocol.ts': [
     'WalkthroughState',
@@ -100,6 +164,7 @@ const TARGETS = {
 };
 
 const PREFIXES = [
+  'async ',
   'export type ',
   'export interface ',
   'export const ',

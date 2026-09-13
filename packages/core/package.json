@@ -13,7 +13,8 @@
     "./errors": "./src/errors.ts",
     "./logging": "./src/logging.ts",
     "./fakes/fakeProvider": "./src/fakes/fakeProvider.ts",
-    "./fakes/fakeEditorPort": "./src/fakes/fakeEditorPort.ts"
+    "./fakes/fakeEditorPort": "./src/fakes/fakeEditorPort.ts",
+    "./fakes/fakeFileSystemPort": "./src/fakes/fakeFileSystemPort.ts"
   },
   "scripts": {
     "test": "node --test \"test/*.test.ts\"",

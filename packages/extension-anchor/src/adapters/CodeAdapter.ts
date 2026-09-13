@@ -9,9 +9,9 @@
  * 它做过一件**只跟来源有关**的事 —— 把「光标点在哪/选了什么」变成一条带地址的 `Anchor`。
  * 留在装配层，S4 的 `PDFAdapter` 就得在同一个人手里再写一遍同样的判断。
  *
- * **S2 只落 `capture()`**。`detect()` 与 `fetchContext()` 按 `SLICES.md` 归 S3：
- * 它们各自的调用方（适配器注册表、取件校验）那时才存在，现在写出来就是没有消费者的死码。
- * 接口本身是冻结的，`SourceAdapter` 的形状没有变 —— 这里只是**分两步兑现**它。
+ * **S2 落了 `capture()`，S3 补上 `fetchContext()`**（`SLICES.md` 的 S3 范围里本就列着它）。
+ * `detect()` 仍未落：一个适配器的时候"谁适用"是废话，等 S7 出现第二个适配器
+ * （`PDFAdapter`）时才第一次有真假之别。接口本身是冻结的，这里只是**分步兑现**。
  */
 
 import { AnchorError } from '@anchor/core';
@@ -19,10 +19,12 @@ import type {
   AdapterCapabilities,
   Anchor,
   CodeLocation,
+  ContextRequest,
   EditorPort,
   EditorSelection,
+  FileSystemPort,
 } from '@anchor/core';
-import { basenameOf } from '../paths.ts';
+import { basenameOf, countTextLines } from '../paths.ts';
 
 /**
  * 「讲解什么」的两种范围。它由**确认 UI**（`commands.ts` 的 QuickPick）拍板，
@@ -41,10 +43,16 @@ export interface CodeAdapter {
    * 于是"范围从哪来"这件事不必污染冻结的接口，也不必让适配器去读 UI。
    */
   capture(scope?: CaptureScope): Promise<Anchor>;
+  /**
+   * 取件（§3 的第四个方法）。**只被编排层调用，且调用前已经过 §3.2 校验** ——
+   * 所以这里不再重复判越界，只负责"把那一行区间读出来"。
+   */
+  fetchContext(req: ContextRequest): Promise<string>;
 }
 
 export interface CodeAdapterDeps {
   editor: EditorPort;
+  fs: FileSystemPort;
 }
 
 export function createCodeAdapter(deps: CodeAdapterDeps): CodeAdapter {
@@ -89,6 +97,35 @@ export function createCodeAdapter(deps: CodeAdapterDeps): CodeAdapter {
         location,
         extractedText: picked.text,
       };
+    },
+
+    async fetchContext(req: ContextRequest): Promise<string> {
+      // §3 只给 fetchContext(req) 一个参数（拿不到 anchor），所以这里信 params ——
+      // "params.path 必须等于锚点文件"那条闸门在 §3.2，由编排层过（见 validateContextRequest）。
+      const filePath = req.params.path;
+      const start = req.params.start;
+      const end = req.params.end;
+      if (typeof filePath !== 'string' || typeof start !== 'number' || typeof end !== 'number') {
+        // 编排层过了校验还走到这里，说明两边对契约的理解不一致 —— 明说，不要静默返回空串
+        throw new AnchorError('CONTEXT_REJECTED', '取件参数不完整（需要 path / start / end）');
+      }
+
+      const text = await deps.fs.readText(filePath);
+      const lines = text.split(/\r?\n/);
+      const total = countTextLines(text);
+      const from = Math.max(1, Math.trunc(start));
+      const to = Math.min(Math.trunc(end), total === 0 ? lines.length : total);
+      if (to < from) return '（这个区间没有内容）';
+
+      // **带上行号**：模型要能引用具体行号，否则它算出来的 location 全靠猜，
+      // 而 §3.3 的越界检查只在超出文件范围时才拦得住。
+      const width = String(to).length;
+      const body = lines
+        .slice(from - 1, to)
+        .map((line, i) => `${String(from + i).padStart(width, ' ')}\t${line}`)
+        .join('\n');
+
+      return `文件：${filePath}\n行 ${from}-${to}（共 ${total} 行）：\n${body}`;
     },
   };
 }
