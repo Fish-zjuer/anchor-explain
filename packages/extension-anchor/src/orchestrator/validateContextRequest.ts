@@ -37,12 +37,28 @@ export interface ContextFetchPolicy {
   scope: FetchScope;
   /** 允许的根（工作区目录）。空数组 = 跨文件关闭（任何别的文件都拒） */
   roots: readonly string[];
-  /** 单次取件最多几行（防"把这个文件整个给我"） */
+  /** 单次取件最多几行（防"把这个文件整个给我"）。**由配置给**（`anchorExplain.maxFetchLines`） */
   maxLines: number;
 }
 
+/**
+ * 单次取件的行数上限：默认值与硬上限。
+ *
+ * @anchor 为什么默认从 60 改成 400（D71）：用户在**真工程**上实测，5 轮取件里有 3 轮被
+ *         "一次最多取 60 行"挡掉（它想读 `esc.h` 1-80、`dshot_dma.h` 1-80、`transport.h` 1-70）——
+ *         一个嵌入式头文件动辄一两百行，60 行连一个结构体的字段都列不全，而**每一轮被拒都白烧一次
+ *         预算**（轮数上限默认 3~5）。用户的原话是"60 太少了，200 都不一定够"。
+ *         硬上限 2000 行是"别把两万行的文件整个塞进上下文"的兜底（字符护栏在适配器里另有一道）。
+ */
+export const DEFAULT_MAX_FETCH_LINES = 400;
+export const MAX_FETCH_LINES_CEILING = 2000;
+
 /** 缺省策略：**只允许锚点文件**。产品默认是 `related`（在 `commands.ts` 里按配置构造）。 */
-export const RESTRICTED_POLICY: ContextFetchPolicy = { scope: 'off', roots: [], maxLines: 60 };
+export const RESTRICTED_POLICY: ContextFetchPolicy = {
+  scope: 'off',
+  roots: [],
+  maxLines: DEFAULT_MAX_FETCH_LINES,
+};
 
 /** 依赖、构建产物、版本控制目录：不读。它们是噪音，且常常巨大。 */
 const DENIED_DIR_SEGMENTS = ['.git', 'node_modules', 'dist', 'build', 'out', '.vscode-test', '.tmp-preview'];
@@ -125,9 +141,18 @@ function isPositiveInt(v: unknown): v is number {
 /**
  * 放行：把 `file` 请求的 `path` **归一成绝对路径**（S9a 起它可能是别的文件）。
  * 适配器因此不必猜"没给 path 是什么意思"，也不必再解析一次相对路径。
+ *
+ * `endOverride` 是"超上限被截断"时真正要读的末行（D71）—— 放行的请求里必须写**截断后**的值，
+ * 否则日志、去重、适配器读的区间三者会跟模型要的那个对不上。
  */
-function acceptNormalized(req: ContextRequest, filePath: string): ContextDecision {
-  return { accepted: true, request: { ...req, params: { ...req.params, path: filePath } } };
+function acceptNormalized(req: ContextRequest, filePath: string, endOverride?: number): ContextDecision {
+  return {
+    accepted: true,
+    request: {
+      ...req,
+      params: { ...req.params, path: filePath, ...(endOverride !== undefined ? { end: endOverride } : {}) },
+    },
+  };
 }
 
 function spanOf(req: ContextRequest): { path: string | null; start: number; end: number } | null {
@@ -168,6 +193,13 @@ export function validateContextRequest(
   if (span.start > span.end) {
     return reject(`区间反了：start=${span.start} 大于 end=${span.end}`);
   }
+
+  /**
+   * 真正要读的末行。**只有 `file` 会因超出单次上限而变小**（截断，见下面规则 3 的收尾）；
+   * `page_range` 超出上限仍是拒绝（页跨度是另一种量纲，且 §3.1 的能力矩阵就是那么定的）。
+   * 去重与放行都用它 —— 否则"截到 400 行"会被当成"你刚读过 1-900"。
+   */
+  let endForRead = span.end;
 
   if (req.type === 'page_range') {
     // 规则 2
@@ -224,11 +256,18 @@ export function validateContextRequest(
       resolvedFile = target;
     }
 
-    // 行数上限放在**路径判定之后**：要了别的文件时该先说"文件不对"，
-    // 而不是先抱怨"要的行数太多"（那会把模型的注意力引到错的方向）
-    if (span.end - span.start + 1 > policy.maxLines) {
-      return reject(`一次最多取 ${policy.maxLines} 行，这次要了 ${span.end - span.start + 1} 行`);
-    }
+    /**
+     * 超出单次上限时**截到上限、照常给**，不再整条拒绝（D71）。
+     *
+     * @anchor 改这一条的直接理由：用户在真工程上实测，5 轮里有 3 轮被"一次最多取 60 行"整条挡掉
+     *         （它想读 1-80 / 1-70），而**被拒的每一轮都白烧一次预算** —— 它下一轮还是想读同一段。
+     *         截断不会误导它：适配器回灌的内容头部就写着**真实行范围**（`行 1-400（共 900 行）`），
+     *         它看得见自己拿到的是哪一段；真想要后面那段可以再要（区间不同，不会被去重挡）。
+     *         注意与"end 超出文档总行数"区分：那是**关于这份文件的事实错误**，
+     *         说清"文档共 75 行"比默默给它 1-75 更有用（上面那条仍然是拒绝）。
+     */
+    const asked = span.end - span.start + 1;
+    if (asked > policy.maxLines) endForRead = span.start + policy.maxLines - 1;
     // 这里**不 return**：去重（规则 4）与频率（规则 5）对两种来源都要跑。
     // （第一版在这里提前放行了，于是"轮数用尽"和"重复取件"两条规则被整个跳过 —— 被单测抓住。）
   } else {
@@ -238,10 +277,11 @@ export function validateContextRequest(
 
   // 规则 4：去重。区间重叠就不重复取，改把已有内容回灌。
   // 比对用**解析后的文件**（`resolvedFile`），否则同一个文件换个写法就绕过去重了。
+  // 区间用**真正要读的那个**（截断后的）—— 否则"截到 400 行"会被当成"你刚读过 1-900"。
   const sameFile = (f: FetchedSpan): boolean =>
     resolvedFile !== undefined ? f.path !== null && samePath(f.path, resolvedFile) : f.path === span.path;
   const overlap = state.fetched.find(
-    (f) => f.type === req.type && sameFile(f) && f.start <= span.end && span.start <= f.end,
+    (f) => f.type === req.type && sameFile(f) && f.start <= endForRead && span.start <= f.end,
   );
   if (overlap) {
     return {
@@ -261,5 +301,9 @@ export function validateContextRequest(
   // 放行时返回**归一化**过的请求（file 的 path 一定是绝对路径），
   // 这样适配器拿到的 params 一定是完整的 —— 它不必再猜"没给 path 是什么意思"，
   // 也不必再解析一次相对路径。
+  // 截断过就把截断后的 end 写进放行的请求（file 分支一定会 resolvedFile）
+  if (endForRead !== span.end && resolvedFile !== undefined) {
+    return acceptNormalized(req, resolvedFile, endForRead);
+  }
   return resolvedFile === undefined ? { accepted: true, request: req } : acceptNormalized(req, resolvedFile);
 }

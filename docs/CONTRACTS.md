@@ -280,6 +280,14 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 4. 去重：与已取件区间重叠 → 不重复取，回灌「该区间已取过」+ 已有内容
 5. 频率：总取件次数 `≤ maxFetchRounds`（默认 3）
 
+**单次行数超上限 → 截断，不拒绝（D71 修订）**：`end - start + 1 > maxFetchLines` 时把 `end` 收到
+`start + maxFetchLines - 1` 照常放行。原来整条拒绝（"一次最多取 60 行"）的代价是**白烧一轮预算**：
+用户在真工程上实测，5 轮里 3 轮就这么没了，而它下一轮还是想读同一段。截断不误导模型 ——
+适配器回灌的内容头部就写着**真实行范围**（`行 1-400（共 900 行）`），且放行的请求、日志、
+去重比的都是**截断后**那个区间。
+**例外（仍然是拒绝）**：`end` 超出**锚点文件的文档总行数** —— 那是关于这份文件的事实错误，
+说清"文档共 75 行"比默默给它前 75 行有用得多。`page_range` 的 `maxSpan` 也是拒绝（另一种量纲）。
+
 **拒绝不抛错**：回灌一条工具结果「请求被拒绝：<reason>，请基于现有信息作答」，让模型自我纠正。
 **每次取件必须落日志**（见 §7）。
 
@@ -678,6 +686,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 
 | 配置 | 类型 | 默认 | 说明 |
 |---|---|---|---|
+| `anchorExplain.maxFetchLines` | number | `400` | **S9a 修新增（D71）**。单次取件最多几行。**超出不会拒绝，只会截到这个数**（回灌内容头部写着真实行范围）。上限 2000；与 `DEFAULT_MAX_FETCH_LINES`（闸门侧的默认值）**同一个来源**，提示词里那句也用它 |
 | `anchorExplain.fetchScope` | `"related"` \| `"same-dir"` \| `"off"` | `"related"` | **S9a 新增（D66）**。允许读锚点文件之外哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖、构建产物目录**始终不读** |
 | `anchorExplain.style` | `"concise"` \| `"rigorous"` | `"concise"` | **S8 新增（D65）**。讲解风格：简约（说人话、少用术语）/ 严谨（术语可用，但要说清依据）。**两档都要求按"数据怎么流"组织步骤**，不是从上到下一行行念 |
 | `anchorExplain.temperature` | number | 未设置 | 透传给端点。留空就用端点的默认值 —— 不给默认值是刻意的：不同端点对 temperature 的合理取值不一样 |
@@ -825,15 +834,15 @@ function createContextRequestLogger(opts?: {
 | `packages/core/src/fakes/fakeFileSystemPort.ts` | 假文件系统（**S3 新增**）。让 `fetchContext` 的决策可单测，且测试不依赖 fixture 内容 | `FakeFileSystemPortOptions`:14 `FakeFileSystemPort`:21 `createFakeFileSystemPort`:31 |
 | `packages/extension-anchor/src/extension.ts` | activate → `registerCommands`（入口保持极薄） | `activate`:11 `deactivate`:16 |
 | `packages/extension-anchor/src/paths.ts` | **只是转发**（S5 起实现在 `@anchor/core`）：让线1 内部的 `from '../paths.ts'` 继续成立。**新增代码直接从 `@anchor/core` 导入** | — |
-| `packages/extension-anchor/src/adapters/CodeAdapter.ts` | **S2 落 `capture`，S3 落 `fetchContext`，S9a 加内容护栏**（大小/二进制、读不到给人话）。代码来源适配器：把「选区 / 整文件」变成 `Anchor`、按行取件。零 vscode 依赖 | `CaptureScope`:33 `CodeAdapter`:45 `CodeAdapterDeps`:63 `createCodeAdapter`:68 `fetchContext`:113 |
+| `packages/extension-anchor/src/adapters/CodeAdapter.ts` | **S2 落 `capture`，S3 落 `fetchContext`，S9a 加内容护栏**（大小/二进制、读不到给人话）。代码来源适配器：把「选区 / 整文件」变成 `Anchor`、按行取件。零 vscode 依赖 | `CaptureScope`:34 `CodeAdapter`:46 `CodeAdapterDeps`:64 `createCodeAdapter`:69 `fetchContext`:116 |
 | `packages/extension-anchor/src/orchestrator/Orchestrator.ts` | **S3 落地，S9a 修 D67**。编排循环：取件循环（≤maxFetchRounds）→ §3.3 闸门 → repair 一次。**它就是 S1/S2 里那个 `fakeProvider` 的真身** | `REJECT_PREFIX`:39 `OrchestratorAdapter`:41 `OrchestratorDeps`:46 `createOrchestrator`:80 |
-| `packages/extension-anchor/src/orchestrator/validateContextRequest.ts` | **S3 落地，S9a 改写规则 3**。§3.2 五条规则的实现 + 跨文件边界（`ContextFetchPolicy`，缺省 `RESTRICTED_POLICY` = 只允许锚点文件） | `FetchScope`:33 `ContextFetchPolicy`:35 `RESTRICTED_POLICY`:45 `FetchedSpan`:78 `ContextFetchState`:100 `ContextDecision`:116 `validateContextRequest`:147 |
+| `packages/extension-anchor/src/orchestrator/validateContextRequest.ts` | **S3 落地，S9a 改写规则 3**。§3.2 五条规则的实现 + 跨文件边界（`ContextFetchPolicy`，缺省 `RESTRICTED_POLICY` = 只允许锚点文件） | `FetchScope`:33 `ContextFetchPolicy`:35 `DEFAULT_MAX_FETCH_LINES`:44 `MAX_FETCH_LINES_CEILING`:51 `RESTRICTED_POLICY`:57 `FetchedSpan`:94 `ContextFetchState`:116 `ContextDecision`:132 `validateContextRequest`:172 |
 | `packages/extension-anchor/src/orchestrator/ModelRouter.ts` | **S3 落地**。tier1/tier2 的成本分层（ARCHITECTURE §5） | `ModelTier`:11 `ModelRouteInput`:13 `ModelChoice`:22 `ModelRouterConfig`:29 `createModelRouter`:35 |
 | `packages/extension-anchor/src/orchestrator/toolSchema.ts` | **S3 落地，S9a 修订（D67：声明 `path`、`required` 补 `start`/`end`、描述去掉"当前文档"）**。§8 的工具定义 + 参数解析（自定义键一并带过） | `FETCH_CONTEXT_TOOL`:19 `openAITools`:47 `EXPLANATION_JSON_SHAPE`:52 `parseContextRequest`:86 |
 | `packages/extension-anchor/src/orchestrator/providers/{types,openAICompatible}.ts` | **S3 落地**。LLM 调用面的抽象 + OpenAI 兼容实现（一个实现覆盖 OpenAI/DeepSeek/通义/Ollama） | `ChatMessage`:11 `ToolCall`:20 `AssistantTurn`:27 `ChatRequest`:33 `ChatProvider`:44；`OpenAICompatibleOptions`:20 `createOpenAICompatibleProvider`:71 |
-| `packages/extension-anchor/src/prompts/index.ts` | **S3 落地，S8 加风格、S9a 加跨文件（D67 修：契约按 `crossFile` 换口径、候选清单真的进 prompt）**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:56 `buildSystemPrompt`:81 `describeAnchor`:186 `buildUserPrompt`:209 `buildRepairPrompt`:257 |
-| `packages/extension-anchor/src/config.ts` | **S3 落地，S8 加 `style`、S9a 加 `fetchScope`**。§6 配置的**纯映射**（可单测），vscode 读取在 `vscode/configSource.ts` | `ProviderSettings`:17 `AnchorConfig`:26 `DEFAULT_MAX_FETCH_ROUNDS`:42 `apiKeySecretName`:48 `resolveProvider`:74 `clampRounds`:99 `resolveConfig`:123 `describeConfig`:153 |
-| `packages/extension-anchor/src/vscode/configSource.ts` | **S3 落地**。设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 | `readAnchorConfig`:21 `storeApiKey`:50 `configuredProviderIds`:78 |
+| `packages/extension-anchor/src/prompts/index.ts` | **S3 落地，S8 加风格、S9a 加跨文件（D67 修：契约按 `crossFile` 换口径、候选清单真的进 prompt）**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:56 `buildSystemPrompt`:81 `describeAnchor`:191 `buildUserPrompt`:214 `buildRepairPrompt`:262 |
+| `packages/extension-anchor/src/config.ts` | **S3 落地，S8 加 `style`、S9a 加 `fetchScope`、S9a 修加 `maxFetchLines`（D71）**。§6 配置的**纯映射**（可单测），vscode 读取在 `vscode/configSource.ts` | `ProviderSettings`:18 `AnchorConfig`:27 `DEFAULT_MAX_FETCH_ROUNDS`:50 `apiKeySecretName`:56 `resolveProvider`:82 `clampRounds`:107 `clampFetchLines`:118 `resolveConfig`:144 `describeConfig`:175 |
+| `packages/extension-anchor/src/vscode/configSource.ts` | **S3 落地**。设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 | `readAnchorConfig`:21 `storeApiKey`:60 `configuredProviderIds`:88 |
 | `packages/extension-anchor/src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **S8 的开始面板装配与 `showStart`** + **S9a 的 `fetchPolicyFor` 与第二道闸门**。**S3 起没有任何替身** | `registerCommands`:120 `askWhatToExplain`:754 `capture`:779（S8 新增的 `makeStartModel` / `runStartAction` / `showStart` 在文件后段） |
 | `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 三处边界守卫 + **S8 起状态词表（`STATE_WORD`）也在这里**（贴着 `WalkthroughState` 放，状态栏与开始面板共说一句话） | `WalkthroughState`:20 `STATE_WORD`:30 `HostToSidebar`:53 `SidebarToHost`:92 `HostToSelect`:104 `SelectToHost`:109 `HostToStart`:133 `StartToHost`:143 `isAnchorLike`:165 `parseSidebarMessage`:194 `parseStartMessage`:220 |
 | `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**）。S9a 起 `filePath` 允许落在**取过件的文件**里（`allowedPaths`），并在比对前把相对路径解析成绝对路径（D67） | `ValidationIssue`:52 `ExplanationOutline`:71 `ExplanationValidation`:78 `coerceEmphasis`:95 `parseMaybeJson`:105 `validateExplanation`:350 `describeIssues`:389 || `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |

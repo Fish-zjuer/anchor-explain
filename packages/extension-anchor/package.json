@@ -247,6 +247,13 @@
           "minimum": 0,
           "description": "AI 请求额外上下文的次数上限。超过之后取件请求会被拒绝，并让它基于现有信息作答。"
         },
+        "anchorExplain.maxFetchLines": {
+          "type": "number",
+          "default": 400,
+          "minimum": 1,
+          "maximum": 2000,
+          "markdownDescription": "一次最多取多少**行**。嵌入式的一个头文件动辄一两百行，默认给到 400；要多了不会被拒，只会**截到上限**（回灌的内容头部会写清真实行范围）。"
+        },
         "anchorExplain.fetchScope": {
           "type": "string",
           "enum": [

@@ -25,6 +25,7 @@ import type {
   FileSystemPort,
 } from '@anchor/core';
 import { basenameOf, countTextLines } from '../paths.ts';
+import { MAX_FETCH_LINES_CEILING } from '../orchestrator/validateContextRequest.ts';
 
 /**
  * 「讲解什么」的两种范围。它由**确认 UI**（`commands.ts` 的 QuickPick）拍板，
@@ -84,8 +85,10 @@ export function createCodeAdapter(deps: CodeAdapterDeps): CodeAdapter {
 
   return {
     type: 'code',
-    // `maxSpan` 对 `file` 的语义是**一次最多几行**（S9a 起校验层真的会读它）
-    capabilities: { contextTypes: ['file'], maxSpan: 60 },
+    // `maxSpan` 对 `file` 的语义是**一次最多几行**。这里是**适配器能服务的硬上限**，
+    // 实际边界由策略给（`anchorExplain.maxFetchLines`，默认 400，配置层再夹到同一个硬上限）——
+    // 两个数同源（都来自 validateContextRequest 的常量），不会再出现"提示词说 400、闸门按 60 拒"（D71）
+    capabilities: { contextTypes: ['file'], maxSpan: MAX_FETCH_LINES_CEILING },
 
     async capture(scope: CaptureScope = 'selection'): Promise<Anchor> {
       const picked = await take(scope);

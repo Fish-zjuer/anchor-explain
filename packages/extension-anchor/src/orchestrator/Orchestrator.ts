@@ -111,7 +111,11 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
      */
     const crossFile = (deps.fetchPolicy?.scope ?? 'off') !== 'off';
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildSystemPrompt(deps.style, { crossFile }) },
+      {
+        role: 'system',
+        // 行数上限跟着**策略**走（同一个数既管闸门也管这句提示，避免两处说法不一致 —— D71）
+        content: buildSystemPrompt(deps.style, { crossFile, maxFetchLines: deps.fetchPolicy?.maxLines }),
+      },
       {
         role: 'user',
         content: buildUserPrompt(anchor, { candidates: deps.candidateFiles, crossFile }),

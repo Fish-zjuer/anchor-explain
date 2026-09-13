@@ -308,6 +308,8 @@ let disposedThrow = false;
 
 /** D64：进度的 report 文案（链式冒烟会断言"模型在跑的时候屏幕上真有东西"） */
 const progressReports = [];
+/** 配置读取侧问过哪些键（D71 的镜像锁：与 package.json 的声明比对） */
+const readSettingKeys = new Set();
 const progressOptions = [];
 
 const vscodeStub = {
@@ -446,7 +448,14 @@ const vscodeStub = {
       return Promise.resolve(out);
     },
     // S3：命令层每次讲解都现读配置（改完设置不必重载窗口），所以这个桩是必经之路
-    getConfiguration: () => ({ get: (key) => settingsValues[key] }),
+    getConfiguration: () => ({
+      // 记下**读过哪些键**（D71 的镜像锁要用）：声明了却没人读 = 设置写了不生效，
+      // 而屏幕上没有任何迹象（`style` / `fetchScope` 就这么静默失效过）
+      get: (key) => {
+        readSettingKeys.add(key);
+        return settingsValues[key];
+      },
+    }),
     applyEdit() {
       applyEditCalls += 1;
       return Promise.resolve(true);
@@ -1059,6 +1068,22 @@ try {
 }
 check(inlineParseOk, '内联脚本在最终产物里仍能解析（解析不过 = 面板一片空白）', inlineParseErr);
 
+// ⑤b D71：单次行数上限**真的**从设置读到、并且超了截断而不是拒绝
+//    （用户实测："60 太少了，200 都不一定够" —— 所以这条既要证明能调大，也要证明超了不会白烧一轮）
+fetchMode = 'with-fetch';
+settingsValues = { ...settingsValues, maxFetchLines: 3 };
+fetchCalls.length = 0;
+await registered.get('anchorExplain.capture')?.();
+const clampTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
+const clampContent = String(clampTool?.content ?? '');
+check(!/请求被拒绝/.test(clampContent), '要的比上限多**不再整条拒绝**（那是白烧一轮取件预算）');
+check(
+  /行 1-3（共 75 行）/.test(clampContent),
+  '截到上限（设置里写 3、模型要 1-5，就真给 1-3）—— 同时证明这个设置**被读到了**，而不是只声明在 package.json 里',
+  clampContent.split(String.fromCharCode(10))[1] ?? clampContent.slice(0, 60),
+);
+settingsValues = { ...settingsValues, maxFetchLines: 400 };
+
 // ⑥ 讲解进行中再按一次：不许开出第二份（D68）。白烧一份 token 之外，屏幕上还会多出一个
 //    要等它自己跑完才消失的进度通知 —— 用户截图里那条"正在讲解: 第 2 轮取件被拒"就是它。
 //    诊断靠输出通道那两行"开始/结束"：光看屏幕分不清"通知滞留"与"两份在跑"。
@@ -1222,6 +1247,19 @@ check(
   progressReports.some((m) => m.includes('正在等它基于现有信息作答')),
   '被拒那条的尾巴也是"正在等它作答"，而不是停在"被拒"两个字上',
   progressReports.find((m) => m.includes('被拒')) ?? '(没有)',
+);
+
+// D71 镜像锁：package.json 里声明的**每一个** anchorExplain.* 设置，读取侧都必须真的读过一次
+// （声明了不读 = 用户改了设置却什么都不会发生，而屏幕上没有任何迹象 —— style / fetchScope 就这么失效过）
+const pkg = JSON.parse(readFileSync(path.join(ROOT, 'packages', 'extension-anchor', 'package.json'), 'utf8'));
+const declaredKeys = Object.keys(pkg.contributes?.configuration?.properties ?? {}).filter((k) =>
+  k.startsWith('anchorExplain.'),
+);
+const unread = declaredKeys.filter((k) => !readSettingKeys.has(k.slice('anchorExplain.'.length)));
+check(
+  declaredKeys.length > 0 && unread.length === 0,
+  `声明了 ${declaredKeys.length} 个设置，全部都被读过（漏读的：${unread.join(', ') || '无'}）`,
+  unread.join(', '),
 );
 
 // ---- 收尾 -----------------------------------------------------------------

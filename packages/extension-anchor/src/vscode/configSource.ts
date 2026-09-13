@@ -21,12 +21,22 @@ const SECTION = 'anchorExplain';
 export async function readAnchorConfig(context: vscode.ExtensionContext): Promise<AnchorConfig> {
   // 每次讲解都现读一次：改完设置不必重载窗口（这正是 ExplainProvider 保持"一个函数"的好处）
   const settings = vscode.workspace.getConfiguration(SECTION);
+  /**
+   * **package.json 里声明的每一项都要在这里真的读一次**（D71）。
+   *
+   * @anchor 漏读的后果不是报错，而是**设置写了不生效**，而且屏幕上没有任何迹象（用户会以为
+   *         "这个功能就是这样"）。已经踩过一次：`style` 与 `fetchScope` 声明了却没在这里读，
+   *         于是那两个设置一直是默认档。现在有一条镜像锁盯着（冒烟里比对 package.json 的声明）。
+   */
   const raw = {
     providers: settings.get('providers'),
     activeProvider: settings.get('activeProvider'),
     maxFetchRounds: settings.get('maxFetchRounds'),
+    maxFetchLines: settings.get('maxFetchLines'),
     preferSecretStorage: settings.get('preferSecretStorage'),
     temperature: settings.get('temperature'),
+    style: settings.get('style'),
+    fetchScope: settings.get('fetchScope'),
   };
 
   const config = resolveConfig(raw);

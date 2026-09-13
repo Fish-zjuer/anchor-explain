@@ -11,6 +11,7 @@
 
 import { DEFAULT_STYLE, coerceStyle } from './prompts/index.ts';
 import type { ExplainStyle } from './prompts/index.ts';
+import { MAX_FETCH_LINES_CEILING, DEFAULT_MAX_FETCH_LINES } from './orchestrator/validateContextRequest.ts';
 import type { FetchScope } from './orchestrator/validateContextRequest.ts';
 
 /** §6 的 `providers[id]`。`apiKey` 允许留空 —— 那表示"去 SecretStorage 取"。 */
@@ -28,6 +29,13 @@ export interface AnchorConfig {
   /** 没有可用配置时是 null（此时讲解应当明确报"还没配置"，而不是悄悄什么都不做） */
   provider: ProviderSettings | null;
   maxFetchRounds: number;
+  /**
+   * 单次取件最多几行（D71）。默认 400。
+   *
+   * @anchor 原来是适配器里写死的 60，用户在真工程上实测"60 太少了，200 都不一定够"：
+   *         一个嵌入式头文件一两百行，60 行连结构体的字段都列不全，而每轮被拒还白烧一次预算。
+   */
+  maxFetchLines: number;
   preferSecretStorage: boolean;
   /** 讲解风格（D65）。默认 `concise`（简约）：用户第一版的反馈是"不要那么多名词什么的" */
   style: ExplainStyle;
@@ -103,6 +111,17 @@ export function clampRounds(raw: unknown): number {
   return Math.min(n, MAX_FETCH_ROUNDS_CEILING);
 }
 
+/**
+ * 单次取件的行数边界。**与闸门的默认值、硬上限同一个来源**（都在 `validateContextRequest.ts`）——
+ * 这两个数一旦分成两处写，就会变成"提示词说 400、闸门按 60 拒"这种自相矛盾（D71）。
+ */
+export function clampFetchLines(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_MAX_FETCH_LINES;
+  const n = Math.trunc(raw);
+  if (n < 1) return 1;
+  return Math.min(n, MAX_FETCH_LINES_CEILING);
+}
+
 export interface RawConfigInputs {
   /** `anchorExplain.providers` 的原始值 */
   providers: unknown;
@@ -110,6 +129,8 @@ export interface RawConfigInputs {
   activeProvider: unknown;
   /** `anchorExplain.maxFetchRounds` 的原始值 */
   maxFetchRounds: unknown;
+  /** `anchorExplain.maxFetchLines` 的原始值（可空） */
+  maxFetchLines?: unknown;
   /** `anchorExplain.preferSecretStorage` 的原始值 */
   preferSecretStorage: unknown;
   /** `anchorExplain.temperature` 的原始值（可空） */
@@ -132,6 +153,7 @@ export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
     providerId,
     provider,
     maxFetchRounds: clampRounds(raw.maxFetchRounds),
+    maxFetchLines: clampFetchLines(raw.maxFetchLines),
     // §6 默认 true：只有在用户明确关掉时才回落配置里的明文 key
     preferSecretStorage: raw.preferSecretStorage !== false,
     // 风格非法值退化成默认档，不报错：设置里写错一个词不该让讲解不可用
@@ -155,7 +177,7 @@ export function describeConfig(config: AnchorConfig): string {
     return `没有可用的 provider（activeProvider = "${config.providerId}"）。请在设置里填 anchorExplain.providers。`;
   }
   const vision = config.provider.tier2Model ? `，视觉档 ${config.provider.tier2Model}` : '';
-  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次；风格 ${config.style}；取件范围 ${config.fetchScope}`;
+  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${config.style}；取件范围 ${config.fetchScope}`;
 }
 
 /**

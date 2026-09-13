@@ -12,6 +12,7 @@ import {
   DEFAULT_MAX_FETCH_ROUNDS,
   apiKeySecretName,
   checkBaseUrl,
+  clampFetchLines,
   clampRounds,
   describeConfig,
   looksFlattened,
@@ -69,6 +70,26 @@ test('resolveConfig：providers 整个没配时也是 null + 一句能照做的�
   assert.equal(cfg.maxFetchRounds, DEFAULT_MAX_FETCH_ROUNDS);
   assert.equal(cfg.preferSecretStorage, true, '§6 默认 true');
   assert.match(describeConfig(cfg), /anchorExplain\.providers/, '要说清该改哪个设置键');
+});
+
+test('clampFetchLines：默认 400（用户实测"60 太少、200 都不一定够"），上限 2000，非法值回默认', () => {
+  assert.equal(clampFetchLines(undefined), 400);
+  assert.equal(clampFetchLines('300'), 400, '类型不对就回默认（不许猜）');
+  assert.equal(clampFetchLines(150), 150);
+  assert.equal(clampFetchLines(200.9), 200);
+  assert.equal(clampFetchLines(99999), 2000, '不能让一次取件把整个大文件塞进上下文');
+  assert.equal(clampFetchLines(0), 1, '0 行没有意义，夹到 1');
+  assert.equal(clampFetchLines(-5), 1);
+});
+
+test('resolveConfig：maxFetchLines 走同一套夹取，describeConfig 里能看到它', () => {
+  const base = { providers: { default: { baseUrl: 'https://x', tier1Model: 'm' } }, activeProvider: 'default' };
+  const dflt = resolveConfig({ ...base, maxFetchRounds: 3, preferSecretStorage: true });
+  assert.equal(dflt.maxFetchLines, 400);
+  assert.match(describeConfig(dflt), /每次 ≤400 行/, '显示状态里要能核对这个数');
+
+  const custom = resolveConfig({ ...base, maxFetchRounds: 3, preferSecretStorage: true, maxFetchLines: 150 });
+  assert.equal(custom.maxFetchLines, 150);
 });
 
 test('clampRounds：填 0 合法，填 99 夹到上限，填非数字回默认', () => {

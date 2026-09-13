@@ -124,6 +124,19 @@ test('锚点给所在目录：相对路径要有基准，否则模型只能猜',
   assert.match(text, /文件路径：C:\\repo\\test\\fixtures\\main\.c/, '文件路径仍是原样，不当场改写');
 });
 
+test('D71：单次行数上限写进提示词，且与策略同一个数（不许两处各写一个）', () => {
+  const withLimit = buildSystemPrompt('concise', { crossFile: true, maxFetchLines: 400 });
+  assert.match(withLimit, /单次最多 400 行/, '要说清上限是多少');
+  assert.match(withLimit, /要多了只会给你前 400 行/, '也要说清超了会怎样（截断而不是被拒）');
+  assert.doesNotMatch(withLimit, /≤60 行/, '那句是写死的旧值，跨文件时不该再出现');
+
+  const custom = buildSystemPrompt('concise', { crossFile: true, maxFetchLines: 150 });
+  assert.match(custom, /单次最多 150 行/);
+
+  // 没给上限（单文件档）时也不许凭空捏一个数字
+  assert.doesNotMatch(buildSystemPrompt('concise'), /单次最多 \d+ 行/);
+});
+
 test('输出契约按 crossFile 换口径，且两档互斥', () => {
   assert.match(explainOutputContract(false), /必须与锚点\*\*同一个文件\*\*/);
   assert.doesNotMatch(explainOutputContract(true), /必须与锚点/);

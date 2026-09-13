@@ -595,7 +595,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       temperature: cfg.temperature,
       style: cfg.style,
       fetchPolicy: isCodeLocation(anchor.location)
-        ? fetchPolicyFor(cfg.fetchScope, anchor.location.filePath, codeAdapter.capabilities.maxSpan)
+        ? fetchPolicyFor(cfg.fetchScope, anchor.location.filePath, cfg.maxFetchLines)
         : undefined,
       candidateFiles: isCodeLocation(anchor.location)
         ? await listRelatedFiles(anchor, anchor.extractedText ?? '', {

@@ -10,7 +10,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AdapterCapabilities, Anchor, ContextRequest } from '@anchor/core';
 import { validateContextRequest } from '../src/orchestrator/validateContextRequest.ts';
-import type { ContextFetchState, FetchedSpan } from '../src/orchestrator/validateContextRequest.ts';
+import type {
+  ContextFetchPolicy,
+  ContextFetchState,
+  FetchedSpan,
+} from '../src/orchestrator/validateContextRequest.ts';
 
 const CODE_FILE = 'C:\\repo\\test\\fixtures\\main.c';
 
@@ -126,7 +130,6 @@ test('规则 3：没给 path 等于"就要锚点这个文件"，放行时补上�
 });
 
 test('规则 3 补：行上界（§3.2 原文只冻结了 path，行边界是 S3 的实现约定）', () => {
-  // 注意 span 要在单次 60 行以内，否则先撞上"一次最多取几行"那条（S9a 新规则）
   assert.equal(
     validateContextRequest(fileReq({ path: CODE_FILE, start: 20, end: 75 }), codeAnchor(), state()).accepted,
     true,
@@ -135,18 +138,60 @@ test('规则 3 补：行上界（§3.2 原文只冻结了 path，行边界是 S3
   assert.equal(
     validateContextRequest(fileReq({ path: CODE_FILE, start: 20, end: 76 }), codeAnchor(), state()).accepted,
     false,
-    '越过末行应拒绝',
+    '越过末行应拒绝（这是关于这份文件的**事实错误**，说清总行数比默默给它 20-75 更有用）',
   );
-  // S9a：单次行数上限（防"把这个文件整个给我"）
-  const tooMany = validateContextRequest(fileReq({ path: CODE_FILE, start: 1, end: 61 }), codeAnchor(), state());
-  assert.equal(tooMany.accepted, false);
-  assert.match(tooMany.accepted === false ? tooMany.reason : '', /一次最多取 60 行/);
-  // 行数取不到（null）→ 跳过**上界**检查，而不是跳过整条校验（span 仍受 60 行限制）
+  // 行数取不到（null）→ 跳过**上界**检查，而不是跳过整条校验
   assert.equal(
     validateContextRequest(fileReq({ path: CODE_FILE, start: 1, end: 50 }), codeAnchor(), state({ documentLineCount: null })).accepted,
     true,
   );
 });
+
+test('D71：单次行数超上限 → **截到上限照常给**，不再整条拒绝（被拒那一轮是白烧的）', () => {
+  const policy: ContextFetchPolicy = { scope: 'related', roots: ['C:\\repo'], maxLines: 30 };
+  // **别的文件**：行数信息我们拿不到（同步纯函数），所以它只受单次上限管 —— 要 999 行就给 30 行
+  const foreign = validateContextRequest(
+    fileReq({ path: 'ring_buffer.h', start: 10, end: 999 }),
+    codeAnchor(),
+    state({ policy }),
+  );
+  assert.equal(foreign.accepted, true, '要多了不该整条拒 —— 给得起的那一段照给');
+  assert.equal(
+    foreign.accepted === true ? foreign.request.params.end : null,
+    39,
+    '放行的请求写的是**截断后**的末行（10 + 30 - 1）：日志、去重、适配器读的区间都靠它',
+  );
+  assert.equal(
+    foreign.accepted === true ? String(foreign.request.params.path) : '',
+    'C:/repo/test/fixtures/ring_buffer.h',
+    '路径同时也被归一化了',
+  );
+
+  // 锚点文件同理（10-75 是 66 行 > 30）：也截到 10-39
+  const anchorClamp = validateContextRequest(
+    fileReq({ path: CODE_FILE, start: 10, end: 75 }),
+    codeAnchor(),
+    state({ policy }),
+  );
+  assert.equal(anchorClamp.accepted === true ? anchorClamp.request.params.end : null, 39);
+
+  // 没超上限时一个字节都不动
+  const ok = validateContextRequest(fileReq({ path: CODE_FILE, start: 10, end: 20 }), codeAnchor(), state({ policy }));
+  assert.equal(ok.accepted === true ? ok.request.params.end : null, 20);
+
+  // 去重比的是**真正读到的**区间：截断到 10-39 之后，再要同一段才算重复
+  const fetched: FetchedSpan[] = [
+    { type: 'file', path: CODE_FILE, start: 10, end: 39, content: '旧内容' },
+  ];
+  const again = validateContextRequest(
+    fileReq({ path: CODE_FILE, start: 10, end: 75 }),
+    codeAnchor(),
+    state({ policy, fetched }),
+  );
+  assert.equal(again.accepted, false, '同一段（截断后）再来一次应判重复');
+  assert.match(again.accepted === false ? again.reason : '', /已经取过了/);
+});
+
 
 test('规则 4：区间重叠不重复取，改把已有内容回灌', () => {
   const cached: FetchedSpan = { type: 'file', path: CODE_FILE, start: 1, end: 10, content: '早就取过了' };
