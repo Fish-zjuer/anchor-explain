@@ -316,6 +316,11 @@ check(
   JSON.stringify(anchor?.location?.bbox),
 );
 check(anchor?.sourceName === 'sample-30p.pdf', 'sourceName 是 basename', String(anchor?.sourceName));
+check(
+  anchor?.location?.filePath === PDF_PATH,
+  'S7：PDF 锚点带上了 filePath（不带的话线1 只说得出"第 23 页的哪一块"，说不出"哪一份"）',
+  String(anchor?.location?.filePath),
+);
 check(typeof anchor?.sourceId === 'string' && anchor.sourceId.length === 40, 'sourceId 是文档指纹（sha1 40 位）', String(anchor?.sourceId));
 check(
   executed.some((c) => c.id === 'setContext' && c.args[0] === 'anchorPdf.selectMode' && c.args[1] === false),

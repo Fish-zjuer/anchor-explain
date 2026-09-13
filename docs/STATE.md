@@ -86,8 +86,8 @@
 13. **改 `test/fixtures/main.c` 第 40-48 行** → 必须同步 `fakes/fakeEditorPort.ts` 的 `FAKE_SELECTION_TEXT`、`fakes/fakeProvider.ts` 的脚本行号，**以及 `scripts/smoke-walkthrough.mjs` 里的 `EXPLANATION_JSON`**（S3 起链路冒烟的"模型输出"是它）。`test/fakes.test.ts` 有耦合锁拦前两个。
 14. **`@types/vscode` 必须精确等于 `engines.vscode` 的**下界**（现为 `1.90.0`，不带 `^`）；`engines.vscode` 本身是范围 `^1.90.0`。** 不变式是"类型版本 = 范围下界"，不是"两个字段字符串相同"。见 `CONTRACTS.md` §9.5 / D39。
 15. **仓库内文本一律 LF**（根 `.gitattributes` 钉死）。本机 `core.autocrlf=true`。见 D40。
-16. **全仓测试数**：core 28 + ext 113 = **141**（9 个测试文件，全部 vscode-free）。
-17. **两个冒烟脚本分工不同**：`pnpm smoke`（**结构**：产物能加载、声明与注册对齐、webview 资源在不在、没有写文件的 API、**两个替身都已退出产物**）与 `pnpm smoke:chain`（**行为**：`capture` 从真选区跑到 decoration，**S3 起跑真编排循环**——只有 `globalThis.fetch` 是桩）。断言条数：**30 + 105**。两者都**不替代 F5**。
+16. **全仓测试数**：core 28 + ext 133 + pdf 12 = **173**（11 个测试文件，全部 vscode-free；线2 那个包另外还跑上游的 pdf.js 不变式守卫）。
+17. **两个冒烟脚本分工不同**：`pnpm smoke`（**结构**：产物能加载、声明与注册对齐、webview 资源在不在、没有写文件的 API、**两个替身都已退出产物**）与 `pnpm smoke:chain`（**行为**：`capture` 从真选区跑到 decoration，**S3 起跑真编排循环**——只有 `globalThis.fetch` 是桩）。断言条数：**33 + 115**，外加线2 的 `smoke:pdf` **67**。三者都**不替代 F5**。
 18. **`commands.ts` 里没有任何替身了**（S1 有两处，S2 删假选区，S3 删假 AI）。新加替身要能说清"为什么只能在最外层边界"。
 19. **侧边栏 CSS/客户端脚本是 TS 里的字符串常量**（内联进 webview，见 D42）。改 UI 必须同时想到：客户端脚本**不参与类型检查**，且 `ui/clientScript.ts` 里有一份 4 行的 `locationLabel` 副本。
 20. **`decorationPlan.ts` 会过滤掉所有非 `CodeLocation`** —— 这是"PDF 上不出现任何高亮框"的结构性保证。

@@ -61,8 +61,8 @@ pnpm watch        # 同上，watch 模式；F5 的 preLaunchTask 用的就是这
 pnpm typecheck    # tsc --noEmit，只做类型检查，不出产物
 pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 133 + pdf 12
 pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（33 项断言）
-pnpm smoke:chain  # 链路冒烟：跑一次完整讲解（真编排循环，只有 fetch 是桩）（105 项断言）
-pnpm smoke:pdf    # 线2 产物冒烟：不劫持 / 改名 / **框选整条链路**（66 项断言）
+pnpm smoke:chain  # 链路冒烟：跑一次完整讲解（真编排循环，只有 fetch 是桩）（115 项断言）
+pnpm smoke:pdf    # 线2 产物冒烟：不劫持 / 改名 / **框选整条链路**（67 项断言）
 pnpm check        # 上面最后六件事串起来：typecheck → test → build → smoke → smoke:chain → smoke:pdf
 ```
 

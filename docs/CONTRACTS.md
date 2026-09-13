@@ -700,7 +700,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
 | `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（**S2 起五个方法全部是真的**，没有覆盖层） | `createEditorPort`:25 |
 | `packages/extension-anchor/src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` | `createFileSystemPort`:12 `countLines`:38 |
-| `packages/extension-anchor/test/*.test.ts`（9 个，113 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter.test.ts`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config` | — |
+| `packages/extension-anchor/test/*.test.ts`（11 个，133 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter` | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
 | `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器 | — |
