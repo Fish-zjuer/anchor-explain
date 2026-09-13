@@ -12,6 +12,18 @@
       "outFiles": ["${workspaceFolder}/packages/*/dist/**/*.cjs"],
       "sourceMaps": true,
       "preLaunchTask": "anchor: watch"
+    },
+    {
+      "name": "Anchor：扩展开发宿主（改完先构建一次，不监视）",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/extension-anchor",
+        "${workspaceFolder}/test/fixtures"
+      ],
+      "outFiles": ["${workspaceFolder}/packages/*/dist/**/*.cjs"],
+      "sourceMaps": true,
+      "preLaunchTask": "anchor: build"
     }
   ]
 }

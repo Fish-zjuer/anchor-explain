@@ -249,6 +249,8 @@ pnpm devhost
 
 | 症状 | 原因 | 怎么办 |
 |---|---|---|
+| 按 F5 **什么都没发生**（连报错框都没有） | 有三种可能，**先按下面「F5 完全没反应的查法」走一遍** | 见下方小节 |
+| F5 之后**新窗口里没有 Anchor 图标、命令也搜不到** | 宿主读到的是**上一版产物**（构建竞态，已在 D58 修掉），或那个新窗口才是宿主而你还在看老窗口 | `pnpm build` 后重试；确认你看的是**新开的那个**窗口（标题栏带「扩展开发宿主」）。已在 D58 修掉这个竞态 |
 | 按 F5 没反应，或弹出一个"选择环境"下拉 | 当前窗口不是仓库根目录 / 这个窗口里没有 launch 配置 | 用 `code C:\Users\29927\Desktop\anchor-explain` 重开；或直接用方式 B |
 | F5 报「preLaunchTask "anchor: watch" 已终止，退出代码 1」 | 没跑 `pnpm install`（找不到 esbuild），或 `node` 不在 PATH | 在仓库根跑 `pnpm install`；看底部"终端"面板里 `anchor: watch` 的输出 |
 | 新窗口里命令面板搜不到 `Anchor:` | 扩展没被载入：产物缺失/损坏 | 在那个新窗口执行 `Developer: Show Running Extensions`，看 `anchor.anchor-explain` 在不在；不在就回仓库根重跑 `pnpm build` 再起一次 |
@@ -276,6 +278,29 @@ pnpm devhost
 关掉那个带 `[Extension Development Host]` 的窗口即可，它不影响你日常的 VS Code。
 `main.c` **一个字节都没被改过** —— 高亮只是 decoration（`pnpm smoke:chain` 会断言这一点）。
 
+### F5 完全没反应的查法（按顺序做，三步就够）
+
+**第一步：换一条不依赖"后台任务就绪信号"的启动方式。**
+命令面板（`Ctrl+Shift+P`）→ 输入 `调试: 选择并启动调试`（英文 `Debug: Select and Start Debugging`）
+→ 选 **「Anchor：扩展开发宿主（改完先构建一次，不监视）」**。
+这条配置的 `preLaunchTask` 是普通构建任务，**不经过 watch 的就绪信号** ——
+它能把"F5 的键或后台任务有问题"与"扩展本身有问题"分开。
+另外它绕开了键位：**F5 被别的扩展抢了、或焦点在某个 webview 里，按 F5 也可能完全没反应。**
+
+**第二步：看新窗口，不是老窗口。**
+启动成功后会出现一个**新窗口**，标题栏带 `[扩展开发宿主]`。任务栏里找一下 ——
+它有时开在后台。要看的是**那个**窗口的活动栏。
+
+**第三步：区分"没启动"和"启动了但没载入扩展"。**
+在新窗口里按 `Ctrl+Shift+P` 搜 `Anchor`：
+- **搜得到 `Anchor:` 命令** → 扩展载入了。此时没有活动栏图标 = 去看第五步的图标那一行
+- **搜不到** → 扩展没载入。在新窗口执行 `Developer: Show Running Extensions`，
+  看 `anchor.anchor-explain` 在不在；不在就回仓库根 `pnpm build`，再用第一步的方式起一次
+
+> **还有两个常见原因**：① 已经有一个调试会话"卡"着（比如别的扩展起的）——
+> 命令面板执行 `调试: 停止调试` 再试；② 在**仓库根**这个窗口操作，
+> 而不是在 `test/fixtures` 或别的地方（`.vscode/launch.json` 只在仓库根）。
+
 ## 怎么跑（日常）
 
 ```bash
@@ -284,7 +309,7 @@ pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（会先 build，见上）
 pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 133 条 + 线2 12 条
+pnpm test             # 在根执行：core 28 条 + 本包 161 条 + 线2 12 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
 

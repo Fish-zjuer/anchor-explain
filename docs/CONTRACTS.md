@@ -819,6 +819,7 @@ function createContextRequestLogger(opts?: {
 | 依赖处理 | 一律 bundle 进产物，因此 `.vscodeignore` 可整体排除 `node_modules` |
 | 共用配置 | 各包 `tsconfig.json` 一律 `extends` 根 `tsconfig.base.json` |
 | 新增扩展 | 往 `esbuild.mjs` 的 `TARGETS` 加一行，不另写打包脚本 |
+| watch 的就绪信号 | `esbuild.mjs` 在 watch 模式下打 `[anchor] build started` / `[anchor] build finished` 两条**聚合**标记，`.vscode/tasks.json` 的 `background` 匹配器认它们（D58）。**必须聚合**：一看到 endsPattern，VS Code 就会启动调试宿主 —— 每个 target 各报一次的话，线2 先好而线1 的 4.2MB 还在写，宿主会读到没写完的产物。**出错也要报 finished**，否则 VS Code 永远等不到就绪（症状是"按 F5 完全没反应"） |
 
 **两个目标（S4 起）**：
 

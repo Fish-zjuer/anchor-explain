@@ -27,12 +27,33 @@ const TARGETS = [
   },
 ];
 
-/** 让 .vscode/tasks.json 的 problemMatcher 有稳定的起止标记，不依赖 esbuild 自身的日志格式 */
+/**
+ * 让 `.vscode/tasks.json` 的 problemMatcher 有稳定的起止标记，不依赖 esbuild 自身的日志格式。
+ *
+ * @anchor 标记必须**聚合到"这一批构建全做完"**，不能每个 target 各报一次（S8 修）：
+ *         VS Code 的 `background` 匹配器一看到 endsPattern 就认为任务就绪、随即启动调试宿主。
+ *         而两个目标里线2 先好（307KB），线1 的 4.2MB 还在写 —— 于是宿主可能读到
+ *         **没写完或过期的 dist/extension.cjs**，表现是"宿主窗口起来了，但活动栏里没有
+ *         那个图标、命令也搜不到"，看起来就像"F5 没反应"。
+ *         所以：第一个目标开始时报 started，**全部**结束后才报 finished。
+ */
+const inFlight = new Set();
+
 const watchMarkers = (name) => ({
   name: 'anchor-watch-markers',
   setup(b) {
-    b.onStart(() => console.log(`[anchor] build started: ${name}`));
-    b.onEnd(() => console.log(`[anchor] build finished: ${name}`));
+    b.onStart(() => {
+      if (inFlight.size === 0) console.log('[anchor] build started');
+      inFlight.add(name);
+    });
+    b.onEnd((result) => {
+      inFlight.delete(name);
+      if (inFlight.size > 0) return;
+      // **出错也要报 finished**：否则 VS Code 永远等不到就绪信号，
+      // 症状是"按 F5 完全没反应"（连报错框都没有）。错误数写进同一条日志里，终端上照样看得见。
+      const errors = result?.errors?.length ?? 0;
+      console.log(`[anchor] build finished${errors > 0 ? `（${errors} 个错误）` : ''}`);
+    });
   },
 });
 
