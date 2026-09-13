@@ -43,6 +43,7 @@ interface FakeNode {
   appendChild(child: FakeNode): void;
   setAttribute(key: string, value: string): void;
   removeChild(child: FakeNode): void;
+  insertBefore(child: FakeNode): void;
   addEventListener(): void;
   get text(): string;
 }
@@ -66,6 +67,10 @@ function fakeNode(tag: string): FakeNode {
     },
     removeChild(child) {
       node.children = node.children.filter((c) => c !== child);
+      node.firstChild = node.children[0] ?? null;
+    },
+    insertBefore(child) {
+      node.children.unshift(child);
       node.firstChild = node.children[0] ?? null;
     },
     addEventListener() {},
@@ -206,4 +211,90 @@ test('取件日志显示"末两段路径 + 行范围"，且新一轮会清空（
 
   client.send({ type: 'tooltrace:reset' });
   assert.match(client.root.text, /没有请求额外上下文/, '新一轮开始时日志必须清空');
+});
+
+// ── 三、用户的真实数据形状（D70）：反斜杠绝对路径 + 多个外部文件 + 多条取件记录 ──
+//
+// 这一段是照着实测现场抄的：讲的是 `_build_tmp` 里那份 main.c，子高亮落在同目录树的
+// protocol.h / esc.h 里，而这些路径是模型**用反斜杠写**的（`c:\Users\...`，小写盘符）。
+// 面板当时"卡死"，先在夹具里把它跑一遍 —— 客户端脚本抛异常时，表现是**整块不再更新**
+// （连报错都不会出现在屏幕上），所以必须在这里拦住。
+
+const REAL_MAIN = 'c:\\Users\\29927\\Desktop\\DeepSeek_Harness_Code_V1.0\\_build_tmp\\fw\\App\\Src\\main.c';
+const REAL_PROTOCOL = 'c:\\Users\\29927\\Desktop\\DeepSeek_Harness_Code_V1.0\\_build_tmp\\fw\\App\\Inc\\protocol.h';
+const REAL_ESC = 'c:\\Users\\29927\\Desktop\\DeepSeek_Harness_Code_V1.0\\_build_tmp\\fw\\App\\Inc\\esc.h';
+
+function realWorldSession(): unknown {
+  return {
+    type: 'session:update',
+    result: {
+      title: 'main.c：把主控串口命令变成 12 路双向 DShot 的中枢',
+      summary: '总述',
+      confidence: 0.78,
+      steps: [
+        {
+          location: { filePath: REAL_MAIN, lineStart: 227, lineEnd: 263 },
+          title: '上电顺序：时钟—外设—接上命令回调—起 0 帧',
+          text: '正文',
+          highlights: [
+            { location: { filePath: REAL_PROTOCOL, lineStart: 16, lineEnd: 16 }, narration: 'protocol_feed 就是被挂上的回调', emphasis: 'definition' },
+            { location: { filePath: REAL_ESC, lineStart: 11, lineEnd: 14 }, narration: 'esc_init 语义', emphasis: 'definition' },
+          ],
+        },
+        {
+          location: { filePath: REAL_MAIN, lineStart: 265, lineEnd: 271 },
+          title: '按模式分叉',
+          text: '正文',
+        },
+      ],
+    },
+    index: 0,
+    state: 'playing',
+    pointIndex: 0,
+    anchorPath: REAL_MAIN,
+  };
+}
+
+test('实测数据形状：反斜杠路径 + 两个外部文件 + 两条取件记录，渲染不抛异常', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(realWorldSession());
+  client.send({ type: 'tooltrace:append', entry: {
+    at: 0, round: 1, accepted: false, rejectReason: '一次最多取 60 行，这次要了 80 行',
+    request: { type: 'file', params: { path: REAL_ESC, start: 1, end: 80 }, reason: 'x' },
+  } });
+  client.send({ type: 'tooltrace:append', entry: {
+    at: 0, round: 2, accepted: true, resultChars: 1296,
+    request: { type: 'file', params: { path: 'c:/Users/29927/Desktop/DeepSeek_Harness_Code_V1.0/_build_tmp/fw/App/Inc/esc.h', start: 1, end: 60 }, reason: 'x' },
+  } });
+
+  const text = client.root.text;
+  // 反斜杠路径也要能切成**末两段**（之前只按正斜杠切，于是整条绝对路径都印在标签上）
+  assert.match(text, /protocol\.h 第 16 行/, '反斜杠写的路径也要切得开（标签只印文件名）');
+  assert.match(text, /esc\.h 第 11-14 行/);
+  assert.match(text, /第 227-263 行/, '锚点文件里的步骤不带文件名前缀');
+  assert.doesNotMatch(text, /_build_tmp\fw\App\Inc\protocol\.h 第/, '不许把整条绝对路径印进标签');
+  assert.match(text, /Inc\/esc\.h 1-60 行 接受 · 1296 字/, '取件日志同样按末两段显示');
+});
+
+test('D70：内联脚本里零反斜杠 —— 这条不变量比"出一次错修一次"划算', () => {
+  // 这个文件是一整个模板字符串：反斜杠每次都要写两遍才对，写错一次就是
+  // 语法错误（整块白，屏幕上没报错）或静默切不开路径（整条绝对路径印进标签）。
+  // 已经栽过两次，所以干脆不许出现 —— 需要反斜杠时用 String.fromCharCode(92) 或字符类。
+  assert.ok(
+    !SIDEBAR_CLIENT_SCRIPT.includes(String.fromCharCode(92)),
+    '内联脚本里出现了反斜杠：请用 String.fromCharCode(92) 或字符类（见 pathParts 的注释）',
+  );
+});
+
+test('D70：面板脚本抛异常时，错因要出现在面板里（而不是"卡死"）', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+  // 宿主发来的形状不对（比如 result 为空）—— 渲染时必然抛
+  client.send({ type: 'session:update', result: null, index: 0, state: 'playing', pointIndex: -1, anchorPath: null });
+
+  assert.match(
+    client.root.text,
+    /面板脚本出错：/,
+    '异常必须变成面板上看得见的一行 —— 否则用户只看到"卡死"，我们两头都拿不到证据',
+  );
 });

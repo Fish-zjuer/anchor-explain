@@ -491,7 +491,12 @@ const linesOf = (type) =>
  * `player.render()` 是异步的（要先确保目标文件在编辑器里打开），
  * 所以命令回调返回之后还要放一轮事件循环，装饰才落到编辑器上。
  */
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+// 让异步渲染落定。播放器的 render 是**异步**的（打开文件 + 滚过去 + 画框），
+// 而且从 D70 起**同一时刻只跑一次**（堆积时只保留最后一拍）—— 于是"按几次 next 再断言"
+// 中间要多让几跳。这里固定让两轮宏任务过去，断言才不会跟渲染抢跑。
+const flush = async () => {
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+};
 
 // ---- 跑 -------------------------------------------------------------------
 console.log(`[chain] 产物：${path.relative(ROOT, BUNDLE)}`);
@@ -679,16 +684,37 @@ check(
   linesOf(typeByBorderColor('editor.findMatchBorder')).join() || '(空)',
 );
 
-// 一路走到最后一拍，再按一次收尾（拍数 = 1+2 + 1+2 + 1+2 = 9）
-for (let i = 0; i < 4; i += 1) registered.get('anchorExplain.next')?.();
+// 走到第 3 步的**第 1 个点**（拍数 = 1+2 + 1+2 + 1+2 = 9；这一拍是 caveat 46）
+for (let i = 0; i < 3; i += 1) registered.get('anchorExplain.next')?.();
+await flush();
+const caveatBeat = webviews[0].webview.posted.at(-1);
+check(
+  caveatBeat?.index === 2 && caveatBeat?.pointIndex === 0,
+  '走到第 3 步的第 1 个点（caveat 那一拍）',
+  `index=${caveatBeat?.index} pointIndex=${caveatBeat?.pointIndex}`,
+);
+check(
+  linesOf(typeByBorderColor('editorWarning.foreground')).join() === '46',
+  'caveat 档（虚线警示）点亮在第 46 行',
+  linesOf(typeByBorderColor('editorWarning.foreground')).join() || '(空)',
+);
+
+// 再走一拍：点亮的换成下一个点，**上一个点的框必须同时清掉**（"一次只点亮一个点"）
+// 这一条只有等渲染真的落定才测得出来 —— 渲染是异步的，而 D70 起同一时刻只跑一次（堆积只留最后一拍）
+registered.get('anchorExplain.next')?.();
 await flush();
 const lastBeat = webviews[0].webview.posted.at(-1);
 check(lastBeat?.index === 2 && lastBeat?.pointIndex === 1, '走到第 3 步的第 2 个点 = 最后一拍', `index=${lastBeat?.index} pointIndex=${lastBeat?.pointIndex}`);
 check(lastBeat?.state === 'running', '还在最后一拍时状态不是 done（还能再按一次）');
 check(
-  linesOf(typeByBorderColor('editorWarning.foreground')).join() === '46',
-  'caveat 档（虚线警示）点亮在第 46 行',
+  linesOf(typeByBorderColor('editorWarning.foreground')).join() === '',
+  '换点之后上一拍的 caveat 框已经清掉（不是两拍的框叠在一起）',
   linesOf(typeByBorderColor('editorWarning.foreground')).join() || '(空)',
+);
+check(
+  linesOf(typeByBackground('editor.wordHighlightBackground')).join() === '47',
+  '这一拍点亮的是第 47 行（context 档）',
+  linesOf(typeByBackground('editor.wordHighlightBackground')).join() || '(空)',
 );
 
 registered.get('anchorExplain.next')?.();

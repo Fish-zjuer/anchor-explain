@@ -263,4 +263,14 @@ body {
 }
 
 .empty { color: var(--vscode-descriptionForeground); }
+
+/* 面板脚本出错时那一行（D70）：不能只留在控制台 —— 用户看到的是"卡死" */
+.client-error {
+  margin: 0 0 var(--anchor-gap) 0;
+  padding: 6px 8px;
+  border-left: 3px solid var(--vscode-editorError-foreground, #f14c4c);
+  color: var(--vscode-editorError-foreground, #f14c4c);
+  font-size: 0.85em;
+  word-break: break-all;
+}
 `;

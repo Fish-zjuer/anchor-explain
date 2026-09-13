@@ -38,28 +38,36 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   var anchorPath = null;
 
   /**
-   * 与 core 的 samePath 同一个立场：忽略大小写与斜杠方向（webview 里 import 不到 core）。
+   * 路径切分：反斜杠与正斜杠**都算分隔符**，并丢掉空段。
    *
-   * 这份脚本是一整个模板字符串：源码里的反斜杠要写两个，才等于运行时的一个。
-   * 少写一个会被吃掉，运行时就成了 replace(//+$/, "") —— 那不是"匹配错了"，
-   * 是**语法错误 → 整块面板一片空白**（D69 实测踩到，现在有解析测试钉住）。
-   * 所以这一段**一个反斜杠都不写**：去尾斜杠用字符类，反斜杠本身用 fromCharCode(92)。
+   * 这份脚本是一整个模板字符串 —— 源码里的反斜杠要写两个，才等于运行时的一个。
+   * 若写成只认正斜杠的字符类，运行时其实只按正斜杠切，于是 Windows 路径（模型常写成 c: 开头）
+   * 整条都切不开，把绝对路径全印进了标签（D70 实测）；再少写一个甚至直接变成语法错误，
+   * 整块面板一片空白且屏幕上没有任何报错（D69 实测）。所以这里**一个反斜杠都不写**，
+   * 统一走 fromCharCode(92)，并用测试钉住"两种斜杠都算分隔符"。
    */
-  function normLoc(p) {
+  function pathParts(p) {
     var bs = String.fromCharCode(92);
-    return String(p).split(bs).join("/").replace(/[/]+$/, "").toLowerCase();
+    var raw = String(p).split(bs).join("/").split("/");
+    var out = [];
+    for (var i = 0; i < raw.length; i++) if (raw[i] !== "") out.push(raw[i]);
+    return out;
   }
 
-  /** 路径末段（文件名）。标签窄，标出文件名就够指认了。 */
+  /** 与 core 的 samePath 同一个立场：忽略大小写与斜杠方向（webview 里 import 不到 core）。 */
+  function normLoc(p) {
+    return pathParts(p).join("/").toLowerCase();
+  }
+
+  /** 路径末段（文件名）。 */
   function shortName(p) {
-    var parts = String(p).split(/[\\/]/);
+    var parts = pathParts(p);
     return parts[parts.length - 1];
   }
 
-  /** 路径末两段（Inc/esc.h）。取件日志用它：那里要能分清两个同名文件（D68）。 */
+  /** 路径末两段（Inc/esc.h）。标签与取件日志都用它：两个同名文件正是这里会分不清（D68/D70）。 */
   function shortTail(p) {
-    var parts = String(p).split(/[\\/]/);
-    return parts.slice(-2).join("/");
+    return pathParts(p).slice(-2).join("/");
   }
 
   /**
@@ -280,7 +288,29 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     else if (act === "goto") vscode.postMessage({ type: "ui:goto", index: index });
   });
 
+  /**
+   * 出错了要让**屏幕上看得见**（D70）。这一块的死法太安静：脚本一抛异常，
+   * 表现是"面板不再更新、按钮没反应、屏幕上什么错都不显示"（异常发生在 webview 里，
+   * 扩展的日志与输出通道都收不到）—— 用户只能看到"卡死"。
+   * 兜住它，并把第一行错因写进面板：一句话就能定位，比 DevTools 快。
+   */
+  function showClientError(err) {
+    var root = document.getElementById("root");
+    if (!root) return;
+    var text = err && err.message ? err.message : String(err);
+    var box = mk("div", "client-error", "面板脚本出错：" + text);
+    root.insertBefore(box, root.firstChild);
+  }
+
   window.addEventListener("message", function (ev) {
+    try {
+      handleMessage(ev);
+    } catch (err) {
+      showClientError(err);
+    }
+  });
+
+  function handleMessage(ev) {
     var msg = ev.data;
     if (!msg || typeof msg.type !== "string") return;
     if (msg.type === "session:update") {
@@ -309,7 +339,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       trace.push(msg.entry);
       render();
     }
-  });
+  }
 
   // ---- 键盘转发（D47）------------------------------------------------------
   // webview 里的按键**不会冒泡到工作台**，所以一旦焦点落在面板上，

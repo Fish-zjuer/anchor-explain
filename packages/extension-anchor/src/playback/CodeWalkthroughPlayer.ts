@@ -84,6 +84,18 @@ export class CodeWalkthroughPlayer {
   readonly #types: Record<DecorationKey, vscode.TextEditorDecorationType>;
   /** 画过框的编辑器：清框时得挨个清，否则上一个文件的框会留在屏幕上 */
   readonly #decorated = new Set<vscode.TextEditor>();
+  /**
+   * 本会话已开出来的编辑器（按文件记）。
+   *
+   * @anchor 为什么要记：跨文件讲解时焦点文件会来回跳，而 `#ensureEditor` **每一拍都要问一次**。
+   *         没有这张表时每一拍都会 `showTextDocument` —— 同一个文件被反复"打开"，
+   *         预览标签反复重建，屏幕上就是持续的抖动（D70 实测里"跳转之后就像卡住了"的观感来源之一）。
+   *         记下来之后：**同一个文件且它已经是活动编辑器 → 什么都不做**。
+   */
+  readonly #editors = new Map<string, vscode.TextEditor>();
+  /** 正在渲染的那一拍。用来**合并**堆积的请求，而不是并发跑（见 `render`） */
+  #rendering = false;
+  #pending: WalkthroughSnapshot | undefined;
 
   constructor() {
     const emphasis = emphasisStyles();
@@ -96,8 +108,30 @@ export class CodeWalkthroughPlayer {
     };
   }
 
-  /** 渲染当前拍的框，并把视图滚到它上面。 */
+  /**
+   * 渲染当前拍的框，并把视图滚到它上面。
+   *
+   * **同一时刻只跑一次**（D70）：每一拍都可能要"打开一个文件 + 滚过去"，那比画框慢得多；
+   * 播放（或用户连按 `Alt+]`）比渲染快时，若并发地堆起来，屏幕上就是编辑器反复跳动、
+   * 面板迟迟不更新 —— 看起来就是卡死。堆积时**只保留最后一拍**（最新的才是用户要看的）。
+   */
   async render(snapshot: WalkthroughSnapshot): Promise<void> {
+    if (this.#rendering) {
+      this.#pending = snapshot;
+      return;
+    }
+    this.#rendering = true;
+    try {
+      await this.#renderOnce(snapshot);
+    } finally {
+      this.#rendering = false;
+      const next = this.#pending;
+      this.#pending = undefined;
+      if (next) void this.render(next);
+    }
+  }
+
+  async #renderOnce(snapshot: WalkthroughSnapshot): Promise<void> {
     const specs = planForBeat(snapshot.step, snapshot.pointIndex);
     this.clear();
 
@@ -174,17 +208,29 @@ export class CodeWalkthroughPlayer {
 
   dispose(): void {
     this.clear();
+    this.#editors.clear();
+    this.#pending = undefined;
     for (const key of ALL_KEYS) this.#types[key].dispose();
   }
 
   async #ensureEditor(filePath: string): Promise<vscode.TextEditor | undefined> {
     const want = normPath(filePath);
+
+    // 本会话已经为它开过、它还活着、而且它已经是活动编辑器 → 什么都不用做。
+    // 每一拍都调一次 showTextDocument 会让预览标签反复重建（跨文件讲解时焦点文件来回跳，
+    // 屏幕上就是持续抖动 —— D70 实测里"跳转之后像卡住了"的观感来源之一）
+    const known = this.#editors.get(want);
+    if (known && !known.document.isClosed && vscode.window.activeTextEditor === known) return known;
+
     const visible = vscode.window.visibleTextEditors.find((e) => normPath(e.document.uri.fsPath) === want);
-    if (visible) return visible;
+    if (visible) {
+      this.#editors.set(want, visible);
+      return visible;
+    }
 
     try {
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
-      return await vscode.window.showTextDocument(doc, {
+      const editor = await vscode.window.showTextDocument(doc, {
         // 侧边栏保有焦点，用户读完还能直接按键继续，不必先点回编辑器
         preserveFocus: true,
         // **预览标签**（D69/S9c 的落地约束）：跨文件讲解会经过好几个文件，
@@ -193,6 +239,8 @@ export class CodeWalkthroughPlayer {
         preview: true,
         viewColumn: vscode.ViewColumn.One,
       });
+      this.#editors.set(want, editor);
+      return editor;
     } catch {
       return undefined;
     }
