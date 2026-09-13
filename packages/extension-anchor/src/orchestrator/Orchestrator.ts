@@ -25,6 +25,7 @@ import type {
   ExplanationResult,
 } from '@anchor/core';
 import { buildRepairPrompt, buildSystemPrompt, buildUserPrompt } from '../prompts/index.ts';
+import type { ExplainStyle } from '../prompts/index.ts';
 import { describeIssues, validateExplanation } from './validateExplanation.ts';
 import type { ExplanationOutline } from './validateExplanation.ts';
 import type { ModelChoice, ModelRouteInput } from './ModelRouter.ts';
@@ -49,6 +50,8 @@ export interface OrchestratorDeps {
   makeOutline: (anchor: Anchor) => Promise<ExplanationOutline>;
   maxFetchRounds: number;
   temperature?: number;
+  /** 讲解风格（D65）。缺省 = `prompts` 的默认档 */
+  style?: ExplainStyle;
   logger?: ContextRequestLogger;
   /** 注入时钟，便于测试断言 `durationMs` */
   now?: () => number;
@@ -86,7 +89,7 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
   return async (anchor: Anchor): Promise<ExplanationResult> => {
     const outline = await deps.makeOutline(anchor);
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildSystemPrompt() },
+      { role: 'system', content: buildSystemPrompt(deps.style) },
       { role: 'user', content: buildUserPrompt(anchor) },
     ];
 

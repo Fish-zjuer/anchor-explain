@@ -9,6 +9,9 @@
  * 本文件**禁止 import 'vscode'**（D19）。
  */
 
+import { DEFAULT_STYLE, coerceStyle } from './prompts/index.ts';
+import type { ExplainStyle } from './prompts/index.ts';
+
 /** §6 的 `providers[id]`。`apiKey` 允许留空 —— 那表示"去 SecretStorage 取"。 */
 export interface ProviderSettings {
   baseUrl: string;
@@ -25,6 +28,8 @@ export interface AnchorConfig {
   provider: ProviderSettings | null;
   maxFetchRounds: number;
   preferSecretStorage: boolean;
+  /** 讲解风格（D65）。默认 `concise`（简约）：用户第一版的反馈是"不要那么多名词什么的" */
+  style: ExplainStyle;
   temperature?: number;
 }
 
@@ -103,6 +108,8 @@ export interface RawConfigInputs {
   preferSecretStorage: unknown;
   /** `anchorExplain.temperature` 的原始值（可空） */
   temperature?: unknown;
+  /** `anchorExplain.style` 的原始值（可空） */
+  style?: unknown;
 }
 
 export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
@@ -119,6 +126,8 @@ export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
     maxFetchRounds: clampRounds(raw.maxFetchRounds),
     // §6 默认 true：只有在用户明确关掉时才回落配置里的明文 key
     preferSecretStorage: raw.preferSecretStorage !== false,
+    // 风格非法值退化成默认档，不报错：设置里写错一个词不该让讲解不可用
+    style: coerceStyle(raw.style),
   };
   if (temperature !== undefined) config.temperature = temperature;
   return config;
@@ -130,7 +139,7 @@ export function describeConfig(config: AnchorConfig): string {
     return `没有可用的 provider（activeProvider = "${config.providerId}"）。请在设置里填 anchorExplain.providers。`;
   }
   const vision = config.provider.tier2Model ? `，视觉档 ${config.provider.tier2Model}` : '';
-  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次`;
+  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次；风格 ${config.style}`;
 }
 
 /**

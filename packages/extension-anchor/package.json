@@ -247,6 +247,19 @@
           "minimum": 0,
           "description": "AI 请求额外上下文的次数上限。超过之后取件请求会被拒绝，并让它基于现有信息作答。"
         },
+        "anchorExplain.style": {
+          "type": "string",
+          "enum": [
+            "concise",
+            "rigorous"
+          ],
+          "default": "concise",
+          "enumDescriptions": [
+            "简约：说人话，能用大白话讲清的就不用术语。一句话一个动作。",
+            "严谨：术语可以用，但每个都要落到这段代码的具体位置上，并说清依据（不变量、边界、返回值）。"
+          ],
+          "markdownDescription": "讲解风格（两档都要求**按数据怎么流**组织步骤，而不是从上到下一行行念）。"
+        },
         "anchorExplain.preferSecretStorage": {
           "type": "boolean",
           "default": true,

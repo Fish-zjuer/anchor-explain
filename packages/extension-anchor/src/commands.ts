@@ -504,6 +504,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       makeOutline,
       maxFetchRounds: cfg.maxFetchRounds,
       temperature: cfg.temperature,
+      style: cfg.style,
       logger: loggerOf(),
     });
   }

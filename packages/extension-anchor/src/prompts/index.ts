@@ -20,6 +20,30 @@ import type { Anchor } from '@anchor/core';
 import { formatLineRange, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
 import { EXPLANATION_JSON_SHAPE, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
 
+/**
+ * 讲解风格（D65）。**两档，用户可选**（`anchorExplain.style`）：
+ *
+ * - `concise`（简约，默认）：说人话，能用大白话就不用术语 —— 用户的原话是
+ *   "不要那么多名词什么的，要不还不如读代码本身了"。
+ * - `rigorous`（严谨）：术语可以用，但每个术语都要落到这段代码的具体位置上，并说清依据
+ *   （不变量、边界、返回值）。
+ *
+ * **两档共享的那一条更重要**：步骤按**数据怎么流**来切，不按从上到下的行序 ——
+ * 用户的原话是"太从上到下了，我希望能表达出数据流转的感觉"。
+ */
+export type ExplainStyle = 'concise' | 'rigorous';
+
+export const DEFAULT_STYLE: ExplainStyle = 'concise';
+
+export function coerceStyle(raw: unknown): ExplainStyle {
+  return raw === 'rigorous' ? 'rigorous' : DEFAULT_STYLE;
+}
+
+/** 风格的人话名。设置面板、`显示状态` 与测试共用。 */
+export function describeStyle(style: ExplainStyle): string {
+  return style === 'rigorous' ? '严谨（术语可用，但要说清依据）' : '简约（说人话，少用术语）';
+}
+
 /** 输出契约的原样描述。system 与 repair 两处都引用它，保证口径一致。 */
 export function explainOutputContract(): string {
   return [
@@ -37,15 +61,30 @@ export function explainOutputContract(): string {
   ].join('\n');
 }
 
-export function buildSystemPrompt(): string {
+export function buildSystemPrompt(style: ExplainStyle = DEFAULT_STYLE): string {
   return [
     '你是一个代码与技术文档讲解助手。用户会给你一个"锚点"：文档里的一段位置，可能还带着那段的原文。',
     '',
     '你的任务是把这段内容讲清楚，并且**把讲解切成有序的步骤**，每一步对应文档里的一处具体位置。',
-    '步骤之间要有推进关系（先判断再取值、先定义再使用），不要只是把同一段话拆成几块。',
+    '',
+    '## 步骤怎么切：按数据怎么流，不要按行序',
+    '',
+    '**这是最重要的一条。** 不要从上到下一行一行地讲 —— 那等于把代码念一遍，用户不如自己读。',
+    '请按**数据在这段代码里的流动**来组织步骤，每一步回答三件事：',
+    '- 数据**从哪来**（谁写进去的、入参、上一个结构）',
+    '- 在这里**被怎么改**（取值、计算、转移、判掉）',
+    '- 出去**给谁用**（返回给谁、留给后面哪一步、影响什么状态）',
+    '',
+    '于是步骤的顺序是**数据走一圈的顺序**，可能与行号顺序不同 —— 这是允许的，',
+    '但每一步的 `location` 仍要指向文档里真实的行/页。',
+    '如果这段的逻辑就是"顺序执行"，那就把每个动作说成"数据经过它之后变成了什么"。',
     '',
     '每一步还可以带若干 `highlights`（子高亮），对应这一步内部的一个更小的逻辑点。',
     '粒度参考：一步 ≈ 3-8 行的一个完整动作；一个子高亮 ≈ 1-2 行的一个关键点。',
+    '',
+    '## 说话的方式',
+    '',
+    styleSection(style),
     '',
     '## 什么时候该取件',
     '',
@@ -60,6 +99,38 @@ export function buildSystemPrompt(): string {
     '## 输出',
     '',
     explainOutputContract(),
+  ].join('\n');
+}
+
+/**
+ * 两档风格的具体指令。**都要被"少讲废话"这条约束管住**（D65）——
+ * 用户对第一版的原话是"不要那么多名词什么的，要不还不如读代码本身了"。
+ */
+function styleSection(style: ExplainStyle): string {
+  const shared = [
+    '- `summary` 一句话说清**这块在干什么、数据从哪到哪**，不要写成摘要式套话。',
+    '- 不要写"这段代码实现了一个……它的作用是……"这种开场白，直接讲事情。',
+    '- 不要复述代码已经写出来的东西（"这里调用了一个函数"）；讲的是它**为什么**在这儿、**带来什么后果**。',
+  ];
+
+  if (style === 'rigorous') {
+    return [
+      '**严谨档**：术语可以用，但每个术语都必须落到这段代码里的具体位置或字段上，并说清依据。',
+      '',
+      ...shared,
+      '- 讲判断/计算时，说清**不变量、边界与返回值**（空、满、溢出、越界、-1 这类哨兵值）。',
+      '- 讲状态变更时，说清**改了哪个字段、它之前/之后是什么含义**。',
+      '- 允许一步更小（1-3 行一点），宁可多一步，不要含糊。',
+    ].join('\n');
+  }
+
+  return [
+    '**简约档**：说人话 —— 能用大白话讲清的，就不要用术语。',
+    '',
+    ...shared,
+    '- 术语只在**它就是这段代码里的标识符**时才用（结构体名、函数名、字段名），不要引入代码里没出现过的名词。',
+    '- 一句话讲完一个动作。写不出来就说明还没想清楚，不要用名词堆砌来充数。',
+    '- 一句话超过 40 个字就该拆开重写。',
   ].join('\n');
 }
 

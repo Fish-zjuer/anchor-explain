@@ -65,6 +65,20 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 你也可以把 `apiKey` 直接写在 `providers.default` 里 —— 那是明文，仅当你确实想"一个文件管全部"时用。
 **`Anchor: 配置模型端点` 永远不会碰 `apiKey`**（密钥只有 `设置 API Key` 那一条路）。
 
+### 讲解风格（§6，S8 起可调）
+
+| 值 | 什么意思 |
+|---|---|
+| `concise`（默认） | **简约**：说人话，能用大白话讲清就不用术语；一句话一个动作 |
+| `rigorous` | **严谨**：术语可以用，但每个都要落到这段代码的具体位置上，并说清依据（不变量、边界、返回值） |
+
+```jsonc
+{ "anchorExplain.style": "rigorous" }
+```
+
+**两档都要求"按数据怎么流"组织步骤**（数据从哪来 → 在这里怎么改 → 出去给谁用），
+而不是从上到下一行行讲。改完不用重载窗口，下一次讲解就生效（`显示状态` 会报当前档位）。
+
 配好之后用 `Anchor: 显示状态` 核对一句：
 `模型：default：deepseek-chat @ https://api.deepseek.com/v1；最多取件 3 次`。
 
@@ -352,7 +366,7 @@ pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（会先 build，见上）
 pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 171 条 + 线2 12 条
+pnpm test             # 在根执行：core 28 条 + 本包 182 条 + 线2 12 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
 
@@ -364,7 +378,7 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（171 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
+| 单测（182 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
 | 产物冒烟（73 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示 → 「配置模型端点」「打开设置」都真的落到命令上） |
 | 链路冒烟（118 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
 

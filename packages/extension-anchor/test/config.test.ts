@@ -197,3 +197,26 @@ test('promoteFlattenedProviders：整理成正确形状，且**已经写对的�
 
   assert.deepEqual(promoteFlattenedProviders('坏东西', 'default'), {});
 });
+
+test('style：认两档、非法值退化成默认（写错一个词不该让讲解不可用）', () => {
+  const base = { providers: {}, activeProvider: 'default', maxFetchRounds: 3, preferSecretStorage: true };
+  assert.equal(resolveConfig({ ...base, style: 'rigorous' }).style, 'rigorous');
+  assert.equal(resolveConfig({ ...base, style: 'concise' }).style, 'concise');
+  assert.equal(resolveConfig(base).style, 'concise', '不配就是简约（D65 的默认档）');
+  for (const bad of ['严谨', 'Concise ', 42, null]) {
+    assert.equal(resolveConfig({ ...base, style: bad }).style, 'concise', JSON.stringify(bad));
+  }
+});
+
+test('describeConfig：把风格也报出来（显示状态里能一眼看出当前是哪档）', () => {
+  const cfg = resolveConfig({
+    providers: { default: { baseUrl: 'https://a.test/v1', tier1Model: 'm' } },
+    activeProvider: 'default',
+    maxFetchRounds: 2,
+    preferSecretStorage: true,
+    style: 'rigorous',
+  });
+  const line = describeConfig(cfg);
+  assert.match(line, /最多取件 2 次/);
+  assert.match(line, /风格 rigorous/);
+});
