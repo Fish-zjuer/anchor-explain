@@ -1,0 +1,89 @@
+{
+  "name": "anchor-pdf",
+  "displayName": "Anchor PDF 视图",
+  "description": "线2 的 PDF 侧：把 PDF 上框选的一块变成带地址的锚点（第 N 页 + 归一化 bbox），并把位置交给线1 讲解。fork 自 mathematic-inc/vscode-pdf（Apache-2.0），改动见 MODIFICATIONS.md。",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "anchor",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "pdf",
+    "anchor",
+    "explain"
+  ],
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "onCommand:anchorPdf.openInAnchorViewer"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "anchorPdf.openInAnchorViewer",
+        "title": "用 Anchor 打开 PDF",
+        "category": "Anchor"
+      }
+    ],
+    "configuration": {
+      "title": "Anchor PDF",
+      "type": "object",
+      "properties": {
+        "anchorPdf.defaultZoomValue": {
+          "type": "string",
+          "default": "auto",
+          "scope": "resource",
+          "enum": ["auto", "page-actual", "page-fit", "page-width", "50", "75", "100", "125", "150", "200"],
+          "enumDescriptions": [
+            "Automatic",
+            "Actual size",
+            "Fit page",
+            "Fit width",
+            "50%",
+            "75%",
+            "100%",
+            "125%",
+            "150%",
+            "200%"
+          ],
+          "description": "打开 PDF 时的默认缩放。"
+        },
+        "anchorPdf.sidebarViewOnLoad": {
+          "type": "number",
+          "default": 0,
+          "scope": "resource",
+          "enum": [-1, 0, 1, 2, 3, 4],
+          "enumDescriptions": ["Restore previous state", "None", "Thumbnails", "Outline", "Attachments", "Layers"],
+          "description": "打开 PDF 时显示的侧栏面板。"
+        }
+      }
+    },
+    "customEditors": [
+      {
+        "viewType": "anchorPdf.view",
+        "displayName": "Anchor PDF 视图",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ],
+        "priority": "option"
+      }
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node tools/check_pdfjs.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "1.90.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -508,7 +508,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 | `anchorExplain.activeProvider` | string | `"default"` | 选中的 provider id |
 | `anchorExplain.maxFetchRounds` | number | `3` | 取件轮数上限 |
 | `anchorExplain.preferSecretStorage` | boolean | `true` | `apiKey` 优先从 `SecretStorage` 读，取不到再回落配置里的 `apiKey` |
-| `anchorPdf.*` | — | — | 沿用 fork 原有配置项，仅改命名空间前缀 |
+| `anchorPdf.*` | — | — | **S4 落地**：`anchorPdf.defaultZoomValue`（string，默认 `auto`）与 `anchorPdf.sidebarViewOnLoad`（number，默认 0），由上游的 `pdf.*` 改名而来（`MODIFICATIONS.md`） |
 
 **S3 新增一项（非规范原文）**：
 
@@ -648,7 +648,12 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
 | `scripts/{make-fixture-pdf.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器 | — |
-| `test/fixtures/{main.c, sample-30p.pdf}`（根） | `main.c` 第 40-48 行是假选区目标；PDF 是 S5~S7 的样本 | — |
+| `packages/extension-anchor-pdf/`（整树） | 线2：`mathematic-inc/vscode-pdf` 的 fork（**Apache-2.0**）。改动逐条见本包 `MODIFICATIONS.md` | `src/extension.ts`：`openInAnchorViewer`:43 `activate`:63 `deactivate`:70；`src/pdf-viewer-provider.ts`：`PDFViewerProvider`:62（`viewType = "anchorPdf.view"`） |
+| `packages/extension-anchor-pdf/{assets,patches}/` | **上游 vendored 源码，必须提交、绝不 ignore**（根 `.gitignore` 里有专门注释；`dist/` 也因此写成 `packages/*/dist/`） | `assets/pdf.js/`（23MB）、`patches/pdf.js.patch` |
+| `packages/extension-anchor-pdf/tools/check_pdfjs.mjs` | 上游的不变式守卫（CSP 恰好一次、pdf.js 补丁在位）。**S4 接成了本包的 `test` 脚本** | — |
+| `packages/extension-anchor-pdf/{MODIFICATIONS.md,LICENSE,README.md}` | fork 的义务件：改动声明 / 上游 Apache-2.0 原文 / 本包入口与边界 | — |
+| `scripts/smoke-pdf-extension.mjs`（根） | **S4 新增**。线2 的产物冒烟：不劫持（`priority: "option"`）、改名改干净、命令真能打开、assets 没被排除 | — |
+| `test/fixtures/{main.c, sample-30p.pdf}`（根） | `main.c` 第 40-48 行是 S1/S2 的样本（S3 起 AI 自己选行）；PDF 是 S5~S7 的样本 | — |
 | `package.json` / `pnpm-workspace.yaml` / `tsconfig.base.json`（根） | workspace 与依赖声明、共用 TS 基线、pnpm 11 的 `allowBuilds` 放行（见 §9.3） | — |
 | `.gitignore` / `.gitattributes`（根） | 忽略规则与**换行符纪律**（后者是 `fakes.test.ts` 耦合锁的前提，见 §9.3） | — |
 | `.vscode/{launch.json, tasks.json}` | F5 起调试宿主；`preLaunchTask` 跑 `anchor: watch`，默认工作区是 `test/fixtures/` | — |
@@ -705,6 +710,17 @@ function createContextRequestLogger(opts?: {
 | 依赖处理 | 一律 bundle 进产物，因此 `.vscodeignore` 可整体排除 `node_modules` |
 | 共用配置 | 各包 `tsconfig.json` 一律 `extends` 根 `tsconfig.base.json` |
 | 新增扩展 | 往 `esbuild.mjs` 的 `TARGETS` 加一行，不另写打包脚本 |
+
+**两个目标（S4 起）**：
+
+| 目标 | 入口 | 各自的额外配置 |
+|---|---|---|
+| `extension-anchor`（线1） | `packages/extension-anchor/src/extension.ts` | — |
+| `extension-anchor-pdf`（线2，fork） | `packages/extension-anchor-pdf/src/extension.ts` | `loader: { '.html': 'text' }` —— 上游把 `assets/pdf.js/web/viewer.html` 当字符串导入。**assets 不进 bundle**：视图运行时用 `webview.asWebviewUri` 从扩展目录读它 |
+
+**唯一一处 tsconfig 例外**：fork 的 `tsconfig.json` 用 `moduleResolution: "Bundler"`，
+而不是各包统一的 `NodeNext`。原因见该文件的 `$comment`：上游源码的相对导入不带扩展名，
+改成 `NodeNext` 要逐文件加 `.ts` —— 那是把一次 fork 变成一次重写。
 
 **产物冒烟**：`pnpm smoke`（`scripts/smoke-extension.mjs`）在不启动 VS Code 的前提下
 `require` 产物，只对最外层边界（`vscode` 模块）打桩，断言：产物可加载、`activate` 注册了命令、

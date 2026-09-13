@@ -31,10 +31,11 @@
 ```
 packages/core                  @anchor/core —— 类型契约 / ports / 纯函数（零 vscode 依赖）
 packages/extension-anchor      线1 代码编辑器扩展（ID anchor.anchor-explain）
-packages/extension-anchor-pdf  线2 PDF 扩展（fork，S4 才落地）
+packages/extension-anchor-pdf  线2 PDF 扩展（fork，Apache-2.0；改动见该包 MODIFICATIONS.md）
 scripts/make-fixture-pdf.mjs   生成 30 页验收样本 PDF
 scripts/smoke-extension.mjs    产物冒烟：能加载 / 命令注册与声明对齐 / webview 资源在不在 / 两个替身都已退出产物
 scripts/smoke-walkthrough.mjs  链路冒烟：capture 从真选区跑到 decoration，跑真编排循环（取件/拒绝/上限、画哪几行、文件未变）
+scripts/smoke-pdf-extension.mjs 线2 产物冒烟：不劫持（priority:option）/ 改名改干净 / 命令真能打开
 scripts/def-lines.mjs          一次性工具：生成 CONTRACTS §9.1 的行号表
 test/fixtures/                 main.c（第 40-48 行是默认选区）+ sample-30p.pdf
 docs/                          唯一事实源，见下
@@ -51,11 +52,14 @@ pnpm typecheck    # tsc --noEmit，只做类型检查，不出产物
 pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 113
 pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（30 项断言）
 pnpm smoke:chain  # 链路冒烟：跑一次完整讲解（真编排循环，只有 fetch 是桩）（105 项断言）
-pnpm check        # 上面最后五件事串起来：typecheck → test → build → smoke → smoke:chain
+pnpm smoke:pdf    # 线2 产物冒烟：不劫持 / 改名改干净 / 打开命令真能用（35 项断言）
+pnpm check        # 上面最后六件事串起来：typecheck → test → build → smoke → smoke:chain → smoke:pdf
 ```
 
-> `pnpm build` 目前只打一个扩展（`esbuild.mjs` 的 `TARGETS` 里只有 `extension-anchor`），
-> 线2 的 `extension-anchor-pdf` 到 S4 才加进去。
+> `pnpm build` 打**两个**扩展（`esbuild.mjs` 的 `TARGETS` 里两条）：线1 与线2。
+> **线2 不劫持**：它的 `customEditors` 是 `priority: "option"`，你的默认 PDF 打开方式不变；
+> 想看线2 就用 `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures`
+> 然后跑命令面板的 `Anchor: 用 Anchor 打开 PDF`。
 >
 > 两个冒烟脚本都只对 `vscode` 模块打桩，但**都不替代 F5**：配色好不好看、流转顺不顺只有肉眼算数。
 
@@ -87,5 +91,13 @@ pnpm check        # 上面最后五件事串起来：typecheck → test → buil
 
 ## 许可
 
-本仓库自身的代码为 MIT。线2 的 PDF 扩展是 [`mathematic-inc/vscode-pdf`](https://github.com/mathematic-inc/vscode-pdf)
-的 fork（Apache-2.0），届时将保留上游 LICENSE/NOTICE、以 `MODIFICATIONS.md` 声明改动，并移除上游品牌字样。
+本仓库自身的代码为 **MIT**。线2 的 PDF 扩展是
+[`mathematic-inc/vscode-pdf`](https://github.com/mathematic-inc/vscode-pdf) 的 fork（**Apache-2.0**），
+因此那个包整体沿用 Apache-2.0：
+
+- 上游 `LICENSE` 原文逐字保留；上游**没有 `NOTICE` 文件**，所以没有需要一并保留的 NOTICE
+  （Apache-2.0 §4(d) 的前提是原作品包含 NOTICE）
+- 改动逐条声明在 [`packages/extension-anchor-pdf/MODIFICATIONS.md`](packages/extension-anchor-pdf/MODIFICATIONS.md)，
+  含上游 commit SHA（作 diff 基线）
+- **已移除上游品牌**：`publisher` / `displayName` 不再使用上游标识，上游的募捐弹窗也已删除
+- **不上架 Marketplace**（上游 `CONTRIBUTING.md` 要求先开 Discussion），`.vsix` 只做本地安装

@@ -43,6 +43,18 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/extension-anchor-pdf:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.2
+      '@types/vscode':
+        specifier: 1.90.0
+        version: 1.90.0
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
 packages:
 
   '@esbuild/aix-ppc64@0.25.12':

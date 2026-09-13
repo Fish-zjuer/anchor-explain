@@ -1,0 +1,13 @@
+{
+  "$comment": "fork 自 mathematic-inc/vscode-pdf。与根 tsconfig.base.json 的差异只有三处，都在下面注明 —— 上游源码用的是 Bundler 解析（相对导入不带扩展名），改成 NodeNext 会要求逐文件加 .ts，那是把一次 fork 变成一次重写。",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowArbitraryExtensions": true,
+    "lib": ["ES2023"],
+    "types": ["node", "vscode"]
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

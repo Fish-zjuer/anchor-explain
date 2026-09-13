@@ -562,6 +562,58 @@ S3 才存在，现在写出来就是没有消费者的死码。这是**分期兑
 
 ---
 
+## D53 S4：fork `mathematic-inc/vscode-pdf`（改什么、删什么、为什么）
+
+**fork 基线**：`1153346694f457bc7b4c73c9b0e95b629f02dc03`（2026-09-05，上游 `0.2.5`）。
+**只 `git clone --depth 1` 下来看，没有跑上游任何 `setup` / `prepare` 脚本**（用户明确要求）。
+逐条改动清单在本包 `MODIFICATIONS.md`（那也是 Apache-2.0 §4(b) 的义务），这里只记**判断**。
+
+1. **`customEditors` 加 `"priority": "option"` —— 这就是"不劫持"的全部内容。**
+   不写它，我们的视图会与用户的默认 PDF 打开方式抢；写了它，我们只是候选项之一。
+   **代价是"用户根本进不来"**，所以必须同时给一个命令：`anchorPdf.openInAnchorViewer`
+   （走 `vscode.openWith`，与用户从"打开方式"里选我们**同一条路**，不会出现两套行为）。
+   这两个决定是一件事的两半，只做一个都是错的。
+2. **删掉上游的"赞助提示"弹窗。** 上游每次安装后第一次激活都会弹一次，把用户引向它的捐赠页。
+   删的理由两条，都不是审美：它是上游**品牌推广**（我们来承担署名与许可，但不承接推广）；
+   而且它**替用户做了主** —— 这是个 PDF 阅读器，不该在用户第一次打开 PDF 时弹募捐入口。
+3. **改三处命名**：`viewType` `pdf.view` → `anchorPdf.view`；配置命名空间 `pdf` → `anchorPdf`；
+   包身份 `publisher: mathematic` / `displayName: PDF Viewer` → `anchor` / `Anchor PDF 视图`。
+   前两处是**技术必要**（同一个 `viewType` 谁先激活谁生效，那是劫持的另一种写法；
+   同一个配置命名空间会让两个扩展抢同一份设置），第三处是**商标要求**。
+   顺带删掉 `author` / `repository` / `icon`：**署名在 `LICENSE` 与 fork 基线里，不在这些字段里**。
+4. **`engines.vscode` 从上游的 `^1.134.0` 降到 `^1.90.0`。** 上游用的是更新的类型面，
+   但**实际用到的 API 都是 1.90 就有的**（`registerCustomEditorProvider` / `asWebviewUri` /
+   `openWith`）。与线1 保持一致，省掉两份 `@types/vscode`。
+5. **许可分层是刻意的**：仓库根是 MIT，本包是 **Apache-2.0**（fork 的部分受上游许可约束）。
+   上游**没有 `NOTICE` 文件**，所以没有需要一并保留的 NOTICE ——
+   §4(d) 的前提是"原作品包含 NOTICE"，这一条写进了 `MODIFICATIONS.md` §三，将来上游补上时要跟着加。
+6. **`tools/check_pdfjs.mjs`（上游自己的不变式守卫）原样保留，并接成了本包的 `test` 脚本。**
+   它检查的是"pdf.js 被正确打补丁"：`viewer.html` 里不能有 CSP、我们注入的那份必须恰好出现一次、
+   必须带 `'wasm-unsafe-eval'` / `base-uri 'none'` / `form-action 'none'`。
+   **这些不变式坏掉的表现是"PDF 打不开"或"安全策略被绕过"**，两者都不该等用户发现。
+   代价是 `pnpm test` 会多跑一个脚本，收益是将来升级 pdf.js 时有一条硬判据。
+7. **`tsconfig.json` 用 `moduleResolution: "Bundler"`**，与其它包的 `NodeNext` 不同。
+   上游源码的相对导入不带扩展名，改成 `NodeNext` 要逐文件加 `.ts` ——
+   那是把一次 fork 变成一次重写，而 fork 的全部价值就在于"改动可以逐条列出来"。
+   例外写在 fork 的 tsconfig `$comment` 里，也记在 `CONTRACTS` §9.4。
+8. **删掉上游的工程设施**（`.github/`、`tsup.config.ts`、`pnpm-workspace.yaml`、oxlint/oxfmt、
+   `hk.pkl`、`mise.toml`、release-please…）。理由两条：
+   一个仓库一套工具链；以及 **`hk.pkl` 会让 `pnpm install` 触发上游的 `prepare` 脚本** ——
+   我们明确不跑上游的 setup。逐条列在 `MODIFICATIONS.md`。
+9. **新增本包的 `.gitattributes`**（`*.bcmap` / `*.pfb` / `*.wasm` / `*.ttf` 标 `binary`）。
+   根 `.gitattributes` 的 `* text=auto eol=lf` 靠内容探测通常会放过这些二进制，
+   但"通常会"不够：**这 23MB 里有 168 个 `.bcmap`、10 个 `.pfb`、4 个 `.wasm`，
+   它们的字节偏移是被算出来的**，被换行转换动一个字节就会在某类 PDF 上炸。
+
+**验证**：`pnpm check` 全绿（新增 `smoke:pdf`）—— 141 测 + `pnpm smoke` 30 项 +
+`pnpm smoke:chain` 105 项 + **`pnpm smoke:pdf` 35 项**。
+线2 的冒烟不只查结构，还真的调了一次命令，断言它打到 `vscode.openWith` 且用的是 `anchorPdf.view`；
+以及断言 `.vscodeignore` **没有**排除 `assets/`（排掉的话视图打开是一片空白，而这条在打包前发现不了）。
+
+**状态**：生效。
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

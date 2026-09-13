@@ -43,6 +43,10 @@
 ```
 
 - **两个扩展可独立安装。** 只装 ext-A → 线1 全功能可用。ext-B 在对端缺失时**明确提示，不静默失败**。
+- **ext-B 是 fork（S4 已落地）**：上游 `mathematic-inc/vscode-pdf`（Apache-2.0）。
+  `customEditors` 写的是 `priority: "option"` —— 我们的视图只是候选项之一，
+  **用户的默认 PDF 打开方式不受影响**；想用我们这套走命令面板的 `Anchor: 用 Anchor 打开 PDF`。
+  改动逐条在 `packages/extension-anchor-pdf/MODIFICATIONS.md`（D53）。
 - **跨扩展只走 `executeCommand`**（单向、不依赖返回值）：ext-B → ext-A 交 Anchor；ext-A 侧边栏 → ext-B 请求滚动定位。
 - 为什么 fork 必须独立 package：它有**自己的 `package.json` 与 `tsup` 构建**，还要保留上游的 `patches/`、`assets/pdf.js/` 工作流。
 - 为什么 core 是独立 package：两个扩展都要用它，且 fork 复用 `normalizeBBox`（`DECISIONS.md` D20）。

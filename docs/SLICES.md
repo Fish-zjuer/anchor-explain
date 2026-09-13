@@ -19,7 +19,7 @@
 | S2 | 线1 触发与确认 UI（选区 → QuickPick → 发送） | 用户实操 | 完成 `slice-S2` |
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | 代码与自动化完成 `slice-S3`，**待用户配 key 实操** |
 | S3 | 线1 接真实 AI（openAICompatible） | 自动化 + 用户实操 | — |
-| S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | — |
+| S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | 代码与自动化完成 `slice-S4`，**待用户实操** |
 | S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | — |
 | S6 | PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位） | 自动化 + 用户实操 | — |
 | S7 | PDF 取件（page_range 取附近页文字） | 自动化 | — |
@@ -292,6 +292,37 @@
 - **范围**：整个 fork 树 + `MODIFICATIONS.md`（记录上游 commit SHA 作 diff 基线）；改 `publisher` / `name` / `viewType`（`pdf.view` → `anchorPdf.view`）/ 命令与配置命名空间（`pdf.*` → `anchorPdf.*`）/ `displayName`，**移除一切上游品牌字样**；`customEditors` 加 `"priority": "option"`
 - **验收标准**：**用户实操** —— 命令面板 `用 Anchor 打开 PDF` 能打开；**默认 PDF 打开仍是原扩展**（不劫持）；`anchorPdf.*` 配置节出现。
 - **回退点**：`slice-S3`
+
+### S4 落地结果（2026-09-13，tag `slice-S4`）
+
+fork 基线：`1153346694f457bc7b4c73c9b0e95b629f02dc03`（上游 `0.2.5`，2026-09-05）。
+**只 clone 下来看，没有跑上游任何 setup 脚本。**
+
+| 声明范围内 | 落地 |
+|---|---|
+| 整个 fork 树 | `packages/extension-anchor-pdf/`：`src/`（7 个文件）`assets/`（23MB，含 vendored pdf.js）`patches/` `pdfjs_version.txt` `tools/check_pdfjs.mjs` `LICENSE` |
+| `MODIFICATIONS.md` | **新增**。fork 基线 SHA + 「保留原样 / 改动清单 / 删掉的设施 / 许可与署名 / 将来怎么升 pdf.js」五节 |
+| 改名 / 移除品牌 | `publisher` → `anchor`、`name` → `anchor-pdf`、`displayName` → `Anchor PDF 视图`、`viewType` → `anchorPdf.view`、配置命名空间 → `anchorPdf.*`；删 `author` / `repository` / `icon` |
+| 不劫持 | `customEditors[0].priority = "option"` **＋** 新增命令 `anchorPdf.openInAnchorViewer`（只做一半等于"用户进不来"） |
+| 上游捐赠弹窗 | **删除**（品牌推广 + 替用户做主，见 D53 第 2 条） |
+| **新增** `README.md` | 本包的入口表、怎么跑、怎么验"没有劫持"、边界（不碰 `assets/pdf.js`、不画高亮框） |
+| **新增** `.gitattributes` | 字节敏感资源标 `binary`（168 个 `.bcmap` / 10 个 `.pfb` / 4 个 `.wasm`） |
+| **新增** `scripts/smoke-pdf-extension.mjs` + `pnpm smoke:pdf` | 35 项。不只查结构：真调一次命令，断言它打到 `vscode.openWith` 且用 `anchorPdf.view` |
+| `esbuild.mjs` | `TARGETS` 加第二个目标（含 `.html` 的 text loader），**没有另写打包脚本** |
+| `tsconfig.json` | `extends` 根基线，唯一例外是 `moduleResolution: "Bundler"`（理由见 D53 第 7 条） |
+
+**一处偏离，已声明**：`engines.vscode` 从上游的 `^1.134.0` **降到 `^1.90.0`**（与线1 一致；
+实际用到的 API 都是 1.90 就有的）。属范围外的一处主动改动，记在 `MODIFICATIONS.md` 的字段表里。
+
+**自动化验收结果**：`pnpm check` 全绿 —— 141 测（core 28 + ext 113）+ `pnpm smoke` 30 项
++ `pnpm smoke:chain` 105 项 + `pnpm smoke:pdf` 35 项 + `pnpm --filter anchor-pdf test`
+（上游的 pdf.js 不变式守卫：`PDF.js assets verified (113 locales)`）。
+
+**验收靠**：**用户实操**，三条都要看：
+1. `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures` 起宿主
+   → 命令面板 `Anchor: 用 Anchor 打开 PDF` → 选 `sample-30p.pdf` → 能用我们的视图打开
+2. **直接双击**一个 `.pdf`（不装/不卸载都试）→ 应由别的扩展或内置打开（**不劫持**）
+3. 设置里搜 `anchorPdf` → 两个配置项都在（证明命名空间改对了）
 
 ## S5 PDF 注入 overlay 框选
 

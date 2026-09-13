@@ -11,7 +11,8 @@
 
 ## 当前切片
 
-**S3（线1 接真实 AI）— 代码与自动化验收完成，tag `slice-S3`。等用户配一把真 key 走通一次。**
+**S4（PDF fork 骨架）— 代码与自动化验收完成，tag `slice-S4`。等用户实操。**
+（S3 也仍在等用户配 key 走通一次；两片的实操心不冲突，可以一起做。）
 
 ## 已完成切片
 
@@ -23,18 +24,24 @@
 | S1 | 线1 最小可视：8 个命令 + 真链路 + 键位 + 「整块 + 逐点扫描」 | `slice-S1` | 2026-09-13 |
 | S2 | 线1 触发与确认 UI：真选区 + QuickPick 确认 + `capture` 搬进 `adapters/CodeAdapter.ts` | `slice-S2` | 2026-09-13 |
 | S3 | 线1 接真实 AI：编排循环 + §3.2 取件闸门 + §3.3 双闸门 + repair + §6 配置 + SecretStorage | `slice-S3` | 2026-09-13 |
+| S4 | 线2 fork `mathematic-inc/vscode-pdf`：改名 / **不劫持** / 移除品牌 / `MODIFICATIONS.md` | `slice-S4` | 2026-09-13 |
 
 **线1（代码编辑器）的功能面到此完整**：真选区 → 真适配器 → 真 AI（带取件）→ 真校验 → 真渲染。
 **产物里已经没有任何替身。**
 
 ## 下次第一件事
 
-**等用户配 key 走通一次 S3**（下面第 1 步是唯一的新增前提）。确认之前不进 S4。
+**S5：PDF 注入 overlay 框选。** 范围与验收见 `SLICES.md` 的 S5 一节。落地清单：
 
-用户没确认就想继续时，S4 的第一件事是：`git clone https://github.com/mathematic-inc/vscode-pdf`
-到临时目录，核对该 commit 的 LICENSE / NOTICE / `package.json`，然后按 `SLICES.md` 的 S4 范围把它 fork 进
-`packages/extension-anchor-pdf/`（**改名 / 不劫持 / 移除上游品牌 / 写 `MODIFICATIONS.md`**）。
-注意：**磁盘上目前没有上游 clone**，这一步需要联网。
+1. `packages/extension-anchor-pdf/media/anchor-select.js` —— 注入式 overlay（**不碰 `assets/pdf.js/`**）：
+   在 viewer 的页面容器上盖一层，拖拽画矩形，把像素矩形交回去
+2. `src/anchor/rectToNormalizedBBox.ts` —— 纯函数，像素矩形 → `[0,1]` 归一化 bbox（`@anchor/core`
+   的 `normalizeBBox` 已有，这里只做"相对哪一页、页面矩形从哪来"的换算）
+3. `src/anchor/bridge.ts` —— 宿主 ↔ 注入脚本的消息（`CONTRACTS` §5.2）
+4. 接线点：`pdf-viewer-provider.ts` 的 `getHtmlForWebview` 末尾追加 `<script src=media/anchor-select.js>`
+   与 overlay 的 CSS（**这一处是唯一要动上游文件的地方**，改完要在 `MODIFICATIONS.md` 补一行）
+
+**S3 的实操验收也还挂着**（配 key 走一次，见下）。两件事互不依赖，谁先都行。
 
 ### S3 的验收怎么走（多了一步配置，只做一次）
 
@@ -92,6 +99,11 @@
 34. **输出校验是两道闸门**（D52）：编排层一道、命令层一道。别为了"省一次纯函数调用"删掉命令层那道 —— 渲染层只消费校验过的数据，这条规矩不该有例外。
 35. **加新的 §6 配置项 = 改契约**：要同步 `CONTRACTS.md §6` + `package.json` 的 `contributes.configuration` + `config.ts` 的映射 + 单测。`temperature` 是这么加进去的。
 36. **`temperature` 是"请求级优先于 provider 级"**（D52）：`ChatRequest.temperature ?? OpenAICompatibleOptions.temperature`。provider 实例是长命的，编排层可能想对某一轮单独降温。
+37. **"不劫持"是两半的一件事**（D53）：`customEditors[0].priority = "option"` **加上**命令 `anchorPdf.openInAnchorViewer`。只写 `option` 而不给命令 = 用户根本进不来；只给命令而不写 `option` = 抢用户的默认打开方式。`smoke:pdf` 两半都断言。
+38. **线2 的 `assets/` 与 `patches/` 是上游 vendored 源码，必须提交、绝不 ignore**（23MB，含 168 个 `.bcmap` / 10 个 `.pfb` / 4 个 `.wasm`）。本包另有一份 `.gitattributes` 把它们标成 `binary` —— 那些文件的字节偏移是算出来的，被换行转换动一个字节就会在某类 PDF 上炸。改 `.gitignore` 时别把 `dist/` 写回泛匹配（根文件里有注释说明）。
+39. **线2 的 `tsconfig.json` 是全仓唯一的 `moduleResolution: "Bundler"` 例外**（D53 第 7 条）：上游源码的相对导入不带扩展名，改成 `NodeNext` 等于重写一遍 fork。别为了"统一"去改它。
+40. **fork 的改动必须同步 `MODIFICATIONS.md`**（Apache-2.0 §4(b) 的义务，也是与上游对齐的唯一依据）。改 `src/` 里任何文件之前先看那份文件里"改动清单"有没有它；改完在那一节补一行。
+41. **`pnpm --filter anchor-pdf test` 是上游的 pdf.js 不变式守卫**，不是我们的测试。它检查"CSP 恰好注入一次 + pdf.js 补丁在位"。将来升级 pdf.js 时**先跑它**——它红了就是补丁没打上，而不是 PDF 有问题。
 
 ## 待补 docs
 
@@ -108,9 +120,18 @@
 6. **`CodeAdapter.detect()` 没落**：归 S7（出现第二个 adapter 时才有真假之别）。
 7. **`wantsImage` 只有"锚点自带截图"这一个触发条件**：`ModelRouter` 的两条判据有单测，
    但"模型自己说要看图"这条路径线1 走不到（S5 的 PDF 才有截图）。
-8. **`pnpm devhost` 不会自动构建**（F5 有 `preLaunchTask: anchor: watch`，devhost 没有）。
-   改完代码用 devhost 测，必须先 `pnpm build`，否则测的是旧产物 —— 这一条已经坑过一次。
+8. **线2 没有进 F5 的 launch 配置**：`.vscode/launch.json` 只载入线1。
+   单独看线2 用 `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures`。
+   （`pnpm devhost` 同理只起线1。）
+9. **手敲 `code --extensionDevelopmentPath=...` 时不会自动构建**。`pnpm devhost` 已经修成
+   "先 `pnpm build` 再起宿主"了（S3 顺带），F5 有 `preLaunchTask`，但手敲那条命令没有 ——
+   拿旧产物测新代码会让排查跑偏（这一条已经坑过一次）。
+10. **线2 的框选还没做**：现在只能用我们的视图**看** PDF，不能框选（S5/S6）。
+11. **上游 vendored pdf.js 里的 `PDF.js viewer` 字样没有改**：那是 pdf.js 自己的品牌，
+    属于 vendored 依赖的一部分，不在"移除上游品牌"（publisher/displayName）的范围里。
+    改它就要动 `assets/`，而那是明令不许碰的。
 
 ## 最后更新
 
-2026-09-13，S3 收工（等用户配 key 实操）。
+2026-09-13，S4 收工（等用户实操：打开 PDF / 验证不劫持 / 看配置节）。
+S3 的配 key 实操也还挂着，两件事互不依赖。

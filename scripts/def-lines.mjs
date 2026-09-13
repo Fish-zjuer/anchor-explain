@@ -78,6 +78,8 @@ const TARGETS = {
     'FakeFileSystemPort',
     'createFakeFileSystemPort',
   ],
+  'packages/extension-anchor-pdf/src/extension.ts': ['openInAnchorViewer', 'activate', 'deactivate'],
+  'packages/extension-anchor-pdf/src/pdf-viewer-provider.ts': ['PDFViewerProvider'],
   'packages/extension-anchor/src/protocol.ts': [
     'WalkthroughState',
     'HostToSidebar',

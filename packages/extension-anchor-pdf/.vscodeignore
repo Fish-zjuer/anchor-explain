@@ -1,0 +1,12 @@
+# 上游的排除表基本照抄，只去掉我们这套 monorepo 里不存在的条目。
+# 关键：**assets/ 绝不能排除** —— pdf.js 的 web/build 就是页面的全部运行时。
+.vscode/**
+.github/**
+node_modules/**
+src/**
+**/tsconfig.json
+**/*.map
+**/*.ts
+patches/**
+pdfjs_version.txt
+tools/**

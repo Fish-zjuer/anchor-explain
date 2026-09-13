@@ -14,10 +14,17 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
-/** @type {{ name: string; entry: string }[]} */
+/** @type {{ name: string; entry: string; loader?: Record<string, string> }[]} */
 const TARGETS = [
   { name: 'extension-anchor', entry: 'packages/extension-anchor/src/extension.ts' },
-  // S4 会加：{ name: 'extension-anchor-pdf', entry: 'packages/extension-anchor-pdf/src/extension.ts' }
+  {
+    name: 'extension-anchor-pdf',
+    entry: 'packages/extension-anchor-pdf/src/extension.ts',
+    // fork 的 pdf-viewer-provider 把 assets/pdf.js/web/viewer.html 当字符串导入
+    // （上游用 tsup 的 .html text loader 做同一件事）。类型那一侧靠
+    // src/types.ts 里的 `declare module "*.html"`。
+    loader: { '.html': 'text' },
+  },
 ];
 
 /** 让 .vscode/tasks.json 的 problemMatcher 有稳定的起止标记，不依赖 esbuild 自身的日志格式 */
@@ -43,6 +50,7 @@ function optionsFor(target) {
     sourcemap: production ? false : 'inline',
     minify: production,
     logLevel: 'info',
+    ...(target.loader ? { loader: target.loader } : {}),
     plugins: watch ? [watchMarkers(target.name)] : [],
   };
 }

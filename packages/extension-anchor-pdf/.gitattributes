@@ -1,0 +1,12 @@
+# 这个包里有一批**字节敏感**的 vendored 资源：pdf.js 的 cmaps(*.bcmap)、
+# 标准字体(*.pfb)、wasm、以及字体文件。根 .gitattributes 的 `* text=auto eol=lf`
+# 靠内容探测通常会放过它们，但"通常会"不够 —— 这些文件的字节偏移是算出来的，
+# 被换行转换动一个字节就会在某类 PDF 上炸。这里显式钉死。
+*.bcmap binary
+*.pfb binary
+*.wasm binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
