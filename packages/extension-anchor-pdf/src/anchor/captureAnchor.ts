@@ -26,7 +26,10 @@ export interface CaptureInput {
 }
 
 export function buildPdfAnchor(input: CaptureInput): Anchor {
-  const location: PDFLocation = { page: input.page, bbox: input.bbox };
+  // `filePath` 是 S7 加的加法扩展（`CONTRACTS` §1）：**必须带上**，
+  // 否则线1 拿到的锚点只说得出"第 23 页的哪一块"，说不出"哪一份 PDF" ——
+  // 它要按路径去读文件取件，光有内容指纹与 basename 是不够的。
+  const location: PDFLocation = { page: input.page, bbox: input.bbox, filePath: input.filePath };
 
   const anchor: Anchor = {
     sourceType: 'pdf',

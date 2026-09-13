@@ -35,6 +35,9 @@ export { formatLineRange, locationLabel } from './locationLabel.ts';
 
 export { basenameOf, countTextLines, normPath, samePath } from './paths.ts';
 
+export type { Rect } from './rect.ts';
+export { intersectRects, rectArea } from './rect.ts';
+
 export type { AnchorErrorCode } from './errors.ts';
 export { AnchorError, isAnchorError, describeError } from './errors.ts';
 

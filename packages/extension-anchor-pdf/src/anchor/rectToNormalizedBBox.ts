@@ -10,35 +10,22 @@
  * **禁止 import 'vscode'**：本文件要能在 Node 里直测。
  */
 
-import { normalizeBBox } from '@anchor/core';
-import type { BBox } from '@anchor/core';
+import { intersectRects, normalizeBBox, rectArea } from '@anchor/core';
+import type { BBox, Rect } from '@anchor/core';
 
-/** 屏幕坐标系（CSS 像素）下的矩形。注入脚本用 `getBoundingClientRect()` 拿到的东西就是这个形状。 */
-export interface PixelRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+/**
+ * 屏幕坐标系（CSS 像素）下的矩形。注入脚本用 `getBoundingClientRect()` 拿到的东西就是这个形状。
+ * 与 core 的 `Rect` 是同一个东西 —— 这里留个名字只是为了让这门换算的代码读起来贴合场景。
+ */
+export type PixelRect = Rect;
+
+// 矩形运算复用 `@anchor/core`（两条线共用一份，见该文件的 @anchor 注释）
+export { intersectRects, rectArea };
 
 export interface PageRect {
   /** 1-based 页号，与 `PDFLocation.page` 一致 */
   page: number;
   rect: PixelRect;
-}
-
-export function rectArea(r: PixelRect): number {
-  return Math.max(0, r.width) * Math.max(0, r.height);
-}
-
-/** 两个矩形的交集；不相交返回 null（不是零面积矩形 —— 两者在下游含义不同） */
-export function intersectRects(a: PixelRect, b: PixelRect): PixelRect | null {
-  const x1 = Math.max(a.x, b.x);
-  const y1 = Math.max(a.y, b.y);
-  const x2 = Math.min(a.x + a.width, b.x + b.width);
-  const y2 = Math.min(a.y + a.height, b.y + b.height);
-  if (x2 <= x1 || y2 <= y1) return null;
-  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
 /**

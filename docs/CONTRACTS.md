@@ -73,6 +73,25 @@ interface ExplanationResult {
 > ⚠ 上表是**规范原版**，勿直接照抄成实现。`WalkthroughStep` 与 `ExplanationResult` 的
 > **最终形态在 §1.2**（含新增的可选字段）。
 
+**S7 的一处加法扩展**：`PDFLocation` 多一个**可选**字段 `filePath?: string`。
+
+```ts
+interface PDFLocation {
+  page: number;
+  bbox: [number, number, number, number];
+  filePath?: string;        // ← S7 新增，可选
+}
+```
+
+**为什么非加不可**：`page` + `bbox` 只说得清"页面上的哪一块"，说不清"**哪一份**文档"。
+S7 的取件要按路径去读文件、判页数也得打开它，而线1 手里的 `Anchor`
+只有 `sourceId`（内容指纹）与 `sourceName`（basename）—— **都定位不到文件**。
+`CodeLocation` 从一开始就有 `filePath`，这条对称本来就不该缺。
+
+**选可选而不是必填**：S5/S6 期间造出来的锚点没有它，
+于是所有读它的地方都要能退化（现在只有 `revealPage` 与取件两处读，两处都退化）。
+规范原文那两个字段一字未动。
+
 ### 1.2 加法扩展【以下全部为新增，非规范原文】
 
 理由：对齐 MCP Walkthrough 已验证的**两层 step 模型**（step 级引入语 + 内部子高亮序列），
@@ -216,12 +235,24 @@ interface SourceAdapter {
 | `PDFAdapter` | `['page_range']` | 存在已打开的 PDF 会话 | `PDFLocation` + `capturedImage`（拖拽裁出的截图） |
 | `WebAdapter` | — | **本次不实现** | — |
 
-**`SourceAdapter` 分两步兑现（S2 落 `capture`，S3 落 `fetchContext`，`detect()` 归 S7）**：
+**`SourceAdapter` 的兑现情况（S2→S7）**：
 
-`packages/extension-anchor/src/adapters/CodeAdapter.ts` 现有 `type` / `capabilities` /
-`capture(scope?)` / **`fetchContext(req)`**，**尚无** `detect()` ——
-一个适配器的时候"谁适用"是句废话，等 S7 出现 `PDFAdapter` 才第一次有真假之别。
-接口本身是冻结的，这是**分期落地**，不是接口变更。
+| 方法 | 状态 |
+|---|---|
+| `capture` | `CodeAdapter` 已落（带可选 `scope`）；`PDFAdapter` 无（线2 的框选在 webview 里，不走这条） |
+| `fetchContext` | 两条线都落了：`CodeAdapter`（按行）/ `PDFAdapter`（按页） |
+| `capabilities` | 两条线都落了，且**被 §3.2 规则 1 真的读了**（挑选件类型） |
+| `detect()` | **两条线都没落，而且不打算落** —— 见下 |
+
+**`detect()` 为什么不落（S7 的判断，不是又一次延期）**：它问的是"当前环境适不适用"，
+而在我们的架构里那个问题**没有唯一答案** —— 用户同时开着代码编辑器和 PDF 是常态，
+而"该用哪个适配器"这件事由**锚点自己的 `sourceType`** 决定，那是确定的依据。
+真正读适配器的地方只有两处（`commands.ts` 的 `adapterFor(anchor)`、§3.2 规则 1），
+两处都不需要问环境。写一个没人调用、且答案有歧义的 `detect()` 才是对契约的不诚实。
+§3.1 表里那一列的判据（`window.activeTextEditor` / 已打开的 PDF 会话）因此**保留为文档**，
+它是这两个适配器"什么时候适用"的说明，而不是一个待实现的方法。
+
+接口本身是冻结的，上面这些是**分期落地 + 一处明确的取舍**，不是接口变更。
 
 `capture()` 比冻结的零参形式多一个**可选**参数：
 
@@ -682,7 +713,9 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor-pdf/{assets,patches}/` | **上游 vendored 源码，必须提交、绝不 ignore**（根 `.gitignore` 里有专门注释；`dist/` 也因此写成 `packages/*/dist/`） | `assets/pdf.js/`（23MB）、`patches/pdf.js.patch` |
 | `packages/extension-anchor-pdf/tools/check_pdfjs.mjs` | 上游的不变式守卫（CSP 恰好一次、pdf.js 补丁在位）。**S4 接成了本包的 `test` 脚本** | — |
 | `packages/extension-anchor-pdf/{MODIFICATIONS.md,LICENSE,README.md}` | fork 的义务件：改动声明 / 上游 Apache-2.0 原文 / 本包入口与边界 | — |
-| `scripts/smoke-pdf-extension.mjs`（根） | **S4 新增**。线2 的产物冒烟：不劫持（`priority: "option"`）、改名改干净、命令真能打开、assets 没被排除 | — |
+| `scripts/smoke-pdf-extension.mjs`（根） | **S4 新增，S5 扩到 66 项**。线2 的产物冒烟：不劫持（`priority: "option"`）、改名改干净、命令真能打开、assets 没被排除、**框选整条链路**（真的开面板灌消息） | — |
+| `packages/extension-anchor/src/adapters/PDFAdapter.ts` + `adapters/pdf/{PDFSource,pageTextIndex,textSearch,pdfDocumentCache,pdfjsSource}.ts` | **S7 新增**。PDF 无头取件：像素无关的文字层归一化、`bbox→文本`、有界 LRU 文档缓存、pdf.js legacy 真实现。零 vscode 依赖 | `PDFAdapter`:21 `createPdfAdapter`:61 `pageHeader`:51；`PDFSource`:29；`PDFPageText`:18；`RawTextItem`:19 `TextItem`:33 `SAME_LINE_TOLERANCE`:75 `normalizeItems`:45 `readingOrder`:78 `joinLines`:92；`HIT_RATIO`:32 `itemsInBBox`:34 `textInBBox`:53；`DEFAULT_CACHE_LIMIT`:18 `PdfDocumentCache`:20 `createPdfDocumentCache`:31；`openPdfJsSource`:55 |
+| `packages/extension-anchor/THIRD_PARTY_NOTICES.md` | **S7 新增**。打包 `pdfjs-dist`（**Apache-2.0**）的声明 —— 产物里那条 `/*!` 注释是唯一还留着的署名 | — |
 | `test/fixtures/{main.c, sample-30p.pdf}`（根） | `main.c` 第 40-48 行是 S1/S2 的样本（S3 起 AI 自己选行）；PDF 是 S5~S7 的样本 | — |
 | `package.json` / `pnpm-workspace.yaml` / `tsconfig.base.json`（根） | workspace 与依赖声明、共用 TS 基线、pnpm 11 的 `allowBuilds` 放行（见 §9.3） | — |
 | `.gitignore` / `.gitattributes`（根） | 忽略规则与**换行符纪律**（后者是 `fakes.test.ts` 耦合锁的前提，见 §9.3） | — |
@@ -693,10 +726,8 @@ function createContextRequestLogger(opts?: {
 
 | 路径 | 职责 | 落地切片 |
 |---|---|---|
-| `packages/extension-anchor/src/adapters/CodeAdapter.ts` 的 `detect()` | 兑现完整的 `SourceAdapter`（`capture` / `fetchContext` 已落） | S7（出现第二个 adapter 时才有真假之别） |
-| `packages/extension-anchor/src/adapters/PDFAdapter.ts` + `adapters/pdf/*` | PDF 无头取件 | S7 |
+| `detect()`（两条线的适配器） | **不打算落**，理由见 §3.1 上方那张表 | 不做 |
 | `packages/extension-anchor-pdf/`（整树） | 线2 fork | S4 |
-| `packages/extension-anchor-pdf/src/anchor/pdfText.ts` | PDF 文字层取件（`page_range`） | S7 |
 
 ### 9.3 已知结构债
 

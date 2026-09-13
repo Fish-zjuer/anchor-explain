@@ -11,9 +11,10 @@
 
 ## 当前切片
 
-**S6（PDF 框选 → 侧边栏 + 点击滚动定位）— 代码与自动化验收完成，tag `slice-S6`。**
-只剩 **S7**（PDF `page_range` 取件）没做。
-（S3 的配 key、S4 的开 PDF、S5 的拖拽手感三件实操心都还挂着，互不依赖。）
+**S7（PDF `page_range` 取件）— 完成，tag `slice-S7`。**
+**计划内的全部切片（F0/F1/F2 + S1~S7）到此做完。**
+
+剩下的只有**四件用户实操确认**（下面「下次第一件事」），没有待做的代码。
 
 ## 已完成切片
 
@@ -28,27 +29,27 @@
 | S4 | 线2 fork `mathematic-inc/vscode-pdf`：改名 / **不劫持** / 移除品牌 / `MODIFICATIONS.md` | `slice-S4` | 2026-09-13 |
 | S5 | 线2 注入式框选 overlay：像素→归一化换算（有单测）+ `anchorPdf.selectRegion` | `slice-S5` | 2026-09-13 |
 | S6 | 线2 框选 → 线1 侧边栏讲解 + 点击滚动定位（**只滚，不画框**） | `slice-S6` | 2026-09-13 |
+| S7 | PDF `page_range` 取件：无头 pdf.js + `bbox→文本` + 有界 LRU + `PDFLocation.filePath` | `slice-S7` | 2026-09-13 |
 
 **线1（代码编辑器）的功能面到此完整**：真选区 → 真适配器 → 真 AI（带取件）→ 真校验 → 真渲染。
 **产物里已经没有任何替身。**
 
 ## 下次第一件事
 
-**S7：PDF 的 `page_range` 取件。** 范围与验收见 `SLICES.md` 的 S7 一节。落地清单：
+**没有待做的代码了。** 只有四件**用户实操**确认（互不依赖，谁先都行）：
 
-1. `packages/extension-anchor-pdf/src/anchor/pdfText.ts` —— 用 `pdfjs-dist` 的 **legacy 无头**构建
-   按页取文字（**不依赖 webview**）。注意：fork 的 `assets/pdf.js/` 是**打过补丁的 vendored 构建**，
-   不是 npm 包，所以这一处要么复用 `assets/pdf.js/build/pdf.mjs`，要么加 `pdfjs-dist` 依赖 ——
-   **先决定用哪一种，并把这个决定写进 `MODIFICATIONS.md`**（它决定了升级 pdf.js 时要动几处）
-2. `packages/extension-anchor/src/adapters/PDFAdapter.ts` —— 线1 侧的 PDF 适配器：
-   `capabilities.contextTypes = ['page_range']`、`fetchContext` 按页取文字、
-   以及**终于该落的 `detect()`**（出现第二个 adapter 了，"谁适用"第一次有真假之别）
-3. 线1 要能拿到 PDF 的页数（`makeOutline` 现在对 PDF 恒传 `pageCount: null`，
-   于是 §3.3 的页码上界被跳过）—— 这是 S6 留下的缺口（D55 第 4 条），S7 正好是补它的时机：
-   **要么**改契约（给 `Anchor` 加字段 / 让 §5.1 带返回值），**要么**在 `PDFAdapter` 侧自己读页数
-   （如果 1 已经引入了无头 pdf.js，这一条几乎免费）。**优先后者**：不动冻结的契约。
+| # | 切片 | 要做什么 | 要看什么 |
+|---|---|---|---|
+| 1 | S3 | `Anchor: 设置 API Key` + 设置里填 `anchorExplain.providers`，然后选中一段代码按 `Ctrl+Shift+A` | 讲解内容是不是真的了（不再是写死的 `rb_pop` 文本）；输出面板「Anchor」里有没有取件记录 |
+| 2 | S4 | `code --extensionDevelopmentPath=packages/extension-anchor-pdf test/fixtures` → `Anchor: 用 Anchor 打开 PDF` | 能打开；**直接双击 PDF 仍是原来的打开方式**（不劫持）；设置里能搜到 `anchorPdf.*` |
+| 3 | S5 | 在 Anchor 的 PDF 视图里 `Ctrl+Alt+S` 拖一个矩形 | 跟手；**抬手后屏幕上不留东西**；拖到页外有提示；跨页拖判给盖得多的那一页 |
+| 4 | S6 | 框选之后看侧边栏，点某一步上的「第 N 页」 | PDF **滚到那一页**（不是画框）；编辑器里一个框都不该出现 |
 
-**S3/S4/S5/S6 的实操验收都还挂着**（配 key / 开 PDF / 拖拽手感 / 点位置标签），互不依赖。
+四件的详细步骤与"看不到反应查这里"的对照表在
+`packages/extension-anchor/README.md` 与 `packages/extension-anchor-pdf/README.md`。
+
+**`detect()` 明确不做了**（不是延期）：选适配器的依据是锚点自己的 `sourceType`，
+"当前环境适不适用"在我们这儿没有唯一答案。见 D56 与 `CONTRACTS` §3.1。
 
 ### S3 的验收怎么走（多了一步配置，只做一次）
 
@@ -118,7 +119,12 @@
 46. **路径工具在 `@anchor/core`（`packages/core/src/paths.ts`）**：`normPath` / `samePath` / `basenameOf` / `countTextLines`。线1 的 `src/paths.ts` 只是转发（保留它是不想改十几个导入路径）。**新增代码直接从 `@anchor/core` 导入。**
 47. **两条线的定位方式必须是两套**（D55 第 1 条）：`commands.ts` 的 `revealStep` 先看 `primaryLocationOf`（只对 `CodeLocation` 有值）走播放器，否则看 `isPDFLocation` 走 `anchorPdf.revealPage`。**PDF 那一句根本不经过播放器**，再叠上 `decorationPlan` 的过滤，"PDF 上不出现高亮框"是结构性的。
 48. **`anchorPdf.revealPage` 只接收 `page`，且落到当前聚焦的面板**（D55 第 2 条）：`PDFLocation` 里没有路径字段，所以线1 报不出"该滚哪一份"；落到所有面板会让"同时开两份对比"时一起滚。
-49. **`pageCount` 传不进线1 是刻意留的缺口**（D55 第 4 条）：§5.1 是单向、不依赖返回值，`PDFLocation` 里也没有路径。后果是 §3.3 的页码上界被跳过（pdf.js 自己会把越界页夹住，所以用户可见后果有限）。**S7 是补它的时机**，优先在 `PDFAdapter` 侧自己读页数，别去动冻结的契约。
+49. **`PDFLocation.filePath` 是可选的加法扩展**（D56 第 1 条）：线1 靠它去读文件取件与判页数。**读它的地方都要能退化**（S5/S6 造出来的老锚点没有它）。
+50. **`pageCount` 的缺口已在 S7 关闭**（D56 第 7 条）：线1 无头打开 PDF 就有页数，`ctx.pageCount` 不再是 null，§3.3 的页码上界开始真的生效。
+51. **`detect()` 明确不做**（D56 末段）：选适配器的依据是 `anchor.sourceType`（`commands.ts` 的 `adapterFor`），不是"环境适不适用"。§3.1 表里那一列判据降级为文档。**不要再"延期"它，也不要为了实现它去写一个没人调用的方法。**
+52. **`rect.ts` 的 `intersectRects` 有三个消费者**（线2 的"落在哪一页"、"裁到页内"、线1 的"bbox 命中哪些文字块"）：它在 `@anchor/core`，**不相交返回 null 而不是零面积矩形** —— 后者会让"命中比例"变成除零。别在下游各写一份。
+53. **打包第三方代码必须带署名**（D56 末段)：`pdfjsSource.ts` 顶部那条 `/*! ... */` 是**唯一**留在产物里的署名（esbuild 只保留 `/*!` 开头的注释），`smoke` 有断言守着。线1 产物因此从 468KB 涨到 **4.36MB**（pdf.js 本身就大；`pdfjs-dist` 是 ESM-only，CommonJS 产物没法 `require` 外部加载，所以只能打包）。
+54. **`extractedText` 要在进模型之前补上**（D56 第 6 条）：PDF 锚点的 `bbox` 是地址，那一块里的文字才是模型第一批该看到的东西（`commands.ts` 的 `withPdfText`）。补失败一律静默忽略（扫描件没有文字层是正常情况）。
 
 ## 待补 docs
 
@@ -148,5 +154,5 @@
 
 ## 最后更新
 
-2026-09-13，S6 收工（只剩 S7）。
-S3 的配 key、S4 的开 PDF、S5 的拖拽、S6 的点位置标签四件实操心都还挂着，互不依赖。
+2026-09-13，**S7 收工 —— 计划内全部切片（F0/F1/F2 + S1~S7）做完**。
+只剩四件用户实操确认（S3 配 key / S4 开 PDF / S5 拖拽 / S6 点位置标签）。

@@ -18,7 +18,8 @@
 
 import Module from 'node:module';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -231,6 +232,23 @@ check(bundleText.includes('fetch_context'), '§8 的工具定义进了产物');
 check(bundleText.includes('请求被拒绝'), '§3.2 的拒绝回灌文案进了产物');
 check(bundleText.includes('讲解助手'), 'prompt 进了产物（它是产品的一部分，不是注释）');
 check(bundleText.includes('anchorExplain.apiKey.'), 'SecretStorage 的键名约定进了产物（读写两侧同源）');
+
+// ---- S7 打包了第三方代码：署名必须一起进产物 ------------------------------
+// 产物里现在有 pdfjs-dist（**Apache-2.0**，比本包的 MIT 更严）。
+// esbuild 的 legalComments 会把 `/*!` 开头的注释保留下来 —— 那是产物里唯一还留着的署名。
+// 这一条守的是"打包了别人的代码却不带署名"，而它恰恰是最难在事后发现的一类问题。
+check(
+  bundleText.includes('pdfjs-dist') && bundleText.includes('Apache-2.0'),
+  '打包进来的 pdfjs-dist 的署名（Apache-2.0）还在产物里',
+);
+const notices = join(ROOT, 'packages', 'extension-anchor', 'THIRD_PARTY_NOTICES.md');
+check(existsSync(notices), 'THIRD_PARTY_NOTICES.md 在（打包第三方代码的声明）');
+const extIgnore = readFileSync(join(ROOT, 'packages', 'extension-anchor', '.vscodeignore'), 'utf8');
+// 不用正则：这个断言要的就是"这个文件名有没有出现在排除表里"，includes 足够且不会写错转义
+check(
+  !extIgnore.includes('THIRD_PARTY_NOTICES.md'),
+  'THIRD_PARTY_NOTICES.md 没被 .vscodeignore 排除（打 .vsix 时要带上它）',
+);
 
 // ---- 纯视觉：产物里根本不存在写文件的路径 ----------------------------------
 // 比运行期断言更强：不是"这次没调用"，而是"没有可调用的东西"。

@@ -30,6 +30,9 @@ import type {
   WalkthroughStep,
 } from '@anchor/core';
 import { createCodeAdapter } from './adapters/CodeAdapter.ts';
+import { createPdfAdapter } from './adapters/PDFAdapter.ts';
+import { createPdfDocumentCache } from './adapters/pdf/pdfDocumentCache.ts';
+import { openPdfJsSource } from './adapters/pdf/pdfjsSource.ts';
 import { primaryLocationOf } from './playback/decorationPlan.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
 import { describeConfig } from './config.ts';
@@ -59,6 +62,22 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   // 以及（「整个文件」分支要的）当前文档的全文与行数。
   const editorPort: EditorPort = createEditorPort();
   const codeAdapter = createCodeAdapter({ editor: editorPort, fs: fsPort });
+
+  // S7：PDF 侧。缓存是有界 LRU（打开一份 30 页 PDF 要读盘 + 解析，同一轮讲解会问好几次），
+  // 淘汰时释放句柄 —— 见 pdfDocumentCache.ts 的注释。
+  const pdfAdapter = createPdfAdapter({ cache: createPdfDocumentCache(openPdfJsSource) });
+
+  /**
+   * 按锚点选适配器。
+   *
+   * @anchor **为什么不是用 §3 的 `detect()`**：`detect()` 问的是"当前环境适不适用"，
+   *         而我们的环境里同时可能开着代码编辑器和 PDF —— 那个问题没有唯一答案。
+   *         锚点自己带着 `sourceType`，那是**确定的**依据。
+   *         `detect()` 因此在我们的架构里一直没有消费者（`CONTRACTS` §9.2 记着这条判断）。
+   */
+  function adapterFor(anchor: Anchor) {
+    return anchor.sourceType === 'pdf' ? pdfAdapter : codeAdapter;
+  }
 
   const status = createStatusBar(context);
 
@@ -258,8 +277,39 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 校验会**跳过那一项上界**而不是跳过整条 location 校验。
    */
   async function makeOutline(anchor: Anchor): Promise<{ documentLineCount: number | null; pageCount: number | null }> {
-    if (!isCodeLocation(anchor.location)) return { documentLineCount: null, pageCount: null };
-    return { documentLineCount: await countLines(fsPort, anchor.location.filePath), pageCount: null };
+    if (isCodeLocation(anchor.location)) {
+      return { documentLineCount: await countLines(fsPort, anchor.location.filePath), pageCount: null };
+    }
+    // S7：PDF 的总页数终于有了来源（无头打开一次就有），
+    // 于是 §3.3 里 `1 ≤ page ≤ pageCount` 那条上界不再被跳过 —— 这是 S6 留下的缺口（D55 第 4 条）。
+    // 没有 filePath 的老锚点（S5 之前造的）仍然只能跳过。
+    if (isPDFLocation(anchor.location) && anchor.location.filePath) {
+      return { documentLineCount: null, pageCount: await pdfAdapter.pageCount(anchor.location.filePath) };
+    }
+    return { documentLineCount: null, pageCount: null };
+  }
+
+  /**
+   * 给 PDF 锚点补上 `extractedText`（**第一层优先**，`Anchor.extractedText` 的注释就是这个意思）。
+   *
+   * @anchor 为什么要做这一件事：框选出来的 bbox 是**地址**，而那一块里的文字才是模型第一批
+   *         该看到的东西。不填的话，模型只知道"第 23 页的一小块"，还得先请求取件才看得到内容 ——
+   *         白花一轮网络往返，而且它对"该取哪一页"也只能猜。
+   *
+   * 失败一律**静默忽略**（扫描件没有文字层是正常情况）：锚点照原样交出去，
+   * 模型自己会去取件。填充失败不该让讲解不可用。
+   */
+  async function withPdfText(anchor: Anchor): Promise<Anchor> {
+    const loc = anchor.location;
+    if (anchor.sourceType !== 'pdf' || anchor.extractedText) return anchor;
+    if (!isPDFLocation(loc) || !loc.filePath) return anchor;
+
+    try {
+      const text = await pdfAdapter.textInBBox(loc.filePath, loc.page, loc.bbox);
+      return text ? { ...anchor, extractedText: text } : anchor;
+    } catch {
+      return anchor;
+    }
   }
 
   /**
@@ -272,7 +322,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 没有可用配置时**明确报错**，不静默退化成"什么都不发生" ——
    * 后者让人以为是扩展坏了，而不是"我还没填 baseUrl"。
    */
-  async function makeProvider(): Promise<ReturnType<typeof createOrchestrator>> {
+  async function makeProvider(anchor: Anchor): Promise<ReturnType<typeof createOrchestrator>> {
     const cfg = await readAnchorConfig(context);
     if (!cfg.provider) throw new AnchorError('PROVIDER_ERROR', describeConfig(cfg));
 
@@ -287,7 +337,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         tier1Model: cfg.provider.tier1Model,
         tier2Model: cfg.provider.tier2Model,
       }),
-      adapter: codeAdapter,
+      adapter: adapterFor(anchor),
       makeOutline,
       maxFetchRounds: cfg.maxFetchRounds,
       temperature: cfg.temperature,
@@ -302,8 +352,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
     let result: ExplanationResult;
     try {
-      const provider = await makeProvider();
-      const produced = await provider(anchor);
+      const prepared = await withPdfText(anchor);
+      const provider = await makeProvider(prepared);
+      const produced = await provider(prepared);
       // 期间用户又发起了一次：这次的结果已经过期，直接丢掉。
       // 没有这道闸，先发后到的那次会把 UI 拽回旧讲解（真 AI 下必然遇到）。
       if (gen !== generation) return;
@@ -311,7 +362,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       // 第二道闸：编排层内部已经过了一次 §3.3，这里再查一次。
       // 不是不信任它，而是"渲染层只消费校验过的数据"这条规矩不该有例外 ——
       // 编排层将来多一条产出路径（比如缓存命中），这里仍然拦得住。
-      const verdict = validateExplanation(produced, anchor, await makeOutline(anchor));
+      const verdict = validateExplanation(produced, prepared, await makeOutline(prepared));
       if (!verdict.ok) {
         throw new AnchorError('SCHEMA_VIOLATION', `AI 输出未通过校验：${describeIssues(verdict.issues)}`, {
           issues: verdict.issues,

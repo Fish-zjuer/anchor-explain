@@ -63,6 +63,8 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 | `src/extension.ts` | activate → `registerCommands`，入口保持极薄 |
 | `src/commands.ts` | §4.1 九个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel。**这里已经没有任何替身** |
 | `src/adapters/CodeAdapter.ts` | 代码来源适配器：`capture(scope?)` 把「选区 / 整文件」变成 `Anchor`；`fetchContext` 按行取件（带行号）。**零 vscode 依赖** |
+| `src/adapters/PDFAdapter.ts` + `adapters/pdf/*` | **S7 新增**。PDF 无头取件：`fetchContext` 按页取（带页头）、`pageCount`、`textInBBox`；文字层归一化 / `bbox→文本` / 有界 LRU 缓存 / pdf.js legacy 真实现。**零 vscode 依赖** |
+| `THIRD_PARTY_NOTICES.md` | **S7 新增**。打包 `pdfjs-dist`（Apache-2.0）的声明 |
 | `src/orchestrator/Orchestrator.ts` | 编排循环：取件（≤maxFetchRounds）→ §3.3 闸门 → repair 一次。**它就是 S1/S2 那个 `fakeProvider` 的真身** |
 | `src/orchestrator/validateContextRequest.ts` | §3.2 五条规则的实现 —— **模型不许漫游的唯一闸门** |
 | `src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门 —— **AI 输出不可信的唯一入口** |
@@ -239,7 +241,7 @@ pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（会先 build，见上）
 pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 113 条
+pnpm test             # 在根执行：core 28 条 + 本包 133 条 + 线2 12 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
 
@@ -251,8 +253,8 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（113 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射、会话状态机、配色决策、键位解析 |
-| 产物冒烟（30 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；webview 资源在产物里；**两个替身都已从产物退出** |
+| 单测（133 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射、会话状态机、配色决策、键位解析 |
+| 产物冒烟（33 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；webview 资源在产物里；**两个替身都已从产物退出** |
 | 链路冒烟（105 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
 
 这三层都只对**最外层边界**（`vscode` 模块）打桩，桩之外全是真代码。

@@ -16,6 +16,13 @@ export type SourceType = 'pdf' | 'web' | 'code';
 export interface PDFLocation {
   page: number;                              // 1-based
   bbox: [number, number, number, number];     // 归一化 0-1: x1,y1,x2,y2
+  // 【S7 加法扩展，非规范原文，可选】文档在哪。
+  // 为什么必须有：`bbox`/`page` 只说得清"页面上的哪一块"，说不清"哪一份文档" ——
+  // 而取件（S7）要按路径去读文件、判页数也要打开它。线1 拿到的 `Anchor` 里
+  // 只有 `sourceId`（内容指纹）与 `sourceName`（basename），都定位不到文件。
+  // 与 `CodeLocation.filePath` 对称：那条线从一开始就有。
+  // **可选**：老的锚点（S5 之前造出来的）没有它，于是所有读它的地方都必须能退化。
+  filePath?: string;
 }
 
 export interface WebLocation {

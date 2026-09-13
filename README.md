@@ -12,7 +12,9 @@
 
 ## 现在能跑什么
 
-**S5 阶段：线1 已接真实 AI，线2 的 PDF 框选也能用了。**
+**S7 阶段：计划内的切片全部做完（F0/F1/F2 + S1~S7）。**
+线1 接真实 AI + 取件；线2 能框选 PDF 并把位置交给线1 讲解、点击侧边栏滚到对应页；
+线1 还能无头读 PDF 的文字层（取件与 `extractedText`）。
 在 Anchor 的 PDF 视图里 `Ctrl+Alt+S` 拖一个矩形 → 位置变成锚点交给线1 讲解。
 
 **线1**： 打开 `main.c`、**选中一段**、按 `Ctrl+Shift+A`，
@@ -57,8 +59,8 @@ pnpm fixtures     # 重新生成 test/fixtures/sample-30p.pdf（零依赖，已�
 pnpm build        # esbuild 打包扩展，产物落在各自 packages/<包名>/dist/extension.cjs
 pnpm watch        # 同上，watch 模式；F5 的 preLaunchTask 用的就是这个
 pnpm typecheck    # tsc --noEmit，只做类型检查，不出产物
-pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 113 + pdf 11
-pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（30 项断言）
+pnpm test         # node --test 直接跑 .ts（Node 24 类型剥离，无需构建）：core 28 + ext 133 + pdf 12
+pnpm smoke        # 不启动 VS Code，require 打包产物，只对 vscode 模块打桩（33 项断言）
 pnpm smoke:chain  # 链路冒烟：跑一次完整讲解（真编排循环，只有 fetch 是桩）（105 项断言）
 pnpm smoke:pdf    # 线2 产物冒烟：不劫持 / 改名 / **框选整条链路**（66 项断言）
 pnpm check        # 上面最后六件事串起来：typecheck → test → build → smoke → smoke:chain → smoke:pdf
@@ -99,7 +101,11 @@ pnpm check        # 上面最后六件事串起来：typecheck → test → buil
 
 ## 许可
 
-本仓库自身的代码为 **MIT**。线2 的 PDF 扩展是
+本仓库自身的代码为 **MIT**。线1 的产物里**打包**了 `pdfjs-dist`（**Apache-2.0**，S7 的 PDF 取件要用），
+其许可与署名声明见 [`packages/extension-anchor/THIRD_PARTY_NOTICES.md`](packages/extension-anchor/THIRD_PARTY_NOTICES.md)
+（产物里那条 `/*!` 注释是唯一还留着的署名，有断言守着）。
+
+线2 的 PDF 扩展是
 [`mathematic-inc/vscode-pdf`](https://github.com/mathematic-inc/vscode-pdf) 的 fork（**Apache-2.0**），
 因此那个包整体沿用 Apache-2.0：
 

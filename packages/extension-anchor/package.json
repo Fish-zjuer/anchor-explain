@@ -122,14 +122,29 @@
           "additionalProperties": {
             "type": "object",
             "properties": {
-              "baseUrl": { "type": "string" },
-              "tier1Model": { "type": "string" },
-              "tier2Model": { "type": "string" },
-              "apiKey": { "type": "string" },
-              "extraHeaders": { "type": "object" },
-              "extraBody": { "type": "object" }
+              "baseUrl": {
+                "type": "string"
+              },
+              "tier1Model": {
+                "type": "string"
+              },
+              "tier2Model": {
+                "type": "string"
+              },
+              "apiKey": {
+                "type": "string"
+              },
+              "extraHeaders": {
+                "type": "object"
+              },
+              "extraBody": {
+                "type": "object"
+              }
             },
-            "required": ["baseUrl", "tier1Model"]
+            "required": [
+              "baseUrl",
+              "tier1Model"
+            ]
           }
         },
         "anchorExplain.activeProvider": {
@@ -161,7 +176,8 @@
     "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
-    "@anchor/core": "workspace:*"
+    "@anchor/core": "workspace:*",
+    "pdfjs-dist": "^6.3.289"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

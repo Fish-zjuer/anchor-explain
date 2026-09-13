@@ -8,6 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { isCodeLocation } from '@anchor/core';
 import type { Anchor } from '@anchor/core';
 import { fakeProvider } from '@anchor/core/fakes/fakeProvider';
 import { countTextLines } from '../src/paths.ts';
@@ -56,8 +57,10 @@ test('主路径：真替身（fakeProvider）的整段输出能过闸门', async
   assert.equal(verdict.result.steps.length, 3);
   for (const step of verdict.result.steps) {
     const loc = step.location;
-    assert.ok('filePath' in loc, '代码锚点的 location 必须是 CodeLocation');
-    if (!('filePath' in loc)) continue;
+    // 用真守门函数，不用 `'filePath' in loc`：S7 给 PDFLocation 也加了可选的 filePath
+    // （为了让线1 能按路径去读 PDF），于是"有没有 filePath"**不再等于**"是不是代码位置"。
+    assert.ok(isCodeLocation(loc), '代码锚点的 location 必须是 CodeLocation');
+    if (!isCodeLocation(loc)) continue;
     assert.equal(loc.filePath, FILE_PATH);
     assert.ok(step.title && step.intro && step.text);
     assert.ok((step.highlights ?? []).length > 0);

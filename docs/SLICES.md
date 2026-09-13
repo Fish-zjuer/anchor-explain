@@ -22,7 +22,7 @@
 | S4 | PDF fork 骨架：改名 / 不劫持 / 能打开 | 用户实操 | 代码与自动化完成 `slice-S4`，**待用户实操** |
 | S5 | PDF 注入 overlay 框选 | 用户实操（拖拽手感必须本人确认） | 代码与自动化完成 `slice-S5`，**待用户实操** |
 | S6 | PDF 框选 → Anchor → 侧边栏讲解（含点击滚动定位） | 自动化 + 用户实操 | 代码与自动化完成 `slice-S6`，**待用户实操** |
-| S7 | PDF 取件（page_range 取附近页文字） | 自动化 | — |
+| S7 | PDF 取件（page_range 取附近页文字） | 自动化 | 完成 `slice-S7`（全部切片做完） |
 
 ## 硬性约束
 
@@ -400,9 +400,42 @@ S6 补的是另一半：**线1 拿到 PDF 锚点之后**。
 PDF 应**滚到那一页**（不是画框，编辑器里也不该出现任何框）；
 没装线1 或没装线2 两种缺件情况各试一次，都应看到明确提示。
 
+### S7 落地结果（2026-09-13，tag `slice-S7`）
+
+**开工时先撞上一个前提**：`PDFLocation` 里没有 `filePath`，所以线1 拿到的锚点
+只说得出"第 23 页的哪一块"，说不出"哪一份 PDF" —— 取件要按路径读文件，做不了。
+先补上这个**可选字段**（`CONTRACTS` §1 的加法扩展），再谈取文字。
+
+| 声明范围内 | 落地 |
+|---|---|
+| `src/adapters/PDFAdapter.ts` | **新增**。`capabilities = ['page_range']`、`fetchContext` 按页取件（带 `--- 第 N 页 ---` 页头）、两个追加方法 `pageCount` / `textInBBox` |
+| `src/adapters/pdf/PDFSource.ts` | **新增**。"一页能给我什么"的抽象 —— 有了它，取件逻辑可以用手搓的假源穷举边界，不必背着 30 页 fixture |
+| `src/adapters/pdf/pageTextIndex.ts` | **新增**。PDF 用户空间 → 归一化（**y 要翻过来**）、按阅读顺序排序、行间补换行（英文补空格、中文不补） |
+| `src/adapters/pdf/textSearch.ts` | **新增**。`bbox → 文本`，命中判据是"交叠占文字块自身的比例" |
+| `src/adapters/pdf/pdfDocumentCache.ts` | **新增**。有界 LRU + 并发去重；**淘汰时释放句柄** |
+| `src/adapters/pdf/pdfjsSource.ts` | **新增**。`pdfjs-dist/legacy` 无头真实现 |
+| `scripts/smoke-extension.mjs` | 30 → **33 项**：加了"打包进来的 pdfjs-dist 署名还在产物里"等 3 条 |
+| `packages/extension-anchor/test/pdfAdapter.test.ts` | **新增 19 条**（逻辑层 17 + 真解析 1 + 页头格式 1） |
+| **未在范围内但必须做的** | ① `core` 加 `PDFLocation.filePath`（见上）；② `core` 加 `rect.ts`（`intersectRects`/`rectArea` 现在有三个消费者，线2 那份改成复用）；③ `core` 加 `paths.ts`（S5 已做）；④ 新增 `THIRD_PARTY_NOTICES.md`；⑤ `commands.ts` 的 `adapterFor(anchor)`、`makeOutline` 补 PDF 页数、`withPdfText` 填 `extractedText` |
+
+**自动化验收结果**：`pnpm check` 全绿 —— **173 测**（core 28 + ext 133 + pdf 12）
++ `pnpm smoke` 33 项 + `pnpm smoke:chain` 115 项 + `pnpm smoke:pdf` 66 项
++ 上游的 pdf.js 不变式守卫。
+S7 点名的两条验收都在：`fetchContext({type:'page_range', start:22, end:24})` 返回带
+`--- 第 N 页 ---` 页头的文本；`bbox → 文本` 在真 fixture 的第 23 页命中且跨行补了换行。
+
+**`detect()` 的处置（从"延期"改成"明确不做"）**：用户同时开着编辑器和 PDF 是常态，
+"当前环境适不适用"没有唯一答案；选适配器的依据是锚点自己的 `sourceType`。
+见 D56 与 `CONTRACTS` §3.1。
+
+**验收靠**：**自动化**（这是唯一一片不需要用户动手的）。但用户仍可以看一眼：
+拿框选出来的那一块，讲解里第一步的内容应该就是那一块的字（`extractedText` 生效），
+而不是模型"凭空猜"出来的。
+
 ## S7 PDF 取件
 
 - **目标**：`page_range` 取附近页文字（`pdfjs-dist` legacy 无头，**不依赖 webview**）。
 - **范围**：`src/adapters/PDFAdapter.ts`、`src/adapters/pdf/{PDFSource.ts, pdfDocumentCache.ts, pageTextIndex.ts, textSearch.ts}`
 - **验收标准**：自动化 —— 30 页 fixture 上 `bbox → 文本` 命中第 23 页且跨行补换行；`fetchContext({type:'page_range', start:22, end:24})` 返回带 `--- 第 N 页 ---` 页头的文本。
 - **回退点**：`slice-S6`
+- **状态**：完成（`slice-S7`）。**全部切片到此做完**，见交付总览。

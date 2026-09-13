@@ -9,7 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isValidBBox } from '@anchor/core';
+import { isPDFLocation, isValidBBox } from '@anchor/core';
 import {
   intersectRects,
   pickDominantPage,
@@ -163,8 +163,9 @@ test('parseSelectMessage：geometry 是可选的，带了就解析，坏了就�
 // ── Anchor 组装 ────────────────────────────────────────────────────────────
 
 test('buildPdfAnchor：产出的是一个合法 PDF 锚点，且 sourceId 有退化路径', () => {
+  const PDF = 'C:' + '\repo\test\fixtures\sample-30p.pdf';
   const anchor = buildPdfAnchor({
-    filePath: 'C:\\repo\\test\\fixtures\\sample-30p.pdf',
+    filePath: PDF,
     sourceName: 'sample-30p.pdf',
     sourceId: 'sha1:abc',
     page: 23,
@@ -174,7 +175,7 @@ test('buildPdfAnchor：产出的是一个合法 PDF 锚点，且 sourceId 有退
   assert.equal(anchor.sourceType, 'pdf');
   assert.equal(anchor.sourceId, 'sha1:abc');
   assert.equal(anchor.sourceName, 'sample-30p.pdf');
-  assert.deepEqual(anchor.location, { page: 23, bbox: [0.1, 0.2, 0.5, 0.6] });
+  assert.deepEqual(anchor.location, { page: 23, bbox: [0.1, 0.2, 0.5, 0.6], filePath: PDF });
   assert.equal(anchor.capturedImage, undefined, 'S5 不产图（第二层视觉兜底还没做）');
 
   const fallback = buildPdfAnchor({
@@ -185,6 +186,19 @@ test('buildPdfAnchor：产出的是一个合法 PDF 锚点，且 sourceId 有退
     bbox: [0, 0, 1, 1],
   });
   assert.equal(fallback.sourceId, '/tmp/a.pdf', '没有指纹时退化成路径，而不是让框选失败');
+});
+
+test('buildPdfAnchor 带上 filePath 是**必须**的（S7）：线1 要靠它去读文件取件', () => {
+  const anchor = buildPdfAnchor({
+    filePath: '/docs/spec.pdf',
+    sourceName: 'spec.pdf',
+    sourceId: 'sha1:z',
+    page: 2,
+    bbox: [0.1, 0.1, 0.2, 0.2],
+  });
+  const loc = anchor.location;
+  assert.ok(isPDFLocation(loc));
+  assert.equal(loc.filePath, '/docs/spec.pdf', '没有它，线1 只说得出"第 2 页的哪一块"，说不出"哪一份"');
 });
 
 test('describePdfAnchor：把 bbox 说成人话（线2 不画框，位置只能用文字交代）', () => {
