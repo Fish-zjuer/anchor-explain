@@ -506,6 +506,18 @@ S7 点名的两条验收都在：`fetchContext({type:'page_range', start:22, end
 
 详见 D62、`CONTRACTS` §5.5 / §6。数字：208 测 / `pnpm smoke` 63 项。
 
+### S8 的第三处补丁（"填完不记忆"，2026-09-13）
+
+用户填完三个输入框**什么都没发生**（原话"这样填完不记忆，没用"）。两个原因：
+① `update()` 在 `settings.json` 有语法错时会抛，而 `configure` **没接住**，写完也**没验读**；
+② 他的 `providers` **少了一层**（`{ baseUrl, tier1Model }`），而当时的 `configuredProviderIds()`
+把 `tier1Model` 当成 provider id 显示出来 —— 提示本身就在骗人。
+
+修法：`writeSettings()` 接住异常 + 给「打开 settings.json」按钮；写完**回读**；
+`looksFlattened()` + 一步"整理好它"；provider id 只认值是对象的键；面板点命令失败也说话。
+
+详见 D63。数字：210 测 / `pnpm smoke` 73 项。
+
 ## S8 固定按钮与开始界面
 
 - **目标**：给整个产品一个**固定的门厅** —— 活动栏一个图标，点开是「开始」面板

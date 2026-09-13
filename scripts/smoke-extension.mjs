@@ -45,11 +45,19 @@ const registered = new Map();
 const statusBarItems = [];
 const executedCommands = [];
 const webviewViews = [];
+/** 输入框排队的答案（`undefined` = 用户按了 Esc）；`warningAnswer` = 警告框点了哪颗按钮 */
+const inputAnswers = [];
+let warningAnswer;
+/** 设置写入的记录（`Anchor: 配置模型端点` 会写它 —— 这条要验） */
+const settingsWrites = [];
 let activeTextEditor;
 let peerInstalled = false;
 
 const vscodeStub = {
   StatusBarAlignment: { Left: 1, Right: 2 },
+  // S8：`Anchor: 配置模型端点` 用 `ConfigurationTarget.Global` 写用户设置。
+  // 漏了它的话 `update()` 会抛 TypeError，而那正好又是一次"点了没反应" —— 桩必须齐。
+  ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
   window: {
     get activeTextEditor() {
       return activeTextEditor;
@@ -58,9 +66,13 @@ const vscodeStub = {
       messages.push(msg);
       return Promise.resolve(undefined);
     },
-    showWarningMessage(msg) {
+    showWarningMessage(msg, ...items) {
       messages.push(msg);
-      return Promise.resolve(undefined);
+      return Promise.resolve(items.includes(warningAnswer) ? warningAnswer : undefined);
+    },
+    // S8：`Anchor: 配置模型端点` 的三个输入框。答案由测例排队给（`inputAnswers`）
+    showInputBox(options) {
+      return Promise.resolve(inputAnswers.shift());
     },
     showErrorMessage(msg) {
       messages.push(msg);
@@ -110,10 +122,19 @@ const vscodeStub = {
       return uri.fsPath;
     },
     // S3：命令层每次讲解都现读配置（改完设置不必重载窗口）
+    // S8：`Anchor: 配置模型端点` 会**写**设置，所以这里得像个真配置：update 改的就是 get 读的那份
     getConfiguration() {
       return {
         get(key) {
           return SETTINGS[key];
+        },
+        inspect(key) {
+          return { globalValue: SETTINGS[key] };
+        },
+        update(key, value, target) {
+          SETTINGS[key] = value;
+          settingsWrites.push({ key, value, target });
+          return Promise.resolve();
         },
       };
     },
@@ -398,6 +419,68 @@ check(
 );
 check(executedCommands.length === peerBefore, '……并且没有真的去执行那条不存在的命令');
 peerInstalled = true;
+
+// ---- S8 补：`Anchor: 配置模型端点` 会**写用户设置**，这段是它的回归测 -------------
+// 起因是用户的原话"这样填完不记忆，没用"：第一版没接住 `update()` 的异常（settings.json
+// 有语法错时 VS Code 拒绝写），于是点完三个输入框**什么都没发生**、也没提示。
+const configure = registered.get('anchorExplain.configure');
+check(typeof configure === 'function', '注册了命令 anchorExplain.configure');
+
+SETTINGS.providers = undefined;
+SETTINGS.activeProvider = undefined;
+settingsWrites.length = 0;
+// providers 是空的 → 不问 provider id，只问 baseUrl 与模型名（两个答案按顺序排队）
+inputAnswers.push('https://api.deepseek.com', 'deepseek-chat');
+await configure?.();
+const providersWrite = settingsWrites.find((w) => w.key === 'providers');
+check(
+  providersWrite?.value?.default?.baseUrl === 'https://api.deepseek.com' &&
+    providersWrite?.value?.default?.tier1Model === 'deepseek-chat',
+  '三个输入框的答案真的写进了 providers.default',
+  JSON.stringify(providersWrite?.value ?? null),
+);
+check(
+  settingsWrites.some((w) => w.key === 'activeProvider' && w.value === 'default'),
+  '并把 activeProvider 指过去（否则配好了也用不上）',
+);
+check(
+  !JSON.stringify(settingsWrites).includes('apiKey'),
+  '写设置的命令**永不写 apiKey**（密钥只有 SecretStorage 一条路）',
+);
+
+// 写完当场反映到面板上：这才是"记忆住了"（用户报的正是这一条）
+const beforeReconfigure = posted.length;
+receiveFromPanel?.({ type: 'start:ready' });
+await waitFor(() => posted.length > beforeReconfigure);
+const configuredModel = posted.at(-1)?.model;
+check(configuredModel?.status?.[0]?.tone === 'ok', '配完之后面板的「模型」那行变成正常色（不用重载窗口）');
+check(
+  configuredModel?.sections?.some((section) => section.actions.some((a) => a.id === 'setApiKey' && a.enabled)),
+  '配完之后「设置 API Key」当场变亮',
+);
+
+// "少了一层"的形状：先问一句，用户点「整理好它」→ 整理成 providers.default（D63）
+SETTINGS.providers = { baseUrl: 'https://flat.test/v1', tier1Model: 'flat-model' };
+SETTINGS.activeProvider = 'default';
+settingsWrites.length = 0;
+warningAnswer = '整理好它';
+messages.length = 0;
+await configure?.();
+check(
+  SETTINGS.providers?.default?.baseUrl === 'https://flat.test/v1' &&
+    SETTINGS.providers?.default?.tier1Model === 'flat-model',
+  '把"少一层"的 providers 整理成 providers.default（值一个不丢）',
+  JSON.stringify(SETTINGS.providers ?? null),
+);
+check(settingsWrites.length > 0 && (messages.at(-1) ?? '').length > 0, '整理完有回话（不许静默）');
+
+// 用户点「我自己改」时什么都不动
+SETTINGS.providers = { baseUrl: 'https://flat.test/v1', tier1Model: 'flat-model' };
+settingsWrites.length = 0;
+warningAnswer = '我自己改';
+await configure?.();
+check(settingsWrites.length === 0, '点「我自己改」时一行设置都不动');
+check(SETTINGS.providers?.baseUrl === 'https://flat.test/v1', '……原来的内容也没被碰');
 
 // .vscodeignore：图标与演练的 markdown 必须打进 .vsix，否则装了扩展也是个没有图标的按钮
 const extIgnoreText = readFileSync(join(PKG_DIR, '.vscodeignore'), 'utf8');

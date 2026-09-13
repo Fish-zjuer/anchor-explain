@@ -997,6 +997,43 @@ symlink 要管理员权限（或开发者模式），junction 不要。
 
 
 
+## D63 写设置的命令必须**验读**，且"少一层"的 providers 要能救回来（S8 补）
+
+**用户的原话**："这样填完不记忆，没用。" 三个输入框都填了、都按了回车，**什么都没发生**。
+
+**两个原因，一个是我的锅，一个是他手写的坑，两个都要修**：
+
+1. **`workspace.getConfiguration().update()` 会抛，而我没接住**。`settings.json` 有语法错误时
+   VS Code 拒绝写入，`update` 返回 rejected promise；第一版 `configure` 直接 `await` 它，
+   异常逃到命令边界 —— 用户看到的仍是"点了没反应"（连报错框都没有）。
+   而且**写完没验读**：即使写失败，我也照样打印"已写入 xxx"。
+   → 修法：`writeSettings()` 统一接住异常并**给一颗「打开 settings.json」的按钮**；
+   写完**回读一遍**，读不回来就抛错（宁可明说失败，也不许打印成功文案）。
+2. **他的 `providers` 少了一层**：写成 `{ baseUrl, tier1Model }` 而不是 `{ default: { … } }`。
+   这种形状下 `resolveProvider` 永远返回 null —— 而**用户看着自己填的 baseUrl 明明就在文件里**。
+   更糟的是 `configuredProviderIds()` 当时直接把 `Object.keys` 交出去，于是命令还在问他
+   "已有的：**tier1Model**（直接回车就改当前在用的那个）" —— 把一个**字段名当成了 provider id**。
+   → 修法：`looksFlattened()` 认出来（判据是"baseUrl/tier1Model 是不是字符串"，
+   不能拿"有没有非对象的值"判 —— `extraHeaders` 本身就是对象）；命令**先问一句
+   "要我整理成 `providers.default` 吗"**，点「整理好它」就搬过去（值一个不丢，
+   已经写对的字段优先），点「我自己改」一行都不动；provider id 只认**值是对象**的键。
+   另外**配完还要复读一次配置**：写进去了却依然读不到 provider 时不许报成功。
+
+**顺带**：面板点任何命令失败也会**说出来**了（`runStartAction` 接了 try/catch）。
+静默的命令失败与"点了没反应"在用户眼里是同一件事 —— 这个切片的主题就是"别让失败无声"。
+
+**验证**：`pnpm check` 全绿 —— **210 测**（core 28 + ext 170 + pdf 12，本轮 +2）
+→ `pnpm smoke` **73** 项（+10：三个输入框的答案真的写进 `providers.default`、`activeProvider`
+被指过去、**永不写 apiKey**、配完面板当场变亮、"少一层"能被整理回来、「我自己改」一行不动）。
+冒烟在这一轮**又抓到一个真的**：桩里少了 `ConfigurationTarget`，于是 `update` 抛 TypeError ——
+而那正好又是一次"点了没反应"。
+
+**状态**：生效。
+
+---
+
+## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
+
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。
 **后半句对，前半句错**，三份文档（D39 / CONTRACTS §9.5 / STATE 约束 14）都照着错的写了，
 而 `packages/extension-anchor/package.json` 一直是 `engines.vscode: "^1.90.0"` —— 它是对的。

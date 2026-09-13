@@ -14,8 +14,10 @@ import {
   checkBaseUrl,
   clampRounds,
   describeConfig,
+  looksFlattened,
   mergeProvider,
   normalizeBaseUrl,
+  promoteFlattenedProviders,
   resolveConfig,
   resolveProvider,
 } from '../src/config.ts';
@@ -158,4 +160,40 @@ test('normalizeBaseUrl：去掉结尾斜杠（我们拼的是 ${baseUrl}/chat/co
   assert.equal(normalizeBaseUrl(' https://a.test/v1/ '), 'https://a.test/v1');
   assert.equal(normalizeBaseUrl('https://a.test/v1'), 'https://a.test/v1');
   assert.equal(normalizeBaseUrl('https://a.test///'), 'https://a.test');
+});
+
+test('looksFlattened：认出"少了一层"的 providers（D63）', () => {
+  // 正确形状：每个 provider 是一个对象
+  assert.equal(looksFlattened({ default: { baseUrl: 'https://a/v1', tier1Model: 'm' } }), false);
+  // 少了一层：baseUrl / tier1Model 被直接写在 providers 下面 —— 用户真的这么写过
+  assert.equal(looksFlattened({ baseUrl: 'https://a/v1', tier1Model: 'm' }), true);
+  assert.equal(looksFlattened({ baseUrl: 'https://a/v1' }), true);
+  // extraHeaders 本身就是对象，不能拿"有没有非对象的值"当判据
+  assert.equal(looksFlattened({ default: { baseUrl: 'https://a/v1', tier1Model: 'm', extraHeaders: {} } }), false);
+  assert.equal(looksFlattened(undefined), false);
+  assert.equal(looksFlattened('一整段字符串'), false);
+});
+
+test('promoteFlattenedProviders：整理成正确形状，且**已经写对的字段优先**', () => {
+  // 纯扁平：两个字段直接搬进目标 id
+  assert.deepEqual(promoteFlattenedProviders({ baseUrl: 'https://a/v1', tier1Model: 'm' }, 'default'), {
+    default: { baseUrl: 'https://a/v1', tier1Model: 'm' },
+  });
+
+  // 混着真 provider：真 provider 原样留着，零散字段补进目标 id
+  assert.deepEqual(
+    promoteFlattenedProviders({ baseUrl: 'https://a/v1', tier1Model: 'm', work: { baseUrl: 'https://w/v1', tier1Model: 'w' } }, 'default'),
+    {
+      work: { baseUrl: 'https://w/v1', tier1Model: 'w' },
+      default: { baseUrl: 'https://a/v1', tier1Model: 'm' },
+    },
+  );
+
+  // 目标 id 本来就有正确字段：**不许被那几行零散字段盖掉**
+  assert.deepEqual(
+    promoteFlattenedProviders({ baseUrl: '垃圾', tier1Model: '垃圾', work: { baseUrl: 'https://w/v1', tier1Model: 'w' } }, 'work'),
+    { work: { baseUrl: 'https://w/v1', tier1Model: 'w' } },
+  );
+
+  assert.deepEqual(promoteFlattenedProviders('坏东西', 'default'), {});
 });

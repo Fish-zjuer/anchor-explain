@@ -155,6 +155,49 @@ export function normalizeBaseUrl(raw: string): string {
 }
 
 /**
+ * `providers` 这个对象**少了一层**吗（D63）。
+ *
+ * 正确形状是"每个 provider 是一个对象"：`{ default: { baseUrl, tier1Model } }`。
+ * 手写时很容易写成 `{ baseUrl, tier1Model }` —— 少了 provider 那一层。
+ * 判据用**这两个字段是不是字符串**（而不是"有没有非对象的值"）：`extraHeaders` 之类
+ * 本身就是对象，用它判会误报。
+ *
+ * 为什么值得专门认出来：这种形状下 `resolveProvider` 拿到的是一位字符串，
+ * 于是永远"没有可用的 provider"，而**用户看着自己填的 baseUrl 明明在文件里** ——
+ * 这是最难自查的一类错（真实发生过，D63）。
+ */
+export function looksFlattened(raw: unknown): boolean {
+  if (!isRecord(raw)) return false;
+  return typeof raw.baseUrl === 'string' || typeof raw.tier1Model === 'string';
+}
+
+/** provider 自己的字段。修"少一层"时只搬这几个键，其余键当成真 provider 原样留着。 */
+const PROVIDER_FIELDS = ['baseUrl', 'tier1Model', 'tier2Model', 'apiKey', 'extraHeaders', 'extraBody'] as const;
+
+/**
+ * 把"少了一层"的 `providers` 整理成正确形状：`{ baseUrl, tier1Model }` → `{ <id>: { baseUrl, tier1Model } }`。
+ *
+ * 只搬那几个**provider 字段**，其余键（真 provider）原样保留；目标 id 下**已经写对的字段优先**
+ * （零散字段只补空缺，不许覆盖一个本来正确的 provider）。整理完的形状 `resolveProvider` 一定能吃。
+ */
+export function promoteFlattenedProviders(raw: unknown, id: string): Record<string, unknown> {
+  if (!isRecord(raw)) return {};
+  const out: Record<string, unknown> = {};
+  const moved: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(raw)) {
+    if ((PROVIDER_FIELDS as readonly string[]).includes(key)) moved[key] = value;
+    else out[key] = value;
+  }
+
+  // 顺序是刻意的：**已有的字段赢**。那几行零散字段是"写错层"的残留，
+  // 它们只补空缺，不许覆盖一个本来就已经写对了的 provider。
+  const existing = out[id];
+  out[id] = { ...moved, ...(isRecord(existing) ? existing : {}) };
+  return out;
+}
+
+/**
  * 把一个新配的 provider 并进已有的 `providers` 对象（`Anchor: 配置模型端点` 的纯逻辑）。
  *
  * 三条刻意的地方：

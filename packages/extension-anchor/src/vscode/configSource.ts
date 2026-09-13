@@ -12,7 +12,8 @@
  */
 
 import * as vscode from 'vscode';
-import { apiKeySecretName, mergeProvider, resolveConfig } from '../config.ts';
+import { AnchorError } from '@anchor/core';
+import { apiKeySecretName, mergeProvider, normalizeBaseUrl, resolveConfig } from '../config.ts';
 import type { AnchorConfig } from '../config.ts';
 
 const SECTION = 'anchorExplain';
@@ -67,16 +68,29 @@ export async function storeApiKey(context: vscode.ExtensionContext, providerId: 
   return true;
 }
 
-/** 供设置命令挑选 provider id：优先用已配置的那些，一个都没有时退回默认 id。 */
+/** 供设置命令挑选 provider id：**只认"值是一个对象"的键**（那才是 provider）。
+ *
+ * @anchor 不能直接把 `Object.keys` 交出去：用户手写坏过之后，`providers` 里会躺着
+ *         `tier1Model` 这种**字段名当键**的残留（少写了一层）。把它当成 provider id 显示出来，
+ *         用户看到的是"已有的：tier1Model"，然后我们的输入框会在他填 `DeepSeek` 时
+ *         另开一个 provider，两边的值永远对不上（D63）。
+ */
 export function configuredProviderIds(): string[] {
-  const providers = vscode.workspace.getConfiguration(SECTION).get('providers');
+  const providers = vscode.workspace.getConfiguration(SECTION).inspect<unknown>('providers')?.globalValue;
   if (typeof providers !== 'object' || providers === null) return [];
-  return Object.keys(providers as Record<string, unknown>);
+  return Object.entries(providers as Record<string, unknown>)
+    .filter(([, value]) => typeof value === 'object' && value !== null && !Array.isArray(value))
+    .map(([key]) => key);
+}
+
+/** 用户设置里那个原始的 `providers`（可能是"少一层"的坏形状，交给纯函数去认）。 */
+export function rawProviders(): unknown {
+  return vscode.workspace.getConfiguration(SECTION).inspect<unknown>('providers')?.globalValue;
 }
 
 /** 某个 provider 的原始值。配置命令拿它预填输入框，免得"只改一个字段"要重打整行。 */
 export function rawProvider(id: string): Record<string, unknown> | undefined {
-  const providers = vscode.workspace.getConfiguration(SECTION).inspect<unknown>('providers')?.globalValue;
+  const providers = rawProviders();
   if (typeof providers !== 'object' || providers === null) return undefined;
   const value = (providers as Record<string, unknown>)[id];
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
@@ -93,6 +107,10 @@ export function rawProvider(id: string): Record<string, unknown> | undefined {
  *
  * `inspect().globalValue` 而不是 `get()`：后者会把工作区级的值与默认值一起捞进来，
  * 一次"配置端点"就把别人的设置复制进用户设置 —— 那是污染，不是配置。
+ *
+ * **写完要验读**（D63）：`settings.json` 有语法错时 `update()` 可能抛错、也可能写进去却被忽略，
+ * 而用户看到的都是"我明明填了"。所以这里写完立刻回读，读不回来就**明说失败**，
+ * 别让调用方去打印一句"已写入 xxx"的成功文案。
  */
 export async function writeProviderSettings(
   id: string,
@@ -100,13 +118,22 @@ export async function writeProviderSettings(
   tier1Model: string,
 ): Promise<{ replaced: boolean; activeChanged: boolean }> {
   const settings = vscode.workspace.getConfiguration(SECTION);
-  const merged = mergeProvider(settings.inspect<unknown>('providers')?.globalValue, id, baseUrl, tier1Model);
+  const merged = mergeProvider(rawProviders(), id, baseUrl, tier1Model);
   await settings.update('providers', merged.providers, vscode.ConfigurationTarget.Global);
 
   // 配完不指过去，用户会遇到最气人的一种失败：配置明明写对了，讲解却说"没有可用的 provider"
   const active = settings.inspect<string>('activeProvider')?.globalValue;
   const activeChanged = active !== id;
   if (activeChanged) await settings.update('activeProvider', id, vscode.ConfigurationTarget.Global);
+
+  const readBack = rawProvider(id);
+  if (!readBack || readBack.baseUrl !== normalizeBaseUrl(baseUrl)) {
+    throw new AnchorError(
+      'PROVIDER_ERROR',
+      '设置没写进去（写完读回来还是旧的）。最常见的原因是 settings.json 里有语法错误 —— ' +
+        'VS Code 会拒绝改一个坏掉的文件。打开它看一眼：语法错标红的那一行删掉再试一次。',
+    );
+  }
 
   return { replaced: merged.replaced, activeChanged };
 }

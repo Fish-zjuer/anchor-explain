@@ -287,6 +287,8 @@ pnpm devhost:pdf      # 线2（PDF 视图）
 | 弹了「只放了光标，没有选中内容」 | 这就是 S2 的行为：没选区不猜，问你要不要讲整份 | 点「讲解整个文件」，或先选中一段再按一次 |
 | 确认框里写的行区间不是我选的 | 选区在弹框之前被改了（点了别处） | 重选一次；`Anchor: 显示状态` 的「上次捕获」是权威值 |
 | 弹了「Anchor：没有可用的 provider（activeProvider = …）」 | 还没配模型端点，或 `baseUrl`/`tier1Model` 有一个没填 | 跑 `Anchor: 配置模型端点`（三个输入框）；`Anchor: 显示状态` 会报当前读到的是什么 |
+| **点「配置模型端点」填完三个框，什么都没发生** | 写设置被拒（`settings.json` 有语法错时 VS Code 不让人改它） | 现在会**明确报出来**并给一颗「打开 settings.json」—— 把标红那几行删掉再试 |
+| **`providers` 少了一层**（`{ baseUrl, tier1Model }` 而不是 `{ default: { … } }`） | 手写时少写了一层，于是永远"没有可用的 provider"，而 baseUrl 明明在文件里 | 跑 `Anchor: 配置模型端点`：它会先问一句"要我整理成 `providers.default` 吗"（D63） |
 | **`settings.json` 报"预期为文件结尾" / "应为属性"** | 手写 `providers` 时多了一层 `{`，或者把整段对象填进了 `anchorExplain.activeProvider`（那是个**字符串**设置） | 把那两行删掉，改用 `Anchor: 配置模型端点` 写一遍（它只会写对）；`activeProvider` 该填的是 provider 的**键名**，如 `"default"` |
 | 弹了「连不上 https://…」 | `baseUrl` 写错，或网络/代理不通 | 核对地址（要带 `/v1` 这类前缀，但不带 `/chat/completions`） |
 | 弹了「模型端点返回 401 / invalid api key」 | key 没存、存错了 provider、或已过期 | 重跑 `Anchor: 设置 API Key`（选对 provider id） |
@@ -350,7 +352,7 @@ pnpm build            # 或 pnpm watch，产物落在本包 dist/extension.cjs
 pnpm devhost          # 不用 F5，直接起扩展开发宿主（会先 build，见上）
 pnpm preview:sidebar  # 起本地服务看侧边栏排版：不用 VS Code，改 UI 时先自己看一眼（D50）
 pnpm check            # 在根执行：typecheck → test → build → smoke → smoke:chain
-pnpm test             # 在根执行：core 28 条 + 本包 168 条 + 线2 12 条
+pnpm test             # 在根执行：core 28 条 + 本包 170 条 + 线2 12 条
 pnpm smoke:chain      # 单独的链路冒烟
 ```
 
@@ -362,8 +364,8 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（168 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
-| 产物冒烟（63 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示 → 「配置模型端点」「打开设置」都真的落到命令上） |
+| 单测（170 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
+| 产物冒烟（73 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示 → 「配置模型端点」「打开设置」都真的落到命令上） |
 | 链路冒烟（115 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
 
 这三层都只对**最外层边界**（`vscode` 模块）打桩，桩之外全是真代码。

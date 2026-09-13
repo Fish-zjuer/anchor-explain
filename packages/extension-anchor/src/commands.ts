@@ -36,7 +36,14 @@ import { createPdfDocumentCache } from './adapters/pdf/pdfDocumentCache.ts';
 import { openPdfJsSource } from './adapters/pdf/pdfjsSource.ts';
 import { primaryLocationOf } from './playback/decorationPlan.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
-import { DEFAULT_ACTIVE_PROVIDER, checkBaseUrl, describeConfig, normalizeBaseUrl } from './config.ts';
+import {
+  DEFAULT_ACTIVE_PROVIDER,
+  checkBaseUrl,
+  describeConfig,
+  looksFlattened,
+  normalizeBaseUrl,
+  promoteFlattenedProviders,
+} from './config.ts';
 import { captureSummary } from './describe.ts';
 import { createOrchestrator } from './orchestrator/Orchestrator.ts';
 import { createModelRouter } from './orchestrator/ModelRouter.ts';
@@ -56,6 +63,7 @@ import { samePath } from './paths.ts';
 import {
   configuredProviderIds,
   rawProvider,
+  rawProviders,
   readAnchorConfig,
   storeApiKey,
   writeProviderSettings,
@@ -378,7 +386,13 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
 
-    await vscode.commands.executeCommand(action.command);
+    // 命中失败（比如配端点那条命令写设置被拒）也**必须说话**：静默的命令失败
+    // 与"点了没反应"在用户眼里是同一件事（D63）。
+    try {
+      await vscode.commands.executeCommand(action.command);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Anchor：执行「${action.title}」失败 —— ${userFacing(err)}`);
+    }
   }
 
   /**
@@ -609,19 +623,69 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   /**
+   * 写设置这件事的**唯一出口**：失败一律明确报出来，并给一个"打开 settings.json"的按钮（D63）。
+   *
+   * @anchor 为什么必须有它：`workspace.getConfiguration().update()` 在 `settings.json`
+   *         **有语法错误**时会抛（VS Code 拒绝改一个坏掉的文件）。第一版 `configure` 没接住这个异常，
+   *         于是用户点完三个输入框**什么都没发生**、也没有任何提示 —— 他的原话是"填完不记忆，没用"。
+   *         静默失败在这一步的代价特别大：用户会以为是扩展坏了，然后再也不试。
+   */
+  async function writeSettings<T>(run: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await run();
+    } catch (err) {
+      const picked = await vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`, '打开 settings.json');
+      if (picked) await vscode.commands.executeCommand('workbench.action.openSettingsJson');
+      return undefined;
+    }
+  }
+
+  /**
    * `Anchor: 配置模型端点` —— 点三下把端点配好（D62）。
    *
    * @anchor 为什么值得一条专门命令，而不是让用户去设置里手写：
    *         `providers` 是**嵌套对象**，在设置界面里不好改，用户于是手写 JSON ——
-   *         而这一步连续翻过两次车（第一次找不到入口，第二次把整段对象填进了
-   *         `activeProvider` 那个**字符串**设置里，整个 settings.json 语法都坏了）。
-   *         **一件事讲清楚两次还是做不对，就不该再靠讲**。三个输入框、带校验、带预填，
-   *         写完立刻能用，而且**永不碰 apiKey**（那个走 SecretStorage）。
+   *         而这一步连续翻过三次车：找不到入口、把整段对象填进 `activeProvider`、
+   *         以及**少写了一层**（`providers.baseUrl = "…"`，于是永远"没有可用的 provider"，
+   *         而他看着那个 baseUrl 就在文件里）。**一件事讲清楚三次还是做不对，就不该再靠讲。**
+   *
+   * 所以这条命令做三件事：**先认出坏形状并修好**（D63）→ 三个输入框 → **写完验读**。
+   * 全程**永不碰 apiKey**（那个走 SecretStorage）。
    */
   async function configure(): Promise<void> {
+    // ① 坏形状：providers 少了 provider 那一层。先救回来，否则新配的也读不到。
+    const raw = rawProviders();
+    if (looksFlattened(raw)) {
+      const target = configuredProviderIds()[0] ?? DEFAULT_ACTIVE_PROVIDER;
+      const answer = await vscode.window.showWarningMessage(
+        `Anchor：anchorExplain.providers 少了一层 —— baseUrl / tier1Model 被直接写在 providers 下面了。` +
+          `正确形状是 providers.<id> = { baseUrl, tier1Model }。要我整理成 providers.${target} 吗？`,
+        '整理好它',
+        '我自己改',
+      );
+      if (answer !== '整理好它') return;
+
+      const fixed = await writeSettings(async () => {
+        await vscode.workspace
+          .getConfiguration('anchorExplain')
+          .update('providers', promoteFlattenedProviders(raw, target), vscode.ConfigurationTarget.Global);
+        return promoteFlattenedProviders(raw, target);
+      });
+      if (fixed === undefined) return;
+
+      refreshStart();
+      const after = await readAnchorConfig(context);
+      void vscode.window.showInformationMessage(
+        after.provider
+          ? `Anchor：已整理成 providers.${target}（${describeConfig(after)}）。下一步：设置 API Key。`
+          : `Anchor：已整理成 providers.${target}，但仍读不到可用的 provider —— ${describeConfig(after)}`,
+      );
+      return;
+    }
+
+    // ② 三个输入框
     const ids = configuredProviderIds();
     let id = DEFAULT_ACTIVE_PROVIDER;
-
     if (ids.length > 0) {
       const picked = await vscode.window.showInputBox({
         title: 'Anchor：给哪个 provider 配端点？',
@@ -657,11 +721,22 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     });
     if (model === undefined) return;
 
-    const { replaced, activeChanged } = await writeProviderSettings(id, baseUrl, model);
+    // ③ 写 + 验读
+    const written = await writeSettings(() => writeProviderSettings(id, baseUrl, model));
+    if (written === undefined) return;
+
+    refreshStart();
+    const after = await readAnchorConfig(context);
+    if (!after.provider) {
+      // 写进去了却依然用不上：**不许报成功**（那正是上一版"不记忆"的观感来源）
+      void vscode.window.showWarningMessage(`Anchor：设置写了，但还是读不到可用的 provider —— ${describeConfig(after)}`);
+      return;
+    }
+
     void vscode.window.showInformationMessage(
-      `Anchor：已${replaced ? '更新' : '写入'}用户设置 anchorExplain.providers.${id}` +
+      `Anchor：已${written.replaced ? '更新' : '写入'}用户设置 anchorExplain.providers.${id}` +
         `（${model.trim()} @ ${normalizeBaseUrl(baseUrl)}）` +
-        `${activeChanged ? `，并把 activeProvider 指到 ${id}` : ''}。下一步：设置 API Key。`,
+        `${written.activeChanged ? `，并把 activeProvider 指到 ${id}` : ''}。下一步：设置 API Key。`,
     );
   }
 

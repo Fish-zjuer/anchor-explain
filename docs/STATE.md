@@ -106,8 +106,8 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
 13. **改 `test/fixtures/main.c` 第 40-48 行** → 必须同步 `fakes/fakeEditorPort.ts` 的 `FAKE_SELECTION_TEXT`、`fakes/fakeProvider.ts` 的脚本行号，**以及 `scripts/smoke-walkthrough.mjs` 里的 `EXPLANATION_JSON`**（S3 起链路冒烟的"模型输出"是它）。`test/fakes.test.ts` 有耦合锁拦前两个。
 14. **`@types/vscode` 必须精确等于 `engines.vscode` 的**下界**（现为 `1.90.0`，不带 `^`）；`engines.vscode` 本身是范围 `^1.90.0`。** 不变式是"类型版本 = 范围下界"，不是"两个字段字符串相同"。见 `CONTRACTS.md` §9.5 / D39。
 15. **仓库内文本一律 LF**（根 `.gitattributes` 钉死）。本机 `core.autocrlf=true`。见 D40。
-16. **全仓测试数**：core 28 + ext 168 + pdf 12 = **208**（13 个测试文件，全部 vscode-free；线2 那个包另外还跑上游的 pdf.js 不变式守卫）。
-17. **三个冒烟脚本分工不同**：`pnpm smoke`（**结构**：产物能加载、声明与注册对齐、webview 资源在不在、没有写文件的 API、**两个替身都已退出产物**，外加 **S8 起真跑一遍开始面板的宿主侧**）与 `pnpm smoke:chain`（**行为**：`capture` 从真选区跑到 decoration，**S3 起跑真编排循环**——只有 `globalThis.fetch` 是桩）与 `pnpm smoke:pdf`（线2）。断言条数：**63 + 115 + 67**。三者都**不替代 F5**。
+16. **全仓测试数**：core 28 + ext 170 + pdf 12 = **210**（13 个测试文件，全部 vscode-free；线2 那个包另外还跑上游的 pdf.js 不变式守卫）。
+17. **三个冒烟脚本分工不同**：`pnpm smoke`（**结构**：产物能加载、声明与注册对齐、webview 资源在不在、没有写文件的 API、**两个替身都已退出产物**，外加 **S8 起真跑一遍开始面板的宿主侧**）与 `pnpm smoke:chain`（**行为**：`capture` 从真选区跑到 decoration，**S3 起跑真编排循环**——只有 `globalThis.fetch` 是桩）与 `pnpm smoke:pdf`（线2）。断言条数：**73 + 115 + 67**。三者都**不替代 F5**。
 18. **`commands.ts` 里没有任何替身了**（S1 有两处，S2 删假选区，S3 删假 AI）。新加替身要能说清"为什么只能在最外层边界"。
 19. **侧边栏 CSS/客户端脚本是 TS 里的字符串常量**（内联进 webview，见 D42）。改 UI 必须同时想到：客户端脚本**不参与类型检查**，且 `ui/clientScript.ts` 里有一份 4 行的 `locationLabel` 副本。
 20. **`decorationPlan.ts` 会过滤掉所有非 `CodeLocation`** —— 这是"PDF 上不出现任何高亮框"的结构性保证。
@@ -154,7 +154,8 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
 61. **门厅不许是死路**（D61/D62）：面板上每个灰按钮的 `note` 都必须**指出下一步按哪颗按钮**，而且那颗按钮真的存在、**真的能把事办完**（"没配 providers" → `anchorExplain.configure` 三个输入框写好，而不是"带你去看设置"）。**灰按钮只描述症状不指路，等于把这句提示变成废话。** 另：用户可见的通知文案走 `userFacing()`（不带错误码）；判断成败仍然一律用码。
 62. **开始面板的动作要带参数时，参数写在命令里**（D61）：`start:run` 只回传 id（§5.5），面板说不出"带什么参数"；面板里也**不许**直接指向 VS Code 的内置命令 —— 那样"动作表里的命令必须在所属扩展里声明过"那条锁就守不住了（要包一层自己声明的命令）。
 63. **`Anchor: 配置模型端点` 是唯一会写设置的地方**（D62），边界写死在 `CONTRACTS §6`：只写 `providers[id]` 的 `baseUrl`/`tier1Model`（别的字段与别的 provider 原样保留），必要时把 `activeProvider` 指过去，**永不写 `apiKey`**；合并读 `inspect().globalValue`（不是 `get()`，那会把工作区级的值复制进用户设置）。"产物里没有任何文档写入 API"那条断言不变 —— 禁止的是写**文档**，写自己的设置是另一回事。
-64. **同一台阶卡两次就别再靠"讲清楚"**（D62）：这一步连续翻过两次车（没有入口 → 手写嵌套 JSON 把 `settings.json` 写坏）。判据是"用户要不要手写结构化数据"，要 → 就做成命令。
+64. **同一台阶卡两次就别再靠"讲清楚"**（D62）
+65. **写设置的地方必须"验读"**（D63）：`update()` 在 `settings.json` 有语法错时会抛，**不接住就是"点了没反应"**；写完要**回读**，读不回来就明说失败（不许打印成功文案）。命令失败一律要说话（面板的 `runStartAction` 也接了 try/catch）。另：`providers`"少一层"（`{ baseUrl, tier1Model }`）能被 `looksFlattened()` 认出来并整理，provider id 只认**值是对象**的键 —— 否则字段名会被当成 provider 名，用户看到的提示全是错的。：这一步连续翻过两次车（没有入口 → 手写嵌套 JSON 把 `settings.json` 写坏）。判据是"用户要不要手写结构化数据"，要 → 就做成命令。
 
 ## 待补 docs
 
