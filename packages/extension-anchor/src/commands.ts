@@ -26,6 +26,7 @@ import {
 import type {
   Anchor,
   CodeLocation,
+  ContextRequestLogEntry,
   ContextRequestLogger,
   EditorPort,
   ExplanationResult,
@@ -175,6 +176,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
             fetchedThisRun.push(entry.request.params.path);
           }
         }
+        // 侧边栏那块「取件日志」（D68）。记进本轮，等面板存在时再灌 —— 取件发生在建面板之前
+        traceThisRun.push(entry);
         onPhase?.(
           entry.accepted
             ? `第 ${entry.round} 轮取件：${JSON.stringify(entry.request.params)} → ${entry.resultChars ?? 0} 字`
@@ -203,11 +206,23 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 用户就会再点一次（看起来像"要点两次"）。
    */
   let busyPhase: string | undefined;
+  /** 有一份讲解正在跑（D68）。用它挡住重复按下 —— 详情见 `explain` 开头那段。 */
+  let running = false;
   /**
    * **本次**取件真读过的文件（S9a）。第二道 §3.3 闸门用它当"允许集合"——
    * 跨文件之后"不许漫游"的规则变成了"**你读过的文件才许引用**"。
    */
   let fetchedThisRun: string[] = [];
+  /**
+   * **本次**的取件记录（D68）。两条去向：输出通道（一直都在）与侧边栏那块「取件日志」。
+   *
+   * @anchor 为什么要暂存：`tooltrace:append` 早就定义好了、客户端也早就渲染了，
+   *         **只有宿主从来没发过** —— 于是侧边栏那块永远写着"本次讲解没有请求额外上下文"，
+   *         而它明明刚读了两个文件。用户就是拿着这句假话来的。
+   *         暂存的另一个原因：面板是**讲解完才建**的（他是在开始面板上按的按钮），
+   *         取件那几条发生在面板存在之前，只能先记下来、面板一建好再灌进去。
+   */
+  let traceThisRun: ContextRequestLogEntry[] = [];
   /**
    * 最近一次捕获的锚点与范围。**只为 `Anchor: 显示状态` 而留**：
    * 真选区接上之后，"我选的是不是我以为的那段"变成了唯一无法从屏幕上直接看出来的事
@@ -559,9 +574,34 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   async function explain(anchor: Anchor): Promise<void> {
+    /**
+     * **一次只许讲一份**（D68）。用户第二次按下的原因通常是"看不见进度"（D64 已经治了这个），
+     * 但真按下去时会发生一件坏事：第二次照常发请求、第一次的结果白拿、两次的进度通知
+     * 同时挂在屏幕上 —— 用户看到的可能是**第一次那份已经作废的通知**（第二次早已出结果），
+     * 于屏幕上既有讲解又有"正在讲解…"，像卡住了。已经有一份在跑时，这一次就是重复的，
+     * 明说一句然后不做（比"新的一次覆盖旧的"更省：不为同一处再花一次 token）。
+     */
+    if (running) {
+      busyPhase = '已经在讲解这一处了 —— 这一次重复的按下了，等它出来就好';
+      refreshStart();
+      status.showBusy('正在讲解…');
+      return;
+    }
+    running = true;
+    try {
+      await runExplain(anchor);
+    } finally {
+      running = false;
+    }
+  }
+
+  async function runExplain(anchor: Anchor): Promise<void> {
     stop();
     const gen = (generation += 1);
     fetchedThisRun = [];
+    traceThisRun = [];
+    // 面板存在的话先清空（不存在就等下面灌的时候一起给）—— 它不该显示上一轮读了什么
+    sidebar?.post({ type: 'tooltrace:reset' });
     status.showBusy('正在讲解…');
 
     /**
@@ -650,6 +690,14 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
     busyPhase = undefined;
+    /**
+     * 把本轮的取件记录灌进侧边栏那块「取件日志」（D68）。
+     * 顺序：先 reset（清掉上一轮的）再逐条 append —— 面板刚建好时这些消息会进它的重放缓冲，
+     * webview 一 `ui:ready` 就照单收到，所以这里不必关心"面板的脚本起来没有"。
+     */
+    const panel = sidebarOf();
+    panel.post({ type: 'tooltrace:reset' });
+    for (const entry of traceThisRun) panel.post({ type: 'tooltrace:append', entry });
     startSession(result);
   }
 

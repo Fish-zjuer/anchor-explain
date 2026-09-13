@@ -289,5 +289,23 @@ test('S9a 去重按**解析后的文件**比对：同一个文件换个写法也
   );
   assert.equal(again.accepted, false, '同一个文件（不同写法）的区间重叠应判重复');
   assert.match(again.accepted === false ? again.reason : '', /已经取过了/);
+  // 跨文件之后这条文案**必须说清是哪个文件**（D68：用户的截图里就是"1-60 这个区间"，
+  // 读起来像在说锚点文件；模糊的指认会把模型和看日志的人一起带偏）
+  assert.match(again.accepted === false ? again.reason : '', /ring_buffer\.h 的 1-20 行/, '要说清哪个文件的哪几行');
   assert.equal(again.accepted === false ? again.content : '', '旧内容', '并把上次的内容回灌');
+});
+
+test('D68 去重文案：PDF 用页码指认，不用文件名', () => {
+  const pdfState = state({
+    capabilities: { contextTypes: ['page_range'], maxSpan: 10 },
+    pageCount: 30,
+    fetched: [{ type: 'page_range', path: null, start: 3, end: 5, content: '旧内容' }],
+  });
+  const again = validateContextRequest(
+    { type: 'page_range', params: { start: 4, end: 6 }, reason: '再看一眼' },
+    pdfAnchor(),
+    pdfState,
+  );
+  assert.equal(again.accepted, false);
+  assert.match(again.accepted === false ? again.reason : '', /第 3-5 页/);
 });

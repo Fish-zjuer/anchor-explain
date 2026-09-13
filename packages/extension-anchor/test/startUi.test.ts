@@ -69,3 +69,26 @@ test('renderStartHtml：面板不加载任何外部资源（因此不需要 loca
   assert.ok(!html.includes('<link'), '出现了外部样式表/资源引用');
   assert.ok(!html.includes('<img'), '出现了图片引用');
 });
+
+// ── D68：侧边栏那块「取件日志」 ────────────────────────────────────────────
+//
+// 这块曾经是一句假话：`tooltrace:append` 在协议里、在客户端渲染里都实现了，
+// **只有宿主从来没发过** —— 于是它永远写着"本次讲解没有请求额外上下文"，
+// 而那一轮明明读了两个文件。用户就是拿着这句假话来的。
+// 客户端脚本是字符串常量，这里只能钉住"该处理的消息在、该显示的东西在"。
+
+test('D68：侧边栏脚本处理取件日志的两条消息（append 与 reset）', () => {
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('tooltrace:append'), '缺取件记录的处理');
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('tooltrace:reset'), '缺新一轮的清空（不然两轮日志会叠在一起）');
+});
+
+test('D68：取件日志要显示"哪个文件的哪几行"，不只是类型', () => {
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('describeEntry'), '缺指认那一段的渲染');
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('params.path'), '要读请求里的路径');
+  assert.ok(
+    SIDEBAR_CLIENT_SCRIPT.includes('parts[parts.length - 1]'),
+    '只取文件名（面板窄；完整路径在输出面板「Anchor」里）',
+  );
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('行'), '缺行范围（截图问题 3.4 的验收就是这一句）');
+  assert.ok(SIDEBAR_CLIENT_SCRIPT.includes('页'), '缺 PDF 那条（按页取件也要指认得清）');
+});

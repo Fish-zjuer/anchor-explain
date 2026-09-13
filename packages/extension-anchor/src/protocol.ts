@@ -59,6 +59,18 @@ export type HostToSidebar =
       pointIndex: number;
     }
   | { type: 'session:end' }
+  /**
+   * 【D68 新增】`tooltrace:reset`：**一轮讲解开始时清空侧边栏那块取件日志**。
+   *
+   * 为什么非有不可：`tooltrace:append` 是"追加"，而 webview 的 `trace` 数组**活得比一轮讲解长**
+   * （同一个面板接着讲第二次是常态）。没有 reset，第二轮会把上一轮的记录留在下面，
+   * 用户看到的是两次讲解混在一起的日志 —— 那比"没有日志"更坏。
+   *
+   * 另一件事也在这儿说清：宿主侧的取件日志是**逐轮多份**的（`loggerOf()` 每次讲解新建 logger），
+   * 但面板是**讲解完才建**的（用户是在开始面板上按的按钮）—— 取件那些记录在面板存在之前就发生了。
+   * 宿主因此把它们暂存下来，面板一建好就 `reset` + 逐条 `append` 灌进去（见 `commands.ts` 的 `explain`）。
+   */
+  | { type: 'tooltrace:reset' }
   | { type: 'tooltrace:append'; entry: ContextRequestLogEntry };
 
 /**

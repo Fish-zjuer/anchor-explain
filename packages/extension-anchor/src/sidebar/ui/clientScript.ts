@@ -152,6 +152,24 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return bar;
   }
 
+  /**
+   * 「读了哪个文件的哪几行」—— 用户要看的就是这一句（截图问题 3.4）。
+   * 路径只取文件名：面板窄，而"哪个文件"靠文件名就够了（完整路径在输出面板「Anchor」里）。
+   */
+  function describeEntry(e) {
+    var req = (e && e.request) || {};
+    var params = req.params || {};
+    var kind = req.type ? req.type : "未知请求";
+    var start = typeof params.start === "number" ? params.start : "?";
+    var end = typeof params.end === "number" ? params.end : "?";
+    if (kind === "file" && typeof params.path === "string") {
+      var parts = params.path.split(/[\\/]/);
+      return parts[parts.length - 1] + " " + start + "-" + end + " 行";
+    }
+    if (kind === "page_range") return "第 " + start + "-" + end + " 页";
+    return kind;
+  }
+
   function buildTrace() {
     var box = mk("section", "trace");
     var title = mk("h2", null, "取件日志");
@@ -167,9 +185,8 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       var reason = e.rejectReason ? "（" + e.rejectReason + "）" : "";
       var chars = typeof e.resultChars === "number" ? " · " + e.resultChars + " 字" : "";
       // 逐字段防御：entry 的形状由宿主保证，但这一段不能让整块日志消失
-      var kind = e && e.request && e.request.type ? e.request.type : "未知请求";
       var round = typeof e.round === "number" ? e.round : "?";
-      ul.appendChild(mk("li", null, "第 " + round + " 轮 " + kind + " " + mark + reason + chars));
+      ul.appendChild(mk("li", null, "第 " + round + " 轮 " + describeEntry(e) + " " + mark + reason + chars));
     }
     box.appendChild(ul);
     return box;
@@ -241,6 +258,10 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       render();
     } else if (msg.type === "session:end") {
       if (snapshot) snapshot.ended = true;
+      render();
+    } else if (msg.type === "tooltrace:reset") {
+      // 新一轮讲解开始：清空上一轮的记录（这个数组活得比一轮讲解长，见协议里的说明）
+      trace = [];
       render();
     } else if (msg.type === "tooltrace:append") {
       trace.push(msg.entry);

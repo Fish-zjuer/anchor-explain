@@ -84,6 +84,18 @@ export interface FetchedSpan {
   content: string;
 }
 
+/**
+ * 一句人话指认"取过的是哪一段"：文件用**文件名 + 行范围**，PDF 用页码。
+ *
+ * @anchor 跨文件之后"1-60"是有歧义的（哪个文件的 1-60？）—— 而这条文案既回灌给模型，
+ *         也是用户在输出面板/侧边栏里看到的那句。含糊的指认会把两件事同时毁掉：
+ *         模型可能以为"这份文件读过了"而不再申请，看日志的人也复核不了它到底读了哪儿（D68）。
+ */
+function describeFetched(span: Omit<FetchedSpan, 'content'>): string {
+  if (span.path !== null) return `${basenameOf(span.path)} 的 ${span.start}-${span.end} 行`;
+  return `第 ${span.start}-${span.end} 页`;
+}
+
 export interface ContextFetchState {
   /** 规则 1 的依据：`req.type` 必须在这里面（§3.1 的能力矩阵） */
   capabilities: AdapterCapabilities;
@@ -233,7 +245,9 @@ export function validateContextRequest(
   if (overlap) {
     return {
       accepted: false,
-      reason: `${overlap.start}-${overlap.end} 这个区间已经取过了，不要重复请求`,
+      // 跨文件之后**必须带上文件名**：光说"1-60 这个区间已经取过了"，模型（以及看日志的人）
+      // 分不清是哪个文件的 1-60 —— 用户的截图里就是这一句，读起来像在说同一份文件（D68）
+      reason: `${describeFetched(overlap)} 已经取过了，不要重复请求，直接用它给结论`,
       content: overlap.content,
     };
   }

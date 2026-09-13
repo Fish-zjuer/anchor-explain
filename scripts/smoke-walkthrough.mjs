@@ -997,6 +997,36 @@ check(
   outputLines.at(-1) ?? '',
 );
 
+// ⑤ 侧边栏那块「取件日志」不许是假话（D68）。它曾经永远写着"本次讲解没有请求额外上下文"——
+//    因为 `tooltrace:append` 协议里有、客户端也渲染了，**只有宿主从来没发过**。
+const traceAppends = webviews[0].webview.posted.filter((m) => m?.type === 'tooltrace:append');
+check(traceAppends.length >= 1, '取件记录真的推给了侧边栏（不是只有输出面板有）', `${traceAppends.length} 条`);
+check(
+  traceAppends.some(
+    (m) => String(m.entry?.request?.params?.path ?? '').includes('ring_buffer.h') &&
+      m.entry?.request?.params?.start === 10,
+  ),
+  '推给侧边栏的那条带着**文件与行范围**（截图问题 3.4 的验收就是这一句）',
+  JSON.stringify(traceAppends.at(-1)?.entry?.request?.params ?? null),
+);
+check(
+  webviews[0].webview.posted.some((m) => m?.type === 'tooltrace:reset'),
+  '新一轮开始时先清空上一轮的日志（不然两轮会叠在一起）',
+);
+
+// ⑥ 讲解进行中再按一次：不许开出第二份（D68）。白烧一份 token 之外，屏幕上还会多出一个
+//    要等它自己跑完才消失的进度通知 —— 用户截图里那条"正在讲解: 第 2 轮取件被拒"就是它。
+fetchMode = 'related';
+fetchCalls.length = 0;
+const firstRun = registered.get('anchorExplain.capture')?.();
+const secondRun = registered.get('anchorExplain.capture')?.();
+await Promise.all([firstRun, secondRun]);
+check(
+  fetchCalls.length === 2,
+  '讲解进行中重复按下不产生第二次讲解（一次讲解 = 2 次模型调用）',
+  `${fetchCalls.length} 次模型调用`,
+);
+
 // ② 工作区之外：拒
 fetchMode = 'outside';
 fetchCalls.length = 0;
