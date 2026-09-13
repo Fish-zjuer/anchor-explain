@@ -10,12 +10,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AnchorError, createContextRequestLogger } from '@anchor/core';
+import { AnchorError, createContextRequestLogger, isCodeLocation } from '@anchor/core';
 import type { Anchor, ContextRequest, ExplanationResult } from '@anchor/core';
 import { createModelRouter } from '../src/orchestrator/ModelRouter.ts';
 import { parseContextRequest } from '../src/orchestrator/toolSchema.ts';
 import { createOrchestrator } from '../src/orchestrator/Orchestrator.ts';
 import type { OrchestratorAdapter } from '../src/orchestrator/Orchestrator.ts';
+import type { ContextFetchPolicy } from '../src/orchestrator/validateContextRequest.ts';
 import type { AssistantTurn, ChatMessage, ChatProvider, ChatRequest } from '../src/orchestrator/providers/types.ts';
 
 const FILE = 'C:\\repo\\test\\fixtures\\main.c';
@@ -67,7 +68,14 @@ interface Harness {
 }
 
 /** 把一个 turn 列表变成 ChatProvider；用完之后再被调用就抛（能抓住"多问了一轮"） */
-function harness(turns: readonly AssistantTurn[], opts: { maxFetchRounds?: number } = {}): Harness {
+function harness(
+  turns: readonly AssistantTurn[],
+  opts: {
+    maxFetchRounds?: number;
+    fetchPolicy?: ContextFetchPolicy;
+    candidates?: readonly string[];
+  } = {},
+): Harness {
   const requests: ChatRequest[] = [];
   const fetches: ContextRequest[] = [];
   const logger = createContextRequestLogger();
@@ -97,6 +105,8 @@ function harness(turns: readonly AssistantTurn[], opts: { maxFetchRounds?: numbe
       makeOutline: () => Promise.resolve({ documentLineCount: DOC_LINES, pageCount: null }),
       maxFetchRounds: opts.maxFetchRounds ?? 3,
       logger,
+      ...(opts.fetchPolicy ? { fetchPolicy: opts.fetchPolicy } : {}),
+      ...(opts.candidates ? { candidateFiles: opts.candidates } : {}),
     })(anchor);
 
   return { provider, requests, fetches, adapter, run, logger };
@@ -301,4 +311,140 @@ test('ModelRouter：没有原文 / 要看图 → 升级，并说明理由', () =
   assert.equal(route({ turn: 1, hasExtractedText: true, wantsImage: true }).tier, 'vision');
   assert.equal(route({ turn: 1, hasExtractedText: false, wantsImage: false }).tier, 'vision');
   assert.match(route({ turn: 1, hasExtractedText: false, wantsImage: false }).reason ?? '', /没有原文/);
+});
+
+// ── S9a 修复（D67）：两道闸门的坐标、三处口径、诚实的报错 ──────────────────
+//
+// 这一节是**用户实测的返工**：S9a 交付时 245 条测试全绿而功能不可用。
+// 三个根因当时都没有测试盯着，所以全绿：工具 schema 没有 `path`（模型没法点名文件）、
+// 输出契约仍写死"必须与锚点同一个文件"（连 repair 也说这句）、
+// 内部闸门收绝对路径而第二道闸门收模型原样写的相对路径（必然互相打架）。
+
+const RELATED: ContextFetchPolicy = { scope: 'related', roots: ['C:\\repo'], maxLines: 60 };
+/**
+ * 锚点文件同目录的兄弟文件（`ring_buffer.h` 解析出来的绝对路径）。
+ * **分隔符是 `/`**：core 的路径函数（`joinPath`/`dirnameOf`）刻意统一输出 `/` —— 与 `samePath`
+ * 同一个立场（路径的写法不该改变语义），也因此这些解析结果在 Windows 与 POSIX 上完全一致。
+ * 消费端不受影响：`vscode.Uri.file` 两种分隔符都收。
+ */
+const SIBLING = 'C:/repo/test/fixtures/ring_buffer.h';
+
+/** 讲解里那一步落在**指定文件**（相对/绝对都可以，用来验 §3.3 的允许集合） */
+function jsonStepIn(filePath: string): string {
+  return JSON.stringify({
+    summary: '容量宏在另一个文件里，它决定回绕位置。',
+    confidence: 0.7,
+    steps: [{ location: { filePath, lineStart: 12, lineEnd: 14 }, text: '容量宏是 16，取模时靠它回绕。' }],
+  });
+}
+
+test('S9a 修复：模型用**相对路径**取件 → 归一化成绝对路径；讲解引用该文件时闸门放行', async () => {
+  const h = harness(
+    [
+      toolTurn({ request_type: 'file', start: 10, end: 20, reason: '看看容量宏', path: 'ring_buffer.h' }),
+      // 模型引用兄弟文件时写的是**它请求时用的那个相对写法** —— 这正是被误判的那个形状
+      { content: jsonStepIn('ring_buffer.h'), toolCalls: [] },
+    ],
+    { fetchPolicy: RELATED },
+  );
+
+  const result = await h.run();
+
+  assert.equal(h.fetches.length, 1, '取件应该被批准（related 允许读相关文件）');
+  assert.equal(h.fetches[0]?.params.path, SIBLING, '适配器拿到的一定是归一化后的绝对路径');
+  // 用真守门函数取字段，不用 `'filePath' in loc`：PDF/Web location 也可能带可选的 filePath
+  const stepLoc = result.steps[0]?.location;
+  assert.ok(stepLoc !== undefined && isCodeLocation(stepLoc), '这一步应当落在代码文件里');
+  assert.equal(
+    stepLoc !== undefined && isCodeLocation(stepLoc) ? stepLoc.filePath : null,
+    SIBLING,
+    '交出去的 location 必须是**解析后**的路径：下游要拿它开编辑器，相对路径开不出来',
+  );
+});
+
+test('S9a 修复：取件日志记的是归一化后的请求（日志要能复核"读了哪个文件"）', async () => {
+  const h = harness(
+    [
+      toolTurn({ request_type: 'file', start: 10, end: 20, reason: '看看容量宏', path: 'ring_buffer.h' }),
+      { content: validJson(), toolCalls: [] },
+    ],
+    { fetchPolicy: RELATED },
+  );
+  await h.run();
+
+  const accepted = h.logger.entries().find((e) => e.accepted);
+  assert.equal(
+    accepted?.request.params.path,
+    SIBLING,
+    '记原样的相对路径，命令层第二道闸门收的允许集合就与 §3.3 的绝对路径对不上（D67 的真凶）',
+  );
+});
+
+test('S9a 修复：没读过的文件仍然不许引用（相对路径不是后门）', async () => {
+  const h = harness(
+    [
+      toolTurn({ request_type: 'file', start: 10, end: 20, reason: '看看容量宏', path: 'ring_buffer.h' }),
+      { content: jsonStepIn('other.h'), toolCalls: [] },
+      { content: jsonStepIn('other.h'), toolCalls: [] }, // repair 之后还是错 → 该报错
+    ],
+    { fetchPolicy: RELATED },
+  );
+
+  await assert.rejects(
+    () => h.run(),
+    (err: unknown) => err instanceof AnchorError && err.code === 'SCHEMA_VIOLATION',
+  );
+});
+
+test('S9a 修复：跨文件时 system / user / repair 三处口径一致（不能把模型往反方向推）', async () => {
+  const h = harness(
+    [
+      { content: JSON.stringify({ summary: '', confidence: 2, steps: [] }), toolCalls: [] },
+      { content: validJson(), toolCalls: [] },
+    ],
+    { fetchPolicy: RELATED, candidates: ['ring_buffer.h', 'config.h'] },
+  );
+  await h.run();
+
+  const system = String(h.requests[0]?.messages[0]?.content ?? '');
+  const user = String(h.requests[0]?.messages[1]?.content ?? '');
+  const repair = String(h.requests[1]?.messages.at(-1)?.content ?? '');
+
+  assert.match(system, /可以读锚点文件之外的相关文件/, 'system 要给出"可以往外读"的许可');
+  assert.doesNotMatch(system, /必须与锚点/, '这句是 S1 时代的口径，跨文件时会自相矛盾');
+  assert.match(system, /你这次真的有过的东西/, '输出契约要说清"只有读过的才许引用"');
+  assert.match(repair, /你这次真的有过的东西/, 'repair 必须与初次同口径，否则模型修不回来');
+  assert.doesNotMatch(repair, /必须与锚点/, 'repair 里那句会让第二次注定失败（这就是用户看到的报错）');
+
+  assert.match(user, /可能相关的文件/, '候选清单必须真的进 prompt（第一版只是个死参数）');
+  assert.match(user, /ring_buffer\.h/);
+  assert.match(user, /config\.h/);
+});
+
+test('S9a 修复：候选清单只在跨文件时给（不然等于邀请它去撞拒绝）', async () => {
+  const h = harness([{ content: validJson(), toolCalls: [] }], { candidates: ['ring_buffer.h'] });
+  await h.run();
+
+  const user = String(h.requests[0]?.messages[1]?.content ?? '');
+  assert.doesNotMatch(user, /可能相关的文件/);
+  assert.doesNotMatch(String(h.requests[0]?.messages[0]?.content ?? ''), /可以读锚点文件之外/);
+});
+
+test('S9a 修复：轮数用尽的报错要说实话（被拒次数 + 最后一次原因 + 该调什么）', async () => {
+  const forever = Array.from({ length: 8 }, (_, i) =>
+    toolTurn({ request_type: 'file', start: i * 10 + 1, end: i * 10 + 5, reason: '还不够', path: FILE }, `call_${i}`),
+  );
+  const h = harness(forever, { maxFetchRounds: 1 });
+
+  await assert.rejects(
+    () => h.run(),
+    (err: unknown) => {
+      assert.ok(err instanceof AnchorError);
+      assert.equal(err.code, 'MAX_ROUNDS_EXCEEDED');
+      assert.match(err.message, /被拒 \d+ 次/, '笼统说"取件 N 次之后"是假话：可能一次都没取成');
+      assert.match(err.message, /最后一次被拒的原因/);
+      assert.match(err.message, /maxFetchRounds/, '要告诉用户该调哪个设置');
+      return true;
+    },
+  );
 });

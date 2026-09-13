@@ -24,7 +24,7 @@
 import Module from 'node:module';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -138,7 +138,35 @@ const EXPLANATION_JSON = JSON.stringify({
   ],
 });
 
+/**
+ * D67 的回归场景：讲解里有一步落在**刚读过的兄弟文件**里，而且 filePath 照抄取件时用的
+ * **相对写法**（`ring_buffer.h`）—— 这是 S9a 交付时必然被夹死的形状：
+ * 内部闸门的允许集合是绝对路径、命令层第二道闸门收的是模型原样写的相对路径，两边对不上。
+ */
+const SIBLING_EXPLANATION_JSON = JSON.stringify({
+  title: '容量宏不在这个文件里',
+  summary: '队列的容量不是写死的 16，它来自另一个文件的宏 —— 取模回绕靠的就是它。',
+  confidence: 0.8,
+  steps: [
+    {
+      location: { filePath: 'ring_buffer.h', lineStart: 10, lineEnd: 16 },
+      title: '容量宏决定了环有多大',
+      text: 'RB_CAPACITY 是 16，head 走到末尾时靠它对 16 取模绕回去。',
+    },
+    {
+      location: { filePath: MAIN_C, lineStart: 40, lineEnd: 42 },
+      title: '出队前先挡住空队列',
+      text: '第 42 行 count 为 0 时直接返回 -1。',
+    },
+  ],
+});
+
+/** 锚点同目录那个兄弟文件解析出来的绝对路径（core 的路径函数统一用 `/`） */
+const SIBLING_ABS = MAIN_C.replace(/\\/g, '/').replace(/\/[^/]*$/, '/ring_buffer.h');
+
 function toolCallTurn() {
+  // `related` 与 `related-ref` 都要读**兄弟文件**（后者还要求讲解里引用它）
+  const related = fetchMode === 'related' || fetchMode === 'related-ref';
   return {
     content: '',
     tool_calls: [
@@ -150,20 +178,20 @@ function toolCallTurn() {
           arguments: JSON.stringify({
             request_type: 'file',
             // 跨文件那次要读到**宏与结构体**（它们不在文件开头），其余情形随便一小段
-            start: fetchMode === 'related' ? 10 : 1,
-            end: fetchMode === 'related' ? 20 : 5,
+            start: related ? 10 : 1,
+            end: related ? 20 : 5,
             reason: '想先看看文件头部有哪些定义',
-            // §8 的 schema 里没有 path，模型很可能自己加上 —— 这里刻意加上，好验证它被带到了校验那一步
-            // S9a：`related` 模式下**读锚点文件之外的兄弟文件是合法的** —— 这里用相对路径，
+            // §8 声明了 `path` 之后模型才可能点名文件（S9a 修订，D67）—— 这里刻意带上，
+            // 好验证它一路被带到校验与适配器那两步。
+            // S9a：`related*` 模式下**读锚点文件之外的兄弟文件是合法的** —— 这里用相对路径，
             // 好验证"先按锚点文件所在目录解析"那条规则。另外两个模式用来验拒绝路径。
-            path:
-              fetchMode === 'related'
-                ? 'ring_buffer.h'
-                : fetchMode === 'outside'
-                  ? 'C:/Windows/win.ini'
-                  : fetchMode === 'secret'
-                    ? '.env'
-                    : MAIN_C,
+            path: related
+              ? 'ring_buffer.h'
+              : fetchMode === 'outside'
+                ? 'C:/Windows/win.ini'
+                : fetchMode === 'secret'
+                  ? '.env'
+                  : MAIN_C,
           }),
         },
       },
@@ -171,8 +199,7 @@ function toolCallTurn() {
   };
 }
 
-/** 线2 的锚点长这样：没有 filePath，只有 page/bbox */
-const PDF_PATH = path.join(FIXTURES, 'sample-30p.pdf');
+/** 线2 的锚点长这样：没有 filePath，只有 page/bbox */const PDF_PATH = path.join(FIXTURES, 'sample-30p.pdf');
 
 const PDF_EXPLANATION_JSON = JSON.stringify({
   summary: '这一块是环形队列的图示与出队顺序说明。',
@@ -199,6 +226,7 @@ function cannedCompletion(body) {
   const seen = (body.messages ?? []).map((m) => m.role);
   if (fetchMode === 'always-fetch') return toolCallTurn();
   if (!seen.includes('tool')) return toolCallTurn();
+  if (fetchMode === 'related-ref') return { content: SIBLING_EXPLANATION_JSON };
   // PDF 锚点的 prompt 里写的是「页码：第 N 页」，拿它区分两条线
   const prompt = String(body.messages?.[1]?.content ?? '');
   return { content: prompt.includes('页码：') ? PDF_EXPLANATION_JSON : EXPLANATION_JSON };
@@ -398,6 +426,25 @@ const vscodeStub = {
     workspaceFolders: [{ uri: { fsPath: FIXTURES }, name: 'fixtures', index: 0 }],
     textDocuments: [],
     asRelativePath: (uri) => path.relative(FIXTURES, uri.fsPath).split(path.sep).join('/'),
+    // S9a：候选文件清单要靠它扫工作区。桩必须真的扫（按扩展名过滤 fixtures 目录），
+    // 否则 `listRelatedFiles` 会走进"扫不出来就返回空清单"那条路，而**空清单与"这个工作区
+    // 里没有相关文件"在断言里长得一模一样** —— 死参数那个 bug 就是这么在全绿的冒烟里活下来的
+    findFiles: (glob, _exclude, limit) => {
+      const exts = /\.\{([^}]+)\}/.exec(String(glob))?.[1]?.split(',') ?? [];
+      const out = [];
+      const walk = (dir) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (out.length >= (limit ?? 400)) return;
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else if (exts.some((ext) => entry.name.endsWith(`.${ext}`))) {
+            out.push({ fsPath: full, path: full.split(path.sep).join('/') });
+          }
+        }
+      };
+      walk(FIXTURES);
+      return Promise.resolve(out);
+    },
     // S3：命令层每次讲解都现读配置（改完设置不必重载窗口），所以这个桩是必经之路
     getConfiguration: () => ({ get: (key) => settingsValues[key] }),
     applyEdit() {
@@ -902,6 +949,54 @@ check(
   outputLines.at(-1) ?? '',
 );
 
+// ② §8 的 `path` 必须真的在 schema 里 —— 不然模型没有"点名某个文件"这个动作，
+//    "可以读别的文件"就只是一句它看不见的许可（S9a 交付时正是这样，D67）
+const toolProps = fetchCalls[0]?.body?.tools?.[0]?.function?.parameters?.properties ?? {};
+check(
+  typeof toolProps.path?.type === 'string',
+  '§8 的工具 schema 声明了 path（许可必须可执行，不能只写在提示里）',
+  JSON.stringify(Object.keys(toolProps)),
+);
+
+// ③ 许可要写进 system，且**不能**同时留着"必须与锚点同一个文件"那句（自相矛盾=不敢引用）
+const s9aSystem = String(fetchCalls[0]?.body?.messages?.[0]?.content ?? '');
+const s9aUser = String(fetchCalls[0]?.body?.messages?.[1]?.content ?? '');
+check(
+  s9aSystem.includes('可以读锚点文件之外的相关文件') && !s9aSystem.includes('必须与锚点'),
+  'system 里既有"可以往外读"的许可，也没有那句 S1 时代的"必须与锚点同一个文件"',
+);
+check(
+  s9aUser.includes('可能相关的文件') && s9aUser.includes('ring_buffer.h'),
+  '候选文件清单真的进了 user prompt（第一版它只是个死参数，模型不知道可以问谁）',
+  s9aUser.includes('可能相关的文件') ? '有清单' : '没清单',
+);
+
+// ④ 最难的那一下：模型**读了兄弟文件，又在讲解里引用它**（filePath 写的是相对写法）。
+//    内部闸门的允许集合是绝对路径、命令层第二道闸门收的是模型原样写的相对路径 ——
+//    S9a 交付时这两套坐标对不上，所以这件事**必然**报错（用户实测的第一轮报错，D67）
+fetchMode = 'related-ref';
+fetchCalls.length = 0;
+outputLines.length = 0;
+await registered.get('anchorExplain.capture')?.();
+// 取**带 result 的那条**，不是 `at(-1)`：讲解起来之后侧边栏还会继续收到状态/拍的消息
+const refResult = [...webviews[0].webview.posted].reverse().find((m) => m?.result)?.result;
+const refStep = refResult?.steps?.[0]?.location;
+check(
+  String(refStep?.filePath ?? '').toLowerCase() === SIBLING_ABS.toLowerCase(),
+  '讲解的某一步可以落在**读过的兄弟文件**里，且交出来的是解析后的绝对路径',
+  String(refStep?.filePath ?? `(没有这个 step；最后一条消息：${JSON.stringify(webviews[0].webview.posted.at(-1)).slice(0, 120)})`),
+);
+check(
+  refResult?.steps?.length === 2,
+  '这一轮讲解完整通过了 §3.3 闸门（没有降级成报错）',
+  `带 result 的那条消息里有 ${refResult?.steps?.length ?? '0'} 个 step`,
+);
+check(
+  outputLines.some((l) => l.includes('取件') && l.includes('ring_buffer.h')),
+  '取件日志记的是**归一化后**的路径（日志要能复核到底读了哪个文件）',
+  outputLines.at(-1) ?? '',
+);
+
 // ② 工作区之外：拒
 fetchMode = 'outside';
 fetchCalls.length = 0;
@@ -924,7 +1019,11 @@ fetchMode = 'always-fetch';
 settingsValues = { ...settingsValues, maxFetchRounds: 1 };
 await registered.get('anchorExplain.capture')?.();
 check(messages.at(-1)?.[0] === 'error', '模型一直要上下文 → 明确报错而不是转圈', messages.at(-1)?.[1] ?? '');
-check(/取件 1 次之后/.test(String(messages.at(-1)?.[1] ?? '')), '错误里说清了上限是多少（能照做）');
+check(
+  /被拒 2 次/.test(String(messages.at(-1)?.[1] ?? '')) && /maxFetchRounds/.test(String(messages.at(-1)?.[1] ?? '')),
+  '错误里说清了"被拒几次 + 该调哪个设置"（照得做）',
+  String(messages.at(-1)?.[1] ?? ''),
+);
 check(fetchCalls.length <= 8, '调用次数有界，不会无限循环', `${fetchCalls.length}`);
 settingsValues = { ...settingsValues, maxFetchRounds: 3 };
 fetchMode = 'with-fetch';

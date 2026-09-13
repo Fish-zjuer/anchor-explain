@@ -302,11 +302,15 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 （编排层从 `FetchedSpan` 收集，命令层从取件日志收集）—— 口径从"不许出去"变成
 "**出去过的地方才许写**"。别的文件的行号上界不由校验层判（它拿不到那些文件的行数），
 由渲染端夹住。
+**比对的坐标是绝对路径**：location 里写了相对路径时，先按锚点文件所在目录解析再比，
+并且**把解析后的路径交出去**（渲染端要用它开编辑器）。允许集合那一边也一律是解析后的绝对路径 ——
+两边同一套坐标，见 §8 的 `path` 那节（D67）。
 
 | 情形 | 处置 | 为什么 |
 |---|---|---|
-| `file` 请求**没给** `params.path` | 视为"就要锚点这个文件"，**放行**，并在返回的请求里补上路径 | §8 的工具 schema 里**没有声明 `path`**（只有 `request_type`/`start`/`end`/`reason`），模型很可能不给。若把"没给"当成不匹配，`file` 取件就永远走不通（S3 踩过：全部请求被判"只允许取锚点所在的文件"，因为 path 在参数解析那一步就丢了 —— 解析侧也已经改成把自定义键一并带过去） |
+| `file` 请求**没给** `params.path` | 视为"就要锚点这个文件"，**放行**，并在返回的请求里补上路径 | §8 的工具 schema 里 `path` 是**可选**的（S9a 起声明了它，见 §8 那两条修订），模型不给就是"只看这份文件"。若把"没给"当成不匹配，`file` 取件就永远走不通（S3 踩过：全部请求被判"只允许取锚点所在的文件"，因为 path 在参数解析那一步就丢了 —— 解析侧也已经改成把自定义键一并带过去） |
 | `path` 给了，但大小写/斜杠方向与锚点不同 | **算同一个文件**，放行 | 与 §3.3 规则 3 同一个立场：Windows 上严格比较会把同一个文件判成两个（实现用 `paths.ts` 的 `samePath`） |
+| `path` 是相对路径（`ring_buffer.h`） | 按**锚点文件所在目录**解析，再按工作区根兜底；闸门批准的就是适配器读的那个绝对路径 | 与 §3.3 规则 3 必须**同一套坐标**：允许集合里放绝对路径、模型写相对路径，两边就永远对不上（D67 那个报错） |
 | `file` 的 `end` 超过文档总行数 | 拒绝 | 上表规则 3 只冻结了 `path` 一项；行上界是本条补的。总行数取不到（`null`）时**跳过这一项**检查，不是跳过整条校验 |
 | `start > end` | 拒绝 | 上表规则 2 原文就有 `start ≤ end`；这里把它提到两种类型共用的形状检查里，`file` 也一并管住 |
 | 去重（规则 4）与频率（规则 5）**同时命中** | **按去重处理**，把已取内容回灌 | 回灌内容比一句"已达上限"对模型有用得多，且**不花任何额外成本**（不发起新的读取）。所以执行顺序是 类型 → 形状/边界 → 去重 → 频率 |
@@ -323,7 +327,8 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 2. `steps.length ≥ 1`；`confidence ∈ [0,1]`；`summary` 非空字符串
 3. 每个 `step.location`（及 `step.highlights[].location`）必须：
    - `sourceType` 与 `anchor.sourceType` 一致
-   - `code`：`filePath === anchor.location.filePath`；`1 ≤ lineStart ≤ lineEnd ≤ 文档总行数`
+   - `code`：`filePath` **∈ 允许集合**（锚点文件 ∪ 本次取过件的文件；S9a 前只有前者）；
+     `1 ≤ lineStart ≤ lineEnd ≤ 文档总行数`（行上界**只对锚点文件成立**，别的文件拿不到行数）
    - `pdf`：`1 ≤ page ≤ pageCount`；`bbox` 四项 ∈ `[0,1]` 且 `x1 < x2`、`y1 < y2`
    - **路径比较忽略大小写与斜杠方向**（Windows 本身不区分大小写；严格比较会把同一个文件判成两个）
    - 文档总行数/总页数**取不到时传 `null` → 跳过该上界检查**，不是跳过整条 location 校验
@@ -724,25 +729,38 @@ function createContextRequestLogger(opts?: {
 ```json
 {
   "name": "fetch_context",
-  "description": "当截图区域信息不足、无法准确讲解时，请求获取当前文档的额外上下文。",
+  "description": "当手里的信息不足、无法准确讲解时，请求额外上下文：当前文档的一段（按页/行），或者与它逻辑相关的另一个文件的一小段。",
   "parameters": {
     "type": "object",
     "properties": {
-      "request_type": { "enum": ["page_range", "dom_subtree", "file"] },
-      "start": { "type": "number", "description": "起始页/行" },
-      "end": { "type": "number", "description": "结束页/行" },
+      "request_type": {
+        "enum": ["page_range", "dom_subtree", "file"],
+        "description": "page_range = PDF 页码；file = 代码文件的行范围（也可以是别的文件）"
+      },
+      "start": { "type": "number", "description": "起始页/行（1-based，必须给）" },
+      "end": { "type": "number", "description": "结束页/行（1-based，必须给）" },
+      "path": { "type": "string", "description": "request_type 为 file 时要读的文件；省略 = 锚点所在的文件。写相对路径时按锚点文件所在目录算，例如 ring_buffer.h" },
       "reason": { "type": "string", "description": "为什么需要这段上下文" }
     },
-    "required": ["request_type", "reason"]
+    "required": ["request_type", "start", "end", "reason"]
   }
 }
 ```
 
-**注意（S9a 起）**：schema 里已经**声明了可选的 `path`**（见 §9.1 上面那段"§8 的 `path`"）——
-跨文件取件要靠它。
-两者靠两条实现约定接上（S3）：解析侧把自定义键**原样带过去**（不丢 `path`），
+**S9a 修订（这一节的两处改动都记在 `DECISIONS.md` D67）**：
+
+1. **`path` 必须真的声明在 schema 里**。S9a 的第一版把"可以读别的文件"只写进了**文档与系统提示**，
+   schema 里没有这一项 —— 而 schema 才是模型唯一能看见的能力清单：主流端点按 schema 生成参数，
+   未声明的项模型基本不会给。结果就是"许可存在但不可执行"：模型要么不给 `path`（我们按锚点文件读，
+   它拿到的还是自己那份文件），要么给了也被我们当成锚点文件。**用户实测的"它就是没有往外读的想法"，
+   根因在这里，不在模型。**
+2. **`description` 里那句"当前文档"删掉**，`required` 补上 `start`/`end`。
+   前者一直在告诉模型"只有这份文档"，与跨文件直接冲突；后者是因为 `start`/`end` 一旦缺失，
+   §3.2 的规则 3 只会回一句"start / end 必须是 ≥1 的整数"，白烧一轮取件预算，
+   而这两个参数**每一次取件都必然要有**（`dom_subtree` 本次不实现，不受影响）。
+
+实现侧两条约定（S3 起就有，没变）：解析侧把自定义键**原样带过去**（不丢 `path`），
 校验侧把"没给 `path`"当成"就要锚点这个文件"。见 §3.2 的实现约定表。
-**不要为了"对齐"而给 schema 加 `path`**：§8 是冻结原文，且模型本来也没有别的文件可选。
 
 ---
 
@@ -750,10 +768,24 @@ function createContextRequestLogger(opts?: {
 
 ### §8 的 `path`（S9a 加法扩展）
 
-§8 的 `properties` 原有 `request_type` / `start` / `end` / `reason` 四项。S9a 起工具**声明**一个可选的
-`path`（字符串）：写相对路径时按**锚点文件所在目录**解析，例如 `ring_buffer.h` 或 `include/ring_buffer.h`；
-不写 = 锚点文件本身。`required` 仍然是 `['request_type', 'reason']`（**没动**）。
+§8 的 `properties` 原有 `request_type` / `start` / `end` / `reason` 四项。S9a 起工具**声明**一个必填之外的
+可选 `path`（字符串）：写相对路径时按**锚点文件所在目录**解析，例如 `ring_buffer.h` 或 `include/ring_buffer.h`；
+不写 = 锚点文件本身。`required` 是 `['request_type', 'start', 'end', 'reason']`（S9a 补进 `start`/`end`，
+理由见 §8 那两条修订）。
 解析与边界判定全在 §3.2 的规则 3（纯函数，可单测）；适配器拿到的一定是**已归一化的绝对路径**。
+
+**两道闸门的坐标必须对齐（S9a 修订）**：允许集合里放的是**解析后的绝对路径**，
+而模型写 location 时可能照抄它请求时用的**相对路径**。所以：
+
+- 编排层内部闸门与命令层第二道闸门，收的都是**归一化后的**路径
+  （编排层取 `decision.request`；命令层从取件日志收 —— 日志记的也是归一化后的请求，
+  这同时满足"日志要能复核**读了哪个文件**"）。
+- §3.3 的规则 3 在比对前**先把相对 `filePath` 按锚点文件所在目录解析**，并且**返回解析后的路径**
+  （下游要拿它去开编辑器，相对路径开不出来）。
+
+@anchor 这三条是同一个 bug 的三张脸：S9a 的第一版里，内部闸门拿绝对路径、第二道闸门拿模型原样写的
+相对路径，于是"模型读了兄弟文件并在讲解里引用它"这件事**必然**被其中一道拦下 —— 报错内容还是
+"这个文件没读过，不能引用"，指的却是它刚读过的文件。用户实测的第一轮报错就是它（D67）。
 
 ### 9.1 已落地（F1 契约 / F2 骨架与替身 / S1 最小可视 / S2 真选区与确认 UI / S3 真 AI / S4~S7 线2 / S8 固定按钮与开始面板）——行号 = 实体定义所在行
 
@@ -774,17 +806,17 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/extension.ts` | activate → `registerCommands`（入口保持极薄） | `activate`:11 `deactivate`:16 |
 | `packages/extension-anchor/src/paths.ts` | **只是转发**（S5 起实现在 `@anchor/core`）：让线1 内部的 `from '../paths.ts'` 继续成立。**新增代码直接从 `@anchor/core` 导入** | — |
 | `packages/extension-anchor/src/adapters/CodeAdapter.ts` | **S2 落 `capture`，S3 落 `fetchContext`，S9a 加内容护栏**（大小/二进制、读不到给人话）。代码来源适配器：把「选区 / 整文件」变成 `Anchor`、按行取件。零 vscode 依赖 | `CaptureScope`:33 `CodeAdapter`:45 `CodeAdapterDeps`:63 `createCodeAdapter`:68 `fetchContext`:113 |
-| `packages/extension-anchor/src/orchestrator/Orchestrator.ts` | **S3 落地**。编排循环：取件循环（≤maxFetchRounds）→ §3.3 闸门 → repair 一次。**它就是 S1/S2 里那个 `fakeProvider` 的真身** | `REJECT_PREFIX`:37 `OrchestratorAdapter`:39 `OrchestratorDeps`:44 `createOrchestrator`:69 |
+| `packages/extension-anchor/src/orchestrator/Orchestrator.ts` | **S3 落地，S9a 修 D67**。编排循环：取件循环（≤maxFetchRounds）→ §3.3 闸门 → repair 一次。**它就是 S1/S2 里那个 `fakeProvider` 的真身** | `REJECT_PREFIX`:39 `OrchestratorAdapter`:41 `OrchestratorDeps`:46 `createOrchestrator`:80 |
 | `packages/extension-anchor/src/orchestrator/validateContextRequest.ts` | **S3 落地，S9a 改写规则 3**。§3.2 五条规则的实现 + 跨文件边界（`ContextFetchPolicy`，缺省 `RESTRICTED_POLICY` = 只允许锚点文件） | `FetchScope`:33 `ContextFetchPolicy`:35 `RESTRICTED_POLICY`:45 `FetchedSpan`:78 `ContextFetchState`:87 `ContextDecision`:103 `validateContextRequest`:134 |
 | `packages/extension-anchor/src/orchestrator/ModelRouter.ts` | **S3 落地**。tier1/tier2 的成本分层（ARCHITECTURE §5） | `ModelTier`:11 `ModelRouteInput`:13 `ModelChoice`:22 `ModelRouterConfig`:29 `createModelRouter`:35 |
-| `packages/extension-anchor/src/orchestrator/toolSchema.ts` | **S3 落地**。§8 的工具定义 + 参数解析（自定义键一并带过） | `FETCH_CONTEXT_TOOL`:14 `openAITools`:30 `EXPLANATION_JSON_SHAPE`:35 `parseContextRequest`:68 |
+| `packages/extension-anchor/src/orchestrator/toolSchema.ts` | **S3 落地，S9a 修订（D67：声明 `path`、`required` 补 `start`/`end`、描述去掉"当前文档"）**。§8 的工具定义 + 参数解析（自定义键一并带过） | `FETCH_CONTEXT_TOOL`:19 `openAITools`:47 `EXPLANATION_JSON_SHAPE`:52 `parseContextRequest`:86 |
 | `packages/extension-anchor/src/orchestrator/providers/{types,openAICompatible}.ts` | **S3 落地**。LLM 调用面的抽象 + OpenAI 兼容实现（一个实现覆盖 OpenAI/DeepSeek/通义/Ollama） | `ChatMessage`:11 `ToolCall`:20 `AssistantTurn`:27 `ChatRequest`:33 `ChatProvider`:44；`OpenAICompatibleOptions`:20 `createOpenAICompatibleProvider`:71 |
-| `packages/extension-anchor/src/prompts/index.ts` | **S3 落地，S8 加风格、S9a 加跨文件**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:48 `buildSystemPrompt`:64 `describeAnchor`:161 `buildUserPrompt`:175 `buildRepairPrompt`:199 |
+| `packages/extension-anchor/src/prompts/index.ts` | **S3 落地，S8 加风格、S9a 加跨文件（D67 修：契约按 `crossFile` 换口径、候选清单真的进 prompt）**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:56 `buildSystemPrompt`:76 `describeAnchor`:181 `buildUserPrompt`:204 `buildRepairPrompt`:252 |
 | `packages/extension-anchor/src/config.ts` | **S3 落地，S8 加 `style`、S9a 加 `fetchScope`**。§6 配置的**纯映射**（可单测），vscode 读取在 `vscode/configSource.ts` | `ProviderSettings`:17 `AnchorConfig`:26 `DEFAULT_MAX_FETCH_ROUNDS`:42 `apiKeySecretName`:48 `resolveProvider`:74 `clampRounds`:99 `resolveConfig`:123 `describeConfig`:153 |
-| `packages/extension-anchor/src/vscode/configSource.ts` | **S3 落地**。设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 | `readAnchorConfig`:20 `storeApiKey`:49 `configuredProviderIds`:71 |
-| `packages/extension-anchor/src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **S8 的开始面板装配与 `showStart`**。**S3 起没有任何替身** | `registerCommands`:71 `askWhatToExplain`:504 `capture`:529（S8 新增的 `makeStartModel` / `runStartAction` / `showStart` 在文件后段） |
+| `packages/extension-anchor/src/vscode/configSource.ts` | **S3 落地**。设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 | `readAnchorConfig`:21 `storeApiKey`:50 `configuredProviderIds`:78 |
+| `packages/extension-anchor/src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **S8 的开始面板装配与 `showStart`** + **S9a 的 `fetchPolicyFor` 与第二道闸门**。**S3 起没有任何替身** | `registerCommands`:117 `askWhatToExplain`:663 `capture`:688（S8 新增的 `makeStartModel` / `runStartAction` / `showStart` 在文件后段） |
 | `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 三处边界守卫 + **S8 起状态词表（`STATE_WORD`）也在这里**（贴着 `WalkthroughState` 放，状态栏与开始面板共说一句话） | `WalkthroughState`:20 `STATE_WORD`:30 `HostToSidebar`:53 `SidebarToHost`:72 `HostToSelect`:84 `SelectToHost`:89 `HostToStart`:113 `StartToHost`:123 `isAnchorLike`:145 `parseSidebarMessage`:174 `parseStartMessage`:200 |
-| `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**）。S9a 起 `filePath` 允许落在**取过件的文件**里（`allowedPaths`） | `ValidationIssue`:35 `ExplanationOutline`:54 `ExplanationValidation`:61 `coerceEmphasis`:78 `parseMaybeJson`:88 `validateExplanation`:322 `describeIssues`:361 || `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
+| `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**）。S9a 起 `filePath` 允许落在**取过件的文件**里（`allowedPaths`），并在比对前把相对路径解析成绝对路径（D67） | `ValidationIssue`:52 `ExplanationOutline`:71 `ExplanationValidation`:78 `coerceEmphasis`:95 `parseMaybeJson`:105 `validateExplanation`:350 `describeIssues`:389 || `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
 | `packages/extension-anchor/src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策 | `DecorationSpec`:25 `EMPHASES`:32 `FALLBACK_EMPHASIS`:34 `planForBeat`:40 `primaryLocationOf`:60 |
 | `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档** | `CodeWalkthroughPlayer`:83 |
 | `packages/extension-anchor/src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 | `SidebarHandlers`:17 `SidebarPanel`:28 |
@@ -792,7 +824,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表（**S8 起两张：线1 的 `WALKTHROUGH_CHORDS` + 线2 的 `LINE2_CHORDS`，各有各的镜像锁**）+ JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:19 `WalkthroughChordSpec`:21 `WALKTHROUGH_CHORDS`:36 `LINE2_CHORDS`:105 `ResolvedChord`:119 `ResolvedChords`:120 `KeyBindingEntry`:122 `defaultChords`:129 `keybindingsPathFrom`:142 `stripJsonc`:159 `parseKeybindings`:218 `resolveChords`:234 `formatChord`:301 |
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
 | `packages/extension-anchor/src/relatedFiles.ts` | **S9a 新增**。候选文件清单的**纯逻辑**（`#include` / 同目录优先、封顶 40 条）。宿主侧取文件在 `vscode/relatedFiles.ts` | `MAX_CANDIDATES`:14 `includeNamesIn`:23 `orderRelatedFiles`:37 |
-| `packages/extension-anchor/src/vscode/relatedFiles.ts` | **S9a 新增**。`listRelatedFiles(anchor, text)`：在工作区里找代码类文件 → 交给纯逻辑排序 | `listRelatedFiles`:25 |
+| `packages/extension-anchor/src/vscode/relatedFiles.ts` | **S9a 新增**。`listRelatedFiles(anchor, text, { onError })`：在工作区里找代码类文件 → 交给纯逻辑排序。扫不出来时**降级但不静默**（D67：写一行输出通道，否则"空清单"与"真没有相关文件"分不出来） | `listRelatedFiles`:25 |
 | `packages/extension-anchor/src/describe.ts` | **S8 新增**。「说给用户听的一句话」的唯一格式化处：`Anchor: 显示状态` 与开始面板共用，两处不许各写一份 | `captureSummary`:22 |
 | `packages/extension-anchor/src/start/startModel.ts` | **S8 新增**。开始面板的内容模型：动作表（**每个动作只指向一条已声明的命令**）+ 状态→面板的纯映射。零 vscode 依赖，因此面板里没有一条业务判断 | `StartActionSpec`:27 `START_ACTIONS`:58 `findStartAction`:111 `StartModel`:139 `buildStartModel`:175 |
 | `packages/extension-anchor/src/start/StartViewProvider.ts` | **S8 新增**。活动栏里「开始」视图的宿主侧：握手 / 推模型 / 收 `start:run` / 转给命令层。**视图没被打开过就是空操作** | `StartViewHandlers`:23 `StartViewProvider`:30 |
@@ -801,7 +833,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/media/walkthrough/*.md` | **S8 新增**。欢迎页「演练」卡片四步的正文（`contributes.walkthroughs` 的 `media.markdown`） | `setup.md` / `capture.md` / `flow.md` / `pdf.md` |
 | `packages/extension-anchor/src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（**S2 起五个方法全部是真的**，没有覆盖层） | `createEditorPort`:25 |
 | `packages/extension-anchor/src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` | `createFileSystemPort`:12 `countLines`:38 |
-| `packages/extension-anchor/test/*.test.ts`（17 个，193 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter`，**S8 加 `startModel` / `startUi` / `describe` / `prompts`，S9a 加 `relatedFiles`** | — |
+| `packages/extension-anchor/test/*.test.ts`（17 个，207 条） | 线1 单测（`node --test`，全部 vscode-free）。S2 加 `CodeAdapter`，S3 加 `validateContextRequest` / `orchestrator` / `provider` / `config`，S7 加 `pdfAdapter`，**S8 加 `startModel` / `startUi` / `describe` / `prompts`，S9a 加 `relatedFiles`，S9a 修（D67）加 14 条盯着"两道闸门同一套坐标"** | — |
 | `packages/extension-anchor/{package.json,tsconfig.json,.vscodeignore}` | 扩展清单 / 类型检查 / 打包排除（`node_modules` 靠它整体排除） | — |
 | `esbuild.mjs`（根） | 唯一打包入口，产物 `dist/extension.cjs`（见 §9.4） | — |
 | `scripts/{make-fixture-pdf.mjs, devhost.mjs, link-extension.mjs, smoke-extension.mjs, smoke-walkthrough.mjs, preview-sidebar.mjs, def-lines.mjs}`（根） | 生成 30 页 fixture；**起开发宿主（绝对路径 + 先查产物，D59）**；**装成常驻扩展（目录联接，D60）**；**产物冒烟**与**链路冒烟**（见 §9.4）；侧边栏排版预览（D50）；行号表的一次性生成器。**S8 起产物冒烟也真跑一遍开始面板的宿主侧**（拿到 provider 驱动它） | — |

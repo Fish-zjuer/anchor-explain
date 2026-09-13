@@ -22,7 +22,11 @@ const EXCLUDE_GLOB = '**/{node_modules,.git,dist,build,out,.vscode-test,.tmp-pre
 /** 一次扫描的上限。工作区再大也不至于为了一份提示清单扫穿整棵树。 */
 const SCAN_LIMIT = 400;
 
-export async function listRelatedFiles(anchor: Anchor, anchorText: string): Promise<string[]> {
+export async function listRelatedFiles(
+  anchor: Anchor,
+  anchorText: string,
+  opts: { onError?: (err: unknown) => void } = {},
+): Promise<string[]> {
   if (!isCodeLocation(anchor.location)) return [];
   const folders = vscode.workspace.workspaceFolders ?? [];
   if (folders.length === 0) return [];
@@ -34,8 +38,12 @@ export async function listRelatedFiles(anchor: Anchor, anchorText: string): Prom
   let found: readonly vscode.Uri[];
   try {
     found = await vscode.workspace.findFiles(CODE_GLOB, EXCLUDE_GLOB, SCAN_LIMIT);
-  } catch {
-    return []; // 扫描失败就当没有清单 —— 它只是提示，不该让讲解失败
+  } catch (err) {
+    // 扫描失败不当成讲解失败（清单只是提示），但**必须发声**：静默返回空清单与"工作区里
+    // 真没有相关文件"在日志里长得一模一样，而后果是跨文件取件悄悄退化成"模型不知道该问谁"
+    // —— 用户看到的就是"它就是没有往外读的想法"，却没有任何线索（S9a 交付时正是如此，D67）
+    opts.onError?.(err);
+    return [];
   }
 
   const display: string[] = [];

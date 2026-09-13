@@ -295,3 +295,61 @@ test('S9a：取过件的文件可以被引用；没取过的仍然拒', () => {
     '别的文件的行上界不该用锚点文件的行数来判',
   );
 });
+
+// ── S9a 修复（D67）：允许集合与 location 必须同一套坐标 ────────────────────
+
+/** 锚点在 `C:\repo\src\main.c`，兄弟文件 `ring_buffer.h` 就在同一个目录 */
+const SRC_ANCHOR: Anchor = {
+  sourceType: 'code',
+  sourceId: 'hash-2',
+  sourceName: 'main.c',
+  location: { filePath: 'C:\\repo\\src\\main.c', lineStart: 40, lineEnd: 48 },
+  extractedText: 'static int rb_pop(...)',
+};
+
+test('相对 filePath 按**锚点文件所在目录**解析，并且交出去的是解析后的绝对路径', () => {
+  const raw = {
+    summary: '容量宏在兄弟文件里',
+    confidence: 0.8,
+    steps: [{ location: { filePath: 'ring_buffer.h', lineStart: 12, lineEnd: 14 }, text: '靠它回绕' }],
+  };
+
+  // 允许集合里是**绝对路径**（编排层就是这么收的），location 里是**相对路径**（模型照抄取件时写的）
+  const ok = validateExplanation(raw, SRC_ANCHOR, { documentLineCount: 100 }, {
+    allowedPaths: ['C:\\repo\\src\\ring_buffer.h'],
+  });
+  assert.equal(ok.ok, true, '这两种写法指的是同一个文件，不该被判成"没读过"');
+  const loc = ok.ok === true ? ok.result.steps[0]?.location : undefined;
+  assert.equal(
+    loc !== undefined && isCodeLocation(loc) ? loc.filePath : null,
+    // `/` 是 core 路径函数的规范形（与 samePath 同一立场）；`vscode.Uri.file` 两种都收
+    'C:/repo/src/ring_buffer.h',
+    '交出去的必须是解析后的绝对路径：下游要拿它开编辑器',
+  );
+
+  // 反过来的写法（允许集合是相对、location 是绝对）也得收
+  const reverse = validateExplanation(
+    {
+      ...raw,
+      steps: [{ location: { filePath: 'C:\\repo\\src\\ring_buffer.h', lineStart: 12, lineEnd: 14 }, text: 'x' }],
+    },
+    SRC_ANCHOR,
+    { documentLineCount: 100 },
+    { allowedPaths: ['ring_buffer.h'] },
+  );
+  assert.equal(reverse.ok, true);
+});
+
+test('相对路径不是后门：解析后不在允许集合里，照样拒', () => {
+  const raw = {
+    summary: 'x',
+    confidence: 0.8,
+    steps: [{ location: { filePath: 'other.h', lineStart: 1, lineEnd: 2 }, text: 'x' }],
+  };
+
+  const result = validateExplanation(raw, SRC_ANCHOR, { documentLineCount: 100 }, {
+    allowedPaths: ['C:\\repo\\src\\ring_buffer.h'],
+  });
+  assert.equal(result.ok, false);
+  assert.match(describeIssues(result.issues), /这个文件没读过/);
+});

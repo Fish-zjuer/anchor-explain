@@ -9,7 +9,25 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_STYLE, buildSystemPrompt, coerceStyle, describeStyle } from '../src/prompts/index.ts';
+import type { Anchor } from '@anchor/core';
+import {
+  DEFAULT_STYLE,
+  buildRepairPrompt,
+  buildSystemPrompt,
+  buildUserPrompt,
+  coerceStyle,
+  describeAnchor,
+  describeStyle,
+  explainOutputContract,
+} from '../src/prompts/index.ts';
+
+const CODE_ANCHOR: Anchor = {
+  sourceType: 'code',
+  sourceId: 'sha1:x',
+  sourceName: 'main.c',
+  location: { filePath: 'C:\\repo\\test\\fixtures\\main.c', lineStart: 40, lineEnd: 48 },
+  extractedText: 'static int rb_pop(...)',
+};
 
 test('两档风格都要求"按数据怎么流"组织步骤（这是用户最在意的那一条）', () => {
   for (const style of ['concise', 'rigorous'] as const) {
@@ -74,4 +92,60 @@ test('输出契约与取件规则没有被风格改动影响（§3.3 与 §8 的
     assert.match(prompt, /1-based/, style);
     assert.match(prompt, /confidence/, style);
   }
+});
+
+// ── S9a 修复（D67）：跨文件时 prompt 的三处口径 ────────────────────────────
+//
+// 用户实测的返工：`candidates` 只在签名上、契约那句写死"必须与锚点同一个文件"。
+// 这两条当时都没有测试盯着，所以 245 条全绿而"它就是没有往外读的想法"。
+
+test('候选文件清单必须真的进 user prompt（不是签名上的装饰）', () => {
+  const prompt = buildUserPrompt(CODE_ANCHOR, {
+    candidates: ['ring_buffer.h', 'src/config.h'],
+    crossFile: true,
+  });
+
+  assert.match(prompt, /## 可能相关的文件/);
+  assert.match(prompt, /- ring_buffer\.h/);
+  assert.match(prompt, /- src\/config\.h/);
+  assert.match(prompt, /先用取件工具读一次/, '给清单的同时必须说清"要引用就先读"');
+});
+
+test('候选清单只在跨文件时才给（不然是邀请它去撞拒绝）', () => {
+  const off = buildUserPrompt(CODE_ANCHOR, { candidates: ['ring_buffer.h'] });
+  assert.doesNotMatch(off, /可能相关的文件/);
+  assert.doesNotMatch(off, /ring_buffer\.h/);
+});
+
+test('锚点给所在目录：相对路径要有基准，否则模型只能猜', () => {
+  const text = describeAnchor(CODE_ANCHOR);
+  // 目录用 core 路径函数算的，分隔符统一成 `/`（与 samePath 同一立场，跨平台一致）
+  assert.match(text, /所在目录：C:\/repo\/test\/fixtures/);
+  assert.match(text, /文件路径：C:\\repo\\test\\fixtures\\main\.c/, '文件路径仍是原样，不当场改写');
+});
+
+test('输出契约按 crossFile 换口径，且两档互斥', () => {
+  assert.match(explainOutputContract(false), /必须与锚点\*\*同一个文件\*\*/);
+  assert.doesNotMatch(explainOutputContract(true), /必须与锚点/);
+  assert.match(explainOutputContract(true), /你这次真的有过的东西/);
+  assert.match(explainOutputContract(true), /整次讲解会被判失败/);
+});
+
+test('repair 与 system 说同一句话（repair 说错就等于修不回来）', () => {
+  const cross = buildRepairPrompt('{}', '有问题', { crossFile: true });
+  assert.match(cross, /你这次真的有过的东西/);
+  assert.doesNotMatch(cross, /必须与锚点/);
+
+  const single = buildRepairPrompt('{}', '有问题');
+  assert.match(single, /必须与锚点/);
+});
+
+test('focus（追问那条线）进 user prompt 时排在原文之前，并说明它优先', () => {
+  const prompt = buildUserPrompt(CODE_ANCHOR, { focus: '跟 ring_buffer_t 这条线' });
+  assert.match(prompt, /## 用户想追的那条线/);
+  assert.match(prompt, /ring_buffer_t 这条线/);
+  assert.ok(
+    prompt.indexOf('用户想追的那条线') < prompt.indexOf('锚点处的原文'),
+    '先说要追什么，再给原文',
+  );
 });

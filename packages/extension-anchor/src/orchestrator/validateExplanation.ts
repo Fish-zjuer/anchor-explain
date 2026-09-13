@@ -17,9 +17,12 @@
 
 import {
   coerceBBox,
+  dirnameOf,
+  isAbsolutePath,
   isCodeLocation,
   isPDFLocation,
   isValidBBox,
+  joinPath,
 } from '@anchor/core';
 import type {
   Anchor,
@@ -31,6 +34,20 @@ import type {
   WalkthroughStep,
 } from '@anchor/core';
 import { samePath } from '../paths.ts';
+
+/**
+ * 把 location 里的文件路径解析成**绝对路径**（S9a）。
+ *
+ * @anchor 这一步是"两道闸门各用一套坐标"那个报错的正面修法（D67）：允许集合里放的是
+ *         解析后的绝对路径，而模型写 location 时很可能照抄它请求取件时用的**相对路径**
+ *         （`ring_buffer.h`）—— 两边直接比就永远对不上，报错还会说"这个文件没读过"，
+ *         而它指的恰恰是模型刚读过的那个文件。
+ *         相对路径的基准取**锚点文件所在目录**，与 §3.2 规则 3 解析取件路径时同一个基准。
+ */
+function resolveAgainstAnchor(anchorFile: string, filePath: string): string {
+  // 归一化（斜杠方向/大小写）交给 `samePath` 统一做，这里只负责"补成绝对路径"
+  return isAbsolutePath(filePath) ? filePath : joinPath(dirnameOf(anchorFile), filePath);
+}
 
 export interface ValidationIssue {
   /** JSON 路径，如 `steps[2].highlights[0].location.bbox`；顶层问题用 `$` */
@@ -178,15 +195,25 @@ function checkLocation(
       return null;
     }
     // §3.3 第 3 条（S9a 改写）：可以落在**别的文件**，但只限"锚点文件 ∪ 这次真取过件的文件"。
+    // 比对前先把相对路径补成绝对路径（`resolveAgainstAnchor`）—— 允许集合那一边是绝对路径，
+    // 两边必须同一套坐标，否则"模型读了兄弟文件并引用它"必然被拦（D67）。
+    // 取成局部量：`anchor.location` 的收窄进了回调就丢了，而回调里要用它当解析基准
+    const anchorFile = anchor.location.filePath;
+    const filePath = resolveAgainstAnchor(anchorFile, loc.filePath);
     const allowed =
-      samePath(loc.filePath, anchor.location.filePath) ||
-      allowedPaths.some((p) => samePath(p, loc.filePath));
+      samePath(filePath, anchorFile) ||
+      allowedPaths.some(
+        (p) =>
+          // 两种写法都收：模型照抄它取件时写的那个字符串（相对对相对），
+          // 或者它写绝对/相对混搭（解析后比）。两边用的都是同一个基准，因此不会放宽到什么新文件
+          samePath(p, loc.filePath) || samePath(resolveAgainstAnchor(anchorFile, p), filePath),
+      );
     if (!allowed) {
       issues.push({
         path: `${path}.filePath`,
         message:
           `这个文件没读过，不能引用：收到 ${loc.filePath}。` +
-          `只允许锚点所在的文件（${anchor.location.filePath}），或者你这次用取件工具读过的文件。`,
+          `只允许锚点所在的文件（${anchorFile}），或者你这次用取件工具读过的文件。`,
       });
       return null;
     }
@@ -201,12 +228,13 @@ function checkLocation(
     }
     // 行上界只对**锚点文件**成立：别的文件的行数校验层拿不到（它是同步纯函数），
     // 那些文件由适配器把 end 夹到文件末尾（S9a）
-    const total = samePath(loc.filePath, anchor.location.filePath) ? outline.documentLineCount : null;
+    const total = samePath(filePath, anchorFile) ? outline.documentLineCount : null;
     if (total != null && lineEnd > total) {
       issues.push({ path, message: `行号越界：${lineEnd} 超出文档总行数 ${total}` });
       return null;
     }
-    return { filePath: loc.filePath, lineStart, lineEnd };
+    // 交出去的必须是**解析后**的路径：下游拿它去开编辑器、找文档，相对路径开不出来
+    return { filePath, lineStart, lineEnd };
   }
 
   if (anchor.sourceType === 'pdf') {

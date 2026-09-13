@@ -151,6 +151,14 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   let output: vscode.OutputChannel | undefined;
   /** 当前这次讲解的进度回调。`explain` 期间有值，结束就清掉（避免下一轮误用）。 */
   let onPhase: ((message: string) => void) | undefined;
+  /**
+   * 往输出通道写一行**不打断讲解**的诊断信息。与取件日志共用通道 —— 排查时只看一个地方。
+   * 用它的人都是"降级但不该静默"的情形（如候选清单扫不出来），见 D67。
+   */
+  const note = (message: string): void => {
+    output ??= vscode.window.createOutputChannel('Anchor');
+    output.appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
+  };
   const loggerOf = (): ContextRequestLogger => {
     output ??= vscode.window.createOutputChannel('Anchor');
     return createContextRequestLogger({
@@ -539,7 +547,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         ? fetchPolicyFor(cfg.fetchScope, anchor.location.filePath, codeAdapter.capabilities.maxSpan)
         : undefined,
       candidateFiles: isCodeLocation(anchor.location)
-        ? await listRelatedFiles(anchor, anchor.extractedText ?? '')
+        ? await listRelatedFiles(anchor, anchor.extractedText ?? '', {
+            // 降级但不静默：清单没了，跨文件取件仍在（模型可以自己写路径），
+            // 但它多半**不知道该问哪个文件** —— 这句话是唯一能解释"它怎么不往外读"的线索
+            onError: (err) =>
+              note(`候选文件清单取不到（${describeError(err)}）—— 不影响讲解，但模型不会知道有哪些相关文件`),
+          })
         : undefined,
       logger: loggerOf(),
     });

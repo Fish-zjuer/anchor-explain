@@ -17,7 +17,7 @@
  */
 
 import type { Anchor } from '@anchor/core';
-import { formatLineRange, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
+import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
 import { EXPLANATION_JSON_SHAPE, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
 
 /**
@@ -44,8 +44,16 @@ export function describeStyle(style: ExplainStyle): string {
   return style === 'rigorous' ? '严谨（术语可用，但要说清依据）' : '简约（说人话，少用术语）';
 }
 
-/** 输出契约的原样描述。system 与 repair 两处都引用它，保证口径一致。 */
-export function explainOutputContract(): string {
+/**
+ * 输出契约的原样描述。system 与 repair 两处都引用它，保证口径一致。
+ *
+ * @anchor `crossFile` 不是可选的美化，是**必须**：S9a 的第一版这里写死了
+ *         "`filePath` 必须与锚点**同一个文件**"（S1 时代的口径），而它同时被 repair 轮引用 ——
+ *         于是如果模型引用了刚读过的兄弟文件、被判失败，我们递回去的修复提示
+ *         **又把那条错规则说了一遍**，第二次注定还是失败，最后以 `SCHEMA_VIOLATION` 收场。
+ *         这就是用户实测到的"第一轮报错"。**初次与 repair 必须说同一句话**（D67）。
+ */
+export function explainOutputContract(crossFile = false): string {
   return [
     '最终回答必须是**一个 JSON 对象**（可以放在 ```json 围栏里），形状如下：',
     EXPLANATION_JSON_SHAPE,
@@ -53,7 +61,11 @@ export function explainOutputContract(): string {
     '硬性要求：',
     '- `summary` 非空；`confidence` 是 0 到 1 之间的数字。',
     '- `steps` 至少一个；每个 step 的 `text` 非空。',
-    `- 每个 location 的 \`filePath\` 必须与锚点**同一个文件**（逐字相同，别改写路径）。`,
+    crossFile
+      ? '- 每个 location 的 `filePath` 只能是**你这次真的有过的东西**：锚点所在的文件，' +
+        '或者你用取件工具**读过**的文件（读过就用它请求时的那个写法，别改写路径）。' +
+        '**没读过的文件出现在 location 里，整次讲解会被判失败。**'
+      : '- 每个 location 的 `filePath` 必须与锚点**同一个文件**（逐字相同，别改写路径）。',
     '- 行号一律是**从文件第一行开始数的 1-based 行号**，不是从选区开始数。',
     '- 行区间必须落在文件范围内，且 `lineStart <= lineEnd`。',
     '- `emphasis` 只能取 `primary` / `context` / `definition` / `caveat` 之一（可省略）。',
@@ -65,6 +77,7 @@ export function buildSystemPrompt(
   style: ExplainStyle = DEFAULT_STYLE,
   options: { crossFile?: boolean } = {},
 ): string {
+  const crossFile = options.crossFile === true;
   return [
     '你是一个代码与技术文档讲解助手。用户会给你一个"锚点"：文档里的一段位置，可能还带着那段的原文。',
     '',
@@ -94,14 +107,14 @@ export function buildSystemPrompt(
     `如果你手里的信息不足以准确讲解（比如只看到零散几行、不认识某个结构体或宏），`,
     `可以调用工具 \`${FETCH_CONTEXT_TOOL.name}\` 请求额外上下文。规则：`,
     '- 只在**真的需要**时调用。能凭现有信息讲清楚的，不要为了保险而多取一次。',
-    '- 一次最多请求一小段（代码按行、PDF 按页）。',
-    fetchSourceRule(options.crossFile === true),
+    '- 一次最多请求一小段（代码按行、PDF 按页），并且 `start` / `end` 都要给。',
+    fetchSourceRule(crossFile),
     '- 取件次数有上限，且已经取过的区间不会重复给你。',
     '- 收到取件结果后就该给出最终 JSON，不要反复取件。',
     '',
     '## 输出',
     '',
-    explainOutputContract(),
+    explainOutputContract(crossFile),
   ].join('\n');
 }
 
@@ -116,13 +129,15 @@ export function buildSystemPrompt(
 function fetchSourceRule(crossFile: boolean): string {
   if (!crossFile) return '- 只能取**锚点所在的那个文件**，不能取别的文件。';
   return [
-    '- **可以读锚点文件之外的相关文件**（同一个 `path` 参数，写相对路径或工作区内的路径）：',
+    '- **可以读锚点文件之外的相关文件** —— 用 `path` 点名要读哪个文件（写相对路径时按**锚点文件所在目录**算，' +
+      '例如 `ring_buffer.h`），`path` 省略才是"锚点这个文件"。',
     '  宏定义、类型/结构体、以及**调用它或被它调用的代码**通常不在同一个文件里 ——',
-    '  讲不清"数据从哪来、给谁用"时就去读，这是被鼓励的。',
+    '  讲不清"数据从哪来、给谁用"时就去读，这是被鼓励的。用户给过一句原话："没有跨文件的理解啊，' +
+      '像是嵌入式等等，很多分散的代码。"',
     '- 一次只读**一个**文件的一小段（≤60 行），别整份读；读完就该给出结论。',
     '- 密钥、依赖目录（`node_modules`）、构建产物读不到，也不用试。',
     '- 你**只能在讲解里引用你读过的文件**（或锚点文件）—— 没读过的文件不许出现在 location 里。',
-  ].join(String.fromCharCode(10));
+  ].join('\n');
 }
 
 /**
@@ -157,13 +172,21 @@ function styleSection(style: ExplainStyle): string {
   ].join('\n');
 }
 
-/** 锚点的人话描述。模型对"第 40-48 行"的理解远好于对一串路径/JSON 的理解。 */
+/**
+ * 锚点的人话描述。模型对"第 40-48 行"的理解远好于对一串路径/JSON 的理解。
+ *
+ * 代码锚点还会给**所在目录**：跨文件取件时相对路径要有基准，
+ * 否则模型只能猜"`ring_buffer.h` 是相对谁写的"（S9a）。
+ */
 export function describeAnchor(anchor: Anchor): string {
   const lines: string[] = [`来源类型：${anchor.sourceType}`, `文档名：${anchor.sourceName}`];
   const loc = anchor.location;
 
   if (isCodeLocation(loc)) {
     lines.push(`文件路径：${loc.filePath}`, `位置：${formatLineRange(loc.lineStart, loc.lineEnd)}`);
+    const dir = dirnameOf(loc.filePath);
+    // 根目录（`/` 或 `C:`）没有信息量，不如不给 —— 给了反而像"一定要写出这个前缀"
+    if (dir !== '' && dir !== '/' && !/^[A-Za-z]:$/u.test(dir)) lines.push(`所在目录：${dir}`);
   } else if (isPDFLocation(loc)) {
     lines.push(`页码：第 ${loc.page} 页`, `框选范围（归一化）：${loc.bbox.join(', ')}`);
   } else {
@@ -172,11 +195,26 @@ export function describeAnchor(anchor: Anchor): string {
   return lines.join('\n');
 }
 
+/**
+ * @anchor 候选文件清单（S9a）**必须真的出现在这里**。第一版只在签名上收了 `candidates`
+ *         而函数体没读过它 —— 清单一次都没进过 prompt，模型于是**不知道可以问哪个文件**，
+ *         这正是用户实测的"没有往外读的想法"（D67）。它只写进 user prompt，不进 system：
+ *         清单是"这一次的上下文"，不是"永远的行为准则"。
+ */
 export function buildUserPrompt(
   anchor: Anchor,
-  options: { candidates?: readonly string[]; focus?: string } = {},
+  options: { candidates?: readonly string[]; focus?: string; crossFile?: boolean } = {},
 ): string {
   const parts = ['## 锚点', describeAnchor(anchor), ''];
+
+  if (options.focus !== undefined && options.focus.trim() !== '') {
+    parts.push(
+      '## 用户想追的那条线',
+      options.focus.trim(),
+      '请围绕这条线组织步骤（它优先于"从头讲一遍"）。',
+      '',
+    );
+  }
 
   if (anchor.extractedText && anchor.extractedText.trim() !== '') {
     parts.push('## 锚点处的原文', '```', anchor.extractedText, '```', '');
@@ -188,6 +226,18 @@ export function buildUserPrompt(
     );
   }
 
+  const candidates = options.candidates ?? [];
+  if (options.crossFile === true && candidates.length > 0) {
+    parts.push(
+      '## 可能相关的文件',
+      '这些是工作区里和锚点文件逻辑相关的文件（按相关性排序，`#include` 提到过的排最前）。',
+      '清单只是**线索**，不代表你一定要用；但如果讲解要说到它们里面的东西（宏、结构体、调用者），',
+      '**先用取件工具读一次再说**（`path` 写下面这些名字，一次一个文件）：',
+      ...candidates.map((name) => `- ${name}`),
+      '',
+    );
+  }
+
   parts.push('请按 system 里的要求，给出讲解 JSON。');
   return parts.join('\n');
 }
@@ -195,8 +245,15 @@ export function buildUserPrompt(
 /**
  * §3.3 规则 5 的"修复提示"。**只回灌问题清单与上一次的输出**，不替模型改写：
  * 我们改的话就是拿规则拼答案，模型只会顺着我们的措辞复述。
+ *
+ * @anchor `crossFile` 必须与 system 那一遍**同口径**：否则模型因为"引用了读过的文件"被判失败，
+ *         拿到的修复提示却又说"必须与锚点同一个文件" —— 第二次照旧失败（D67）。
  */
-export function buildRepairPrompt(rawPrevious: string, issues: string): string {
+export function buildRepairPrompt(
+  rawPrevious: string,
+  issues: string,
+  options: { crossFile?: boolean } = {},
+): string {
   return [
     '你上一次的输出没有通过校验。',
     '',
@@ -209,6 +266,6 @@ export function buildRepairPrompt(rawPrevious: string, issues: string): string {
     '```',
     '',
     '请**只输出修正后的 JSON**，不要解释你改了什么，也不要重复上面的问题清单。',
-    explainOutputContract(),
+    explainOutputContract(options.crossFile === true),
   ].join('\n');
 }

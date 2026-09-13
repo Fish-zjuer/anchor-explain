@@ -104,17 +104,25 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
 
   return async (anchor: Anchor): Promise<ExplanationResult> => {
     const outline = await deps.makeOutline(anchor);
+    /**
+     * 跨文件开关由**策略**推出（不另开一个 deps 字段，免得两处说法可能不一致）。
+     * 它同时决定三处文本：system 的取件规则、输出契约里 `filePath` 的口径、**repair 那一轮**
+     * —— 三处必须同口径，否则模型被判失败后拿到的修复提示会把它往反方向推（D67）。
+     */
+    const crossFile = (deps.fetchPolicy?.scope ?? 'off') !== 'off';
     const messages: ChatMessage[] = [
-      // 跨文件开关由**策略**推出（不另开一个 deps 字段，免得两处说法可能不一致）
+      { role: 'system', content: buildSystemPrompt(deps.style, { crossFile }) },
       {
-        role: 'system',
-        content: buildSystemPrompt(deps.style, { crossFile: (deps.fetchPolicy?.scope ?? 'off') !== 'off' }),
+        role: 'user',
+        content: buildUserPrompt(anchor, { candidates: deps.candidateFiles, crossFile }),
       },
-      { role: 'user', content: buildUserPrompt(anchor, { candidates: deps.candidateFiles }) },
     ];
 
     const fetched: FetchedSpan[] = [];
     let roundsUsed = 0;
+    /** 被拒的取件次数与最后一次的原因。**报错时要说实话**：见下面 MAX_ROUNDS_EXCEEDED */
+    let rejectedCount = 0;
+    let lastRejectReason: string | undefined;
     // 初次 + 每轮取件后都还要有一次机会给答案，所以是 取件上限 + 1；
     // 再多留一轮，是为了让"被拒之后模型仍然只想着取件"这种情况也能收场（届时抛 MAX_ROUNDS_EXCEEDED）
     const turnLimit = deps.maxFetchRounds + 2;
@@ -129,7 +137,10 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
       const repaired = await say(model, [
         ...messages,
         { role: 'assistant', content: candidate },
-        { role: 'user', content: buildRepairPrompt(candidate, describeIssues(first.issues)) },
+        {
+          role: 'user',
+          content: buildRepairPrompt(candidate, describeIssues(first.issues), { crossFile }),
+        },
       ]);
 
       // 修复那一轮如果又要工具，直接按"仍不合规"处理：§3.3 只给一次重试机会，
@@ -150,6 +161,8 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
     async function handleToolCall(call: ToolCall, state: ContextFetchState): Promise<{ accepted: boolean; text: string }> {
       const started = now();
       const rejected = (request: ContextRequest, reason: string): { accepted: false; text: string } => {
+        rejectedCount += 1;
+        lastRejectReason = reason;
         logger.record({
           at: started,
           round: state.roundsUsed + 1,
@@ -188,7 +201,9 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
       logger.record({
         at: started,
         round: state.roundsUsed + 1,
-        request: req,
+        // 记**归一化后**的请求：日志要能复核"到底读了哪个文件"（截图问题 3.4），
+        // 而模型写的是相对路径 —— 记原样的话，命令层据此收的允许集合会与 §3.3 的绝对路径对不上（D67）
+        request: decision.request,
         accepted: true,
         resultChars: content.length,
         durationMs: now() - started,
@@ -227,9 +242,19 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
       }
     }
 
+    // 报错要说实话（D67）：原来无论发生什么都说"取件 N 次之后模型仍未给出讲解"，
+    // 而实际上可能**一次都没取成**（每次都当场被拒，`roundsUsed` 不涨，循环却照样烧完）。
+    // 那样这句话是假的，用户拿着它没法判断该调什么。
+    const reasonTail =
+      rejectedCount === 0
+        ? '它可能一直在请求上下文。'
+        : `其中取件成功 ${roundsUsed} 次、被拒 ${rejectedCount} 次 —— ` +
+          `最后一次被拒的原因是：${lastRejectReason ?? '（没记下来）'}`;
     throw new AnchorError(
       'MAX_ROUNDS_EXCEEDED',
-      `取件 ${deps.maxFetchRounds} 次之后模型仍未给出讲解（它可能一直在请求上下文）。`,
+      `模型连续 ${turnLimit} 轮都在请求上下文：${reasonTail}` +
+        '试试把「一次最多取几轮」（`anchorExplain.maxFetchRounds`）调大，或者把一个更大的选区作为锚点。',
+      { roundsUsed, rejectedCount, turnLimit, lastRejectReason: lastRejectReason ?? null },
     );
   };
 }
