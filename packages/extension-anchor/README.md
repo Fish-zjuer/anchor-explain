@@ -49,6 +49,13 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 }
 ```
 
+> **要的是 OpenAI 兼容端点**：我们请求的是 `{baseUrl}/chat/completions`。
+> 有些厂商同时提供**另一套**兼容接口（例如 DeepSeek 给 Claude Code 用的
+> `https://api.deepseek.com/anthropic` 是 **Anthropic 兼容**，形状不一样）——
+> 那个填进来会连不上或 404。DeepSeek 请用 `https://api.deepseek.com/v1`。
+>
+> **模型名要填端点那边认的 id**（`tier1Model`）：填错时的症状是调用时报"模型不存在"。
+
 > **`activeProvider` 是字符串，填的是 provider 的键名**（`"default"`），不是那整段对象 ——
 > 把它写成对象会让 `settings.json` 语法坏掉（这个错真的发生过，见 D62）。
 > `providers` 的每一个值才是 `{ baseUrl, tier1Model, … }`。

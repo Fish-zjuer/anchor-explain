@@ -637,7 +637,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const before = rawProvider(id);
     const baseUrl = await vscode.window.showInputBox({
       title: `Anchor：providers.${id}.baseUrl`,
-      prompt: 'OpenAI 兼容端点（不带 /chat/completions）',
+      // 这里写的是**知识**，不是校验：`checkBaseUrl` 只管形状（协议头、有没有带 /chat/completions），
+      // 而"Anthropic 兼容端点不通"是厂商事实 —— 放在看得见的地方，比悄悄拒绝好（真实踩过）。
+      prompt: 'OpenAI 兼容端点，例如 https://api.deepseek.com/v1 —— 不是 Anthropic 兼容那一个',
       value: typeof before?.baseUrl === 'string' ? before.baseUrl : '',
       placeHolder: 'https://api.deepseek.com/v1',
       validateInput: (value) => checkBaseUrl(value),
