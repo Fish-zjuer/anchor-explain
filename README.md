@@ -56,6 +56,10 @@ pnpm check        # 上面最后五件事串起来：typecheck → test → buil
 按 `Ctrl+Shift+A`（mac 是 `Cmd+Shift+A`），侧边栏会出逐步讲解，`Alt+]` / `Alt+[` / `Esc` 操作它。
 命令面板里另有 `Anchor: 显示状态` 可看骨架接线是否正常。
 
+**F5 不灵、或者你根本没在用 VS Code**：`pnpm devhost` 是一条等价命令（不用 F5、不用调试器）。
+**第一次上手请照 [`packages/extension-anchor/README.md`](packages/extension-anchor/README.md)
+的「从零到看见荧光笔」走一遍** —— 那里有逐步操作、预期结果，和一张"看不到反应查这里"的对照表。
+
 ## 文档（唯一事实源）
 
 **改代码前先读 `AGENTS.md`。** 文档顺序固定，为的是让上下文前缀稳定：
