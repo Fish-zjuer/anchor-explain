@@ -894,8 +894,7 @@ outputLines.length = 0;
 const postedBeforeS3 = webviews[0].webview.posted.length;
 await registered.get('anchorExplain.capture')?.();
 
-check(webviews[0].webview.posted.length > postedBeforeS3, 'S3 主路径：讲解照常起来了');
-check(fetchCalls.length === 2, '取件一轮 = 两次模型调用（先要上下文，再给答案）', `${fetchCalls.length}`);
+check(webviews[0].webview.posted.length > postedBeforeS3, 'S3 主路径：讲解照常起来了');check(fetchCalls.length === 2, '取件一轮 = 两次模型调用（先要上下文，再给答案）', `${fetchCalls.length}`);
 
 const firstCall = fetchCalls[0] ?? {};
 check(firstCall.url === 'https://example.test/v1/chat/completions', '打的是配置里的 baseUrl（§6）', firstCall.url ?? '');
@@ -1019,6 +1018,20 @@ check(
   'session:update 带着锚点文件（客户端据此给别的文件里的位置标上文件名）',
   String([...webviews[0].webview.posted].reverse().find((m) => m?.type === 'session:update')?.anchorPath),
 );
+
+// D69：内联脚本在**最终 HTML**（产物 → renderSidebarHtml → webview）里必须仍能解析。
+// 一个转义写错就是整块空白面板，而屏幕上**不会有任何报错** —— 所以最后一环也要解析一遍。
+const sidebarInline = /<script[^>]*>([\s\S]*?)<\/script>/.exec(webviews[0].webview.html)?.[1] ?? '';
+check(sidebarInline.length > 0, '侧边栏 HTML 里带着内联脚本', `${webviews[0].webview.html.length} 字`);
+let inlineParseOk = true;
+let inlineParseErr = '';
+try {
+  new Function(sidebarInline);
+} catch (err) {
+  inlineParseOk = false;
+  inlineParseErr = String(err && err.message ? err.message : err);
+}
+check(inlineParseOk, '内联脚本在最终产物里仍能解析（解析不过 = 面板一片空白）', inlineParseErr);
 
 // ⑥ 讲解进行中再按一次：不许开出第二份（D68）。白烧一份 token 之外，屏幕上还会多出一个
 //    要等它自己跑完才消失的进度通知 —— 用户截图里那条"正在讲解: 第 2 轮取件被拒"就是它。

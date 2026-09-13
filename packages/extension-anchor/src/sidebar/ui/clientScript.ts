@@ -37,9 +37,17 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   /** 本次会话的锚点文件（session:update 带来的）。判断"这个位置要不要标文件名"用它。 */
   var anchorPath = null;
 
-  /** 与 core 的 samePath 同一个立场：忽略大小写与斜杠方向（webview 里 import 不到 core）。 */
+  /**
+   * 与 core 的 samePath 同一个立场：忽略大小写与斜杠方向（webview 里 import 不到 core）。
+   *
+   * 这份脚本是一整个模板字符串：源码里的反斜杠要写两个，才等于运行时的一个。
+   * 少写一个会被吃掉，运行时就成了 replace(//+$/, "") —— 那不是"匹配错了"，
+   * 是**语法错误 → 整块面板一片空白**（D69 实测踩到，现在有解析测试钉住）。
+   * 所以这一段**一个反斜杠都不写**：去尾斜杠用字符类，反斜杠本身用 fromCharCode(92)。
+   */
   function normLoc(p) {
-    return String(p).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    var bs = String.fromCharCode(92);
+    return String(p).split(bs).join("/").replace(/[/]+$/, "").toLowerCase();
   }
 
   /** 路径末段（文件名）。标签窄，标出文件名就够指认了。 */
