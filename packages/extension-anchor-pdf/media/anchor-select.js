@@ -28,6 +28,8 @@
  * 三条纪律：
  *   1. **退出框选模式后，屏幕上不留任何东西**（约束 1：PDF 上不出现任何高亮框）。
  *      橡皮筋只在按住指针期间存在，抬手/取消/退出都立刻移除。
+ *      **唯一的例外**：拿不到 VS Code API 时的那句故障说明（见 `showFault`）——
+ *      那种情况下 postMessage 这条通道根本不存在，页面上这句是唯一还能说话的出口。
  *   2. **只在框选模式里拦事件**。平时 overlay 完全不参与事件流，
  *      pdf.js 的滚动、缩放、文字选择、链接点击一个都不受影响。
  *   3. 报给宿主的消息形状由 `CONTRACTS` §5.2 冻结，本文件不许自行发明字段。
@@ -36,11 +38,45 @@
 (() => {
   'use strict';
 
-  // acquireVsCodeApi 只能调用一次。上游的 assets/main.mjs 没有调它，
-  // 所以这里正常能拿到；万一将来上游也调了，我们退化成"功能不可用"而不是整个页面报错。
+  /**
+   * 与页面里其他脚本**共用同一个 VS Code API 实例**（D73）。
+   *
+   * @anchor `acquireVsCodeApi()` 在一个 webview 里**只能成功调用一次** —— 第二次直接抛
+   *         "An instance of the VS Code API has already been acquired"（VS Code 自己的
+   *         webview 预加载就是这么写的：`let acquired = false` 加一句 throw；
+   *         只有 notebook renderer 与 chat 输出被允许重复取）。
+   *
+   *         而这份 PDF 页面里**上游的 pdf.js 已经先调过一次** —— `viewer.mjs` 的
+   *         `VSCodeLinkService` 用它把 PDF 里的链接交回宿主，而 `assets/main.mjs` 一开头就
+   *         `import` 了 viewer.mjs，所以它**必然**跑在我们前面（这也解释了为什么 PDF 渲染正常
+   *         而框选全哑：页面先取成功，我们那次调用抛了）。
+   *
+   *         第一版没意识到这件事，只包了个 try/catch 打算"优雅退化成功能不可用"——
+   *         结果是 postMessage 全变成静默空操作：`anchor:ready` 发不出去 → 宿主永远不补发
+   *         `enterSelectMode` → 连十字光标都不出现。用户看到的是"框选毫无反应"，
+   *         而屏幕上连一个字都没有。
+   *
+   *         所以这里把那个"只准调一次"换成"谁都拿到同一个"：自己第一个去取、把实例记下来，
+   *         之后 pdf.js 再来取就拿到同一个。
+   *
+   *         **顺序不能反**：若让 pdf.js 先取成功，我们就再也拿不到实例。为此本文件必须排在
+   *         pdf.js / main.mjs **之前**加载（见 `pdf-viewer-provider.ts` 注入处那条注释）。
+   */
   let vscode = null;
   try {
-    vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
+    const original = globalThis.acquireVsCodeApi;
+    if (typeof original === 'function') {
+      let shared = null;
+      const acquireOnce = () => {
+        if (shared === null) shared = original();
+        return shared;
+      };
+      globalThis.acquireVsCodeApi = acquireOnce;
+      // 装上没装上必须**验一下**：没装上就不能先取 —— 取了会把 pdf.js 那一次调用变成
+      // "第二次"，等于用"我们能用"换"页面上所有链接坏掉"。宁可我们哑（下面会发声），
+      // 也不能把 PDF 页面本身搞坏。
+      if (globalThis.acquireVsCodeApi === acquireOnce) vscode = acquireOnce();
+    }
   } catch {
     vscode = null;
   }
@@ -51,6 +87,7 @@
 
   const OVERLAY_ID = 'anchor-select-overlay';
   const BAND_ID = 'anchor-select-band';
+  const FAULT_ID = 'anchor-select-fault';
 
   /** 框选模式是否开着。**默认关**：不给页面添任何默认行为。 */
   let active = false;
@@ -70,8 +107,31 @@
       // 橡皮筋：只在按住期间存在。用 dashed 边框而不是填充色，是为了不遮住下面的字
       '#anchor-select-band{position:fixed;z-index:2147483001;display:none;pointer-events:none;border:1px dashed var(--vscode-focusBorder,#0a84ff);background:color-mix(in srgb, var(--vscode-focusBorder,#0a84ff) 12%, transparent)}',
       '#anchor-select-band.anchor-active{display:block}',
+      // 故障说明（D73）：postMessage 那条通道不存在时，这句是页面上唯一还能说话的出口。
+      // 复用 VS Code 自己的报错配色，不另发明一套视觉语言。
+      '#anchor-select-fault{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:2147483002;max-width:78%;padding:10px 14px;border-radius:6px;font:13px/1.5 var(--vscode-font-family,sans-serif);color:var(--vscode-inputValidation-errorForeground,#fff);background:var(--vscode-inputValidation-errorBackground,#7a1f1f);border:1px solid var(--vscode-inputValidation-errorBorder,#be1100);box-shadow:0 2px 8px rgba(0,0,0,.4)}',
     ].join('\n');
     document.head.appendChild(style);
+  }
+
+  /**
+   * 拿不到 VS Code API 时，在页面上说一句（D61~D73 反复出现的同一条：**失败必须发声**）。
+   *
+   * @anchor 为什么这里必须由注入脚本来喊：没有 API 就没有 postMessage，宿主那边只会一直
+   *         等一个永远不来的 `anchor:ready`。用户按下框选后什么都没发生时，至少要知道
+   *         是"这里坏了"而不是"我操作不对"。只在用户真的要框选时才出现，平时不给 PDF 页面
+   *         添任何东西（约束 1 的精神）。不退隐：会自己消失的报错等于没报错。
+   */
+  function showFault() {
+    if (document.getElementById(FAULT_ID)) return;
+    ensureStyles();
+    const node = document.createElement('div');
+    node.id = FAULT_ID;
+    node.classList.add('anchor-fault');
+    node.textContent =
+      'Anchor：这份 PDF 页面里的框选脚本拿不到 VS Code 接口，框选暂时用不了。' +
+      '请把这份 PDF 关掉重新打开；若仍然如此，请在「帮助 → 切换开发人员工具 → Console」里看报错。';
+    document.body.appendChild(node);
   }
 
   function ensureNodes() {
@@ -146,6 +206,8 @@
     active = true;
     clearBand();
     if (overlay) overlay.classList.add('anchor-active');
+    // 进得来却报不回去 = 用户拖完一场空。这种时候在页面上把话说清，别让他以为是自己没拖对。
+    if (!vscode) showFault();
   }
 
   function onPointerDown(event) {
@@ -205,8 +267,12 @@
       const y1 = Math.max(dragged.y, candidate.rect.y);
       const x2 = Math.min(dragged.x + dragged.width, candidate.rect.x + candidate.rect.width);
       const y2 = Math.min(dragged.y + dragged.height, candidate.rect.y + candidate.rect.height);
-      if (x2 <= x1 || y2 <= y1) continue;
       const overlap = (x2 - x1) * (y2 - y1);
+      // `Number.isFinite(overlap)` 这一条与 `rectToNormalizedBBox.ts` 的 `intersectRects` 同一语义：
+      // 算不出交叠（页容器尺寸是 0 / 读到了 undefined）就当**没相交**，宁可什么都不选。
+      // 少了它，NaN 会顺着 `overlap > best.overlap` 一路赢下来，产出一个 [0,0,0,0] 的框 ——
+      // 宿主守门会把它静默丢掉，用户看到的是"拖了、没反应"。
+      if (!Number.isFinite(overlap) || overlap <= 0) continue;
       if (!best || overlap > best.overlap) best = { page: candidate.page, rect: candidate.rect, overlap };
     }
     return best;

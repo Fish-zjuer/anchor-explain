@@ -404,6 +404,44 @@ S6 补的是另一半：**线1 拿到 PDF 锚点之后**。
 PDF 应**滚到那一页**（不是画框，编辑器里也不该出现任何框）；
 没装线1 或没装线2 两种缺件情况各试一次，都应看到明确提示。
 
+### S5/S6 补（D73，2026-09-14）：**用户实测"框选PDF没有任何反应"** —— 链路第一颗螺丝是断的
+
+**用户原话**：「框选PDF，并没有反应。」没有报错、没有截图。查下来根因**不在几何、不在守卫、
+不在宿主**，而在页面加载：
+
+- `acquireVsCodeApi()` 在**一个 webview 里只能成功调用一次**（VS Code 1.137.0 的 webview 预加载
+  `pre/index.html:209` 就是 `let acquired = false` + 第二次 throw；只有 notebook renderer 与
+  chat 输出开了 `allowMultipleAPIAcquire`）。
+- 而这份 PDF 页面里 **pdf.js 自己先调了一次**：`assets/main.mjs:18` 一开头就 `import` 了
+  `viewer.mjs`，而 `viewer.mjs:24094` 在初始化时把实例交给 `VSCodeLinkService`
+  （PDF 里的链接要交回宿主）。它天然跑在我们前面。
+- 我们那次调用因此**抛了**，而第一版包了个 `try/catch { vscode = null }` 就完事 ——
+  `postMessage` 全变静默空操作：`anchor:ready` 发不出去 → 宿主永远不补发 `enterSelectMode`
+  → **连十字光标都不出现**，屏幕上也没有任何字。
+
+**修法（四处）**：① 注入脚本先接管 `globalThis.acquireVsCodeApi`、把实例**共享**出去
+（自己取一次，之后 pdf.js 来取给同一个；装壳没验过**就不取**，宁可我哑也不把页面链接搞坏）；
+② 注入位置提到 `pdf.mjs`/`main.mjs` **之前**（module 不带 `async` 时按文档顺序执行，
+这是结构性保证，不是时序运气）；③ **失败必须发声**：脚本拿不到 API 就在页面上贴一句故障说明，
+宿主 `selectRegion` 不管有没有握手都先推一次、没握手时给一句人话；
+④ 脚本那份兜底副本的交叠判据补 `Number.isFinite`（NaN 不许赢下比较 —— 否则会发出一个
+`[0,0,0,0]` 的框，被宿主守卫静默丢掉，又是一次"拖了、没反应"）。
+
+**这一片的头等收获**：线2 的注入脚本**头一次有了行为夹具**
+（`test/anchorSelectClient.test.ts`：最小 DOM + 逐字复刻 VS Code 预加载语义的 `acquireVsCodeApi`），
+把"推 `enterSelectMode` → 拖框 → 消息过宿主守卫 → 算得出第几页哪一块"整条跑一遍。
+写它的时候当场抓出两个真问题（DOMRect 的 `left/top`、上面第 ④ 条）。
+
+**验收标准（待用户实操）**：`Ctrl+Alt+S` 之后**十字光标要出来**；拖一个矩形 →
+侧边栏出讲解、编辑器里一个框都不该出现（约束 1）；**抬手之后 PDF 上不留任何东西**；
+**若没有十字光标**：第一次按会说"页面还在加载"，再按一次会说"一直没有回应"+ 怎么查
+（这时候把 Console 的报错发我，别只是"没反应"）。
+
+**自动化验收结果**：`pnpm check` 全绿 —— **289 测**（core 40 + ext 228 + pdf **21**，
+其中 pdf 从 12 → 21）/ `pnpm smoke` 73 + `pnpm smoke:chain` 146 + `pnpm smoke:pdf` **74**。
+冒烟里那条"框选脚本排在上游脚本之后"的断言**改了意图并写明理由**（它原本的理由
+"要靠 pdf.js 的 DOM 才能算位置"是错的：那件事发生在拖拽时，与加载顺序无关）。
+
 ### S7 落地结果（2026-09-13，tag `slice-S7`）
 
 **开工时先撞上一个前提**：`PDFLocation` 里没有 `filePath`，所以线1 拿到的锚点

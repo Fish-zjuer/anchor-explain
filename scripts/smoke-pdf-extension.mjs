@@ -263,22 +263,56 @@ check(
   '上游自己的两个脚本仍在（注入是追加，不是替换）',
 );
 check(panel.webview.html.includes("default-src 'none'"), 'CSP 仍然只有一份（注入没有破坏它的唯一性）');
+// D73：注入脚本必须排在 pdf.js / main.mjs **之前**。理由不是依赖顺序，而是
+// acquireVsCodeApi() 一个 webview 只能成功取一次，而 main.mjs 一开头就 import 的 viewer.mjs
+// 也要用它（VSCodeLinkService 把 PDF 里的链接交回宿主）。谁先取到实例谁才能把它分给别人；
+// 反过来的话我们那次调用会抛，postMessage 全变静默空操作 —— 屏幕上就是"框选毫无反应"。
+// 只认 script 标签本身：注释里也会出现这些文件名，按裸文件名找会找到注释上（踩过一次）
+const atOverlay = panel.webview.html.indexOf('anchor-select.js" type="module"');
+const atPdfJs = panel.webview.html.indexOf('assets/pdf.js/build/pdf.mjs" type="module"');
+const atMain = panel.webview.html.indexOf('assets/main.mjs" type="module"');
+const order = `anchor-select.js@${atOverlay} pdf.mjs@${atPdfJs} main.mjs@${atMain}`;
 check(
-  panel.webview.html.indexOf('assets/main.mjs') < panel.webview.html.indexOf('anchor-select.js'),
-  '框选脚本排在上游脚本之后（要靠 pdf.js 的 DOM 才能算位置）',
+  atOverlay >= 0 && atOverlay < atPdfJs,
+  '框选脚本排在 pdf.mjs 之前（否则拿不到 VS Code API 实例，D73）',
+  order,
+);
+check(
+  atOverlay >= 0 && atOverlay < atMain,
+  '框选脚本排在 main.mjs 之前（main.mjs 会 import viewer.mjs，那份才是先动手的）',
+  order,
 );
 
-// 进入框选模式：命令 → context key + 推给页面。
-// 注意面板此刻**还没握过手**（页面可能还在加载），所以宿主应当先记下、不推。
+// 进入框选模式：命令 → context key + 推给页面（**先推一次，再管握手**，D73）。
 executed.length = 0;
 posted.length = 0;
+warnings.length = 0;
 await registeredCommands.get('anchorPdf.selectRegion')?.();
 check(
   executed.some((c) => c.id === 'setContext' && c.args[0] === 'anchorPdf.selectMode' && c.args[1] === true),
-  '进入框选模式时把 anchorPdf.selectMode 置为 true（键位的 when 靠它）',
+  '进入框选模式时把 anchorPdf.selectMode 置为 true',
   JSON.stringify(executed.map((c) => c.args)),
 );
-check(posted.length === 0, '未握手时先不推（推了也石沉大海）');
+check(
+  posted.at(-1)?.type === 'anchor:enterSelectMode',
+  '未握手也要推一次（脚本活着但拿不到 API 时，这是它唯一的入口，D73）',
+  JSON.stringify(posted.at(-1)),
+);
+check(
+  warnings.some((w) => w.includes('还在加载')),
+  '未握手时给一句话（页面一直不回应的话，屏幕上不能一直"什么都没发生"）',
+  warnings.at(-1) ?? '',
+);
+
+// 页面一直不回应：再按一次就要说结论，不能还是"什么都没发生"
+posted.length = 0;
+warnings.length = 0;
+await registeredCommands.get('anchorPdf.selectRegion')?.();
+check(
+  warnings.some((w) => w.includes('一直没有回应')),
+  '第二次按还是没有握手时给出可诊断的结论（含"关掉重开 / 看 Console"）',
+  warnings.at(-1) ?? '',
+);
 
 await onWebviewMessage?.({ type: 'anchor:ready' });
 check(
@@ -287,10 +321,12 @@ check(
   JSON.stringify(posted.at(-1)),
 );
 
-// 已经握过手之后，再点就是即时生效
+// 已经握过手之后，再点就是即时生效，且不再有多余提示
 posted.length = 0;
+warnings.length = 0;
 await registeredCommands.get('anchorPdf.selectRegion')?.();
 check(posted.at(-1)?.type === 'anchor:enterSelectMode', '已握手时即时推给页面（§5.2 的宿主→注入脚本方向）');
+check(warnings.length === 0, '一切正常时不要弹任何提示（十字光标就是反馈）', JSON.stringify(warnings));
 
 // 框选结果：宿主用 geometry 重算，而不是照抄脚本给的 bbox
 executed.length = 0;
@@ -388,6 +424,19 @@ check(
   !/classList\.add\(['"]anchor-active['"]\)[\s\S]{0,400}?post\(/.test(overlay) === false ||
     overlay.includes('exitSelectMode'),
   '注入脚本有明确的退出口（否则橡皮筋会留在屏幕上）',
+);
+// D73：API 实例的共享与"拿不到就发声"，两条结构性保证
+check(
+  overlay.includes('globalThis.acquireVsCodeApi'),
+  '注入脚本接管 acquireVsCodeApi 并把实例共享出去（否则 pdf.js 先取走时我们彻底哑）',
+);
+check(
+  overlay.includes("'anchor-fault'") && overlay.includes("add('anchor-fault')"),
+  '注入脚本带一条"拿不到 API 就在页面上发声"的出口（失败必须发声）',
+);
+check(
+  /function enterSelectMode\(\)[\s\S]{0,400}?showFault\(\)/.test(overlay),
+  '进框选模式时若拿不到 API 就在页面上发声（上一版只是悄悄置空，整件事就这么被吞掉了）',
 );
 
 ext.deactivate();

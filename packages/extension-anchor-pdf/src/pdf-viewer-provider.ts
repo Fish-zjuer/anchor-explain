@@ -19,8 +19,10 @@
  *   1. `viewType` 由 "pdf.view" 改为 "anchorPdf.view"（避免与上游扩展抢同一个视图类型）
  *   2. 读取配置的命名空间由 "pdf" 改为 "anchorPdf"
  *   3. **S5**：多注入一个 `media/anchor-select.js`（框选 overlay，见该文件顶部的分工说明），
- *      并处理它发回来的消息（`CONTRACTS` §5.2）。注入方式是**在 HTML 末尾追加一个 script 标签** ——
- *      `assets/pdf.js/` 一个字都没动，所以将来升级 pdf.js 不用重做这件事。
+ *      并处理它发回来的消息（`CONTRACTS` §5.2）。注入方式是**多插一个 script 标签**，
+ *      且它必须排在上游脚本**之前**（D73：`acquireVsCodeApi()` 一个 webview 只能成功取一次，
+ *      要先拿到实例才能共享给 pdf.js）—— `assets/pdf.js/` 一个字都没动，
+ *      所以将来升级 pdf.js 不用重做这件事。
  *   4. **S6**：把框选结果交给线1 讲解（`anchorExplain.explainAnchor`），
  *      并接受线1 的 `anchorPdf.revealPage` 请求（滚动，不是画框）。
  *   5. 上面的版权声明之后追加了本段
@@ -70,6 +72,18 @@ const resourcePathRegex = /\/[^/]+?\.\w+$/u;
 const PEER_EXTENSION_ID = "anchor.anchor-explain";
 const PEER_MISSING_MESSAGE =
   "Anchor：没有安装线1（anchor.anchor-explain）扩展，框选结果无处可交。请先安装它。";
+
+/**
+ * 按下框选但页面还没握上手时的两句话（D73）。
+ *
+ * @anchor 为什么非要说话：这类"页面里的脚本没跑起来"的故障，**宿主这边一点异常都看不到** ——
+ *         没有报错、没有日志，用户看到的就是"按了没反应"。上一版在这里是彻底静默，
+ *         于是框选坏了一整轮都没人知道。第一句是解释（页面还在加载），
+ *         第二句是结论（一直没回应），都带下一步能做什么。
+ */
+const SELECT_LOADING_MESSAGE = "Anchor：PDF 页面还在加载，加载完会自动进入框选模式。";
+const SELECT_NO_RESPONSE_MESSAGE =
+  "Anchor：这份 PDF 页面一直没有回应框选脚本。可以把它关掉重新打开；若仍然如此，请在「帮助 → 切换开发人员工具」的 Console 里看报错。";
 
 function extAInstalled(): boolean {
   return extensions.getExtension(PEER_EXTENSION_ID) !== undefined;
@@ -298,7 +312,14 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
     void panel.webview.postMessage(message);
   }
 
-  /** 进入/退出框选模式：**同时**推给页面与 context key（后者供键位的 `when` 用）。 */
+  /**
+   * 进入/退出框选模式：**同时**推给页面与 context key。
+   *
+   * @anchor 说实话：`anchorPdf.selectMode` 这个 key 目前**没有任何 `when` 在读**（线1 侧那两个
+   *         key 才是键位用的）。留它是给"用户自己想绑一个取消键"留的入口，也方便
+   *         `Developer: Inspect Context Keys` 里看出当前状态。别在注释里写"键位靠它" ——
+   *         那是假话（同 D73 那一类：屏幕/文档说了、代码里没有）。
+   */
   private async setSelectMode(active: boolean): Promise<void> {
     await commands.executeCommand("setContext", "anchorPdf.selectMode", active);
   }
@@ -325,13 +346,20 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
     }
 
     await instance.setSelectMode(true);
-    if (instance.readyPanels.has(panel)) {
-      instance.post(panel, { type: "anchor:enterSelectMode" });
-    } else {
-      // 页面还没握过手。记下来，等它 `anchor:ready` 时补发 ——
-      // 否则用户看到的是"第一次点没反应，再点一次才行"。
-      instance.pendingSelect.add(panel);
-    }
+
+    // **先推一次，再去管握手**（D73）。握手只说明"页面还没说它准备好了"，
+    // 不能说明"页面里的脚本一定是死的"：脚本活着但拿不到 VS Code API 时（正是出事那一幕），
+    // 它一个字也发不出来，这条消息就是它**唯一**的入口 —— 进去之后它会在页面上把故障说出来。
+    // 推早了是无害的：监听器还没注册，消息落地即消失，后面还有握手后的补发兜着。
+    instance.post(panel, { type: "anchor:enterSelectMode" });
+    if (instance.readyPanels.has(panel)) return;
+
+    // 页面还没握过手。除了记下来等 `anchor:ready` 补发（否则"第一次点没反应，再点一次才行"），
+    // 还必须**在这里说话** —— 页面一直不回应时，屏幕上不能一直是"什么都没发生"。
+    const again = instance.pendingSelect.has(panel);
+    instance.pendingSelect.add(panel);
+    if (again) void window.showWarningMessage(SELECT_NO_RESPONSE_MESSAGE);
+    else void window.showInformationMessage(SELECT_LOADING_MESSAGE);
   }
 
   /**
@@ -432,12 +460,22 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
 <link rel="stylesheet" href="${resolvePdfJsURI("web", "viewer.css")}">
 <link rel="stylesheet" href="${resolveAssetURI("main.css")}">
 
+<!-- 框选 overlay：独立文件（assets/pdf.js/ 一个字节都没动，将来升级 pdf.js 不用重做这条注入），
+     但**必须排在 pdf.js / main.mjs 之前**（D73）。
+
+     原因不是依赖顺序，而是 acquireVsCodeApi() 在一个 webview 里**只能成功调用一次**：
+     viewer.mjs 里的 VSCodeLinkService 也要用它（把 PDF 里的链接交回宿主），
+     而 assets/main.mjs 一开头就 import 了 viewer.mjs，所以它天然跑在前面。
+     谁先拿到实例，谁才能把实例分给别人 —— 我们的脚本先取一次、把实例共享出去，
+     之后 pdf.js 来取就拿到同一个。反过来的话，我们那次调用会**抛**，
+     postMessage 全变成静默空操作，屏幕上的表现是"框选毫无反应、一个字都没有"。
+
+     module 脚本不带 async 时按文档顺序执行，所以"我们在前"是结构性保证，不靠时序运气。
+     注意：这条注释里**不能出现反引号** —— 整段是模板字符串，一个反引号就会把它截断（D69 那类坑）。 -->
+<script src="${resolveUri("media", "anchor-select.js")}" type="module"></script>
+
 <script src="${resolvePdfJsURI("build", "pdf.mjs")}" type="module"></script>
 <script src="${resolveAssetURI("main.mjs")}" type="module"></script>
-
-<!-- S5：框选 overlay。**放在上游脚本后面**，且是独立文件 ——
-     assets/pdf.js/ 一个字节都没动，所以这条注入在将来升级 pdf.js 时不用重做。 -->
-<script src="${resolveUri("media", "anchor-select.js")}" type="module"></script>
 
 <link rel="resource" type="application/l10n" href="${resolvePdfJsURI(
           "web",

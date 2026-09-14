@@ -434,7 +434,13 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 |---|---|---|
 | `anchorExplain.walkthroughActive` | boolean | 讲解开始置 `true`；`stop` / 讲完（`done`）/ 编辑器关闭时置 `false` |
 | `anchorExplain.sessionOpen` | boolean | **S1 新增（D46）**。从开会话起置 `true`，**只到 `stop` / 编辑器关闭才置 `false`**（`done` 不落） |
-| `anchorPdf.selectMode` | boolean | PDF 进入框选模式置 `true` |
+| `anchorPdf.selectMode` | boolean | PDF 进入框选模式置 `true`；框选完成 / 取消 / 退出置 `false` |
+
+**关于 `anchorPdf.selectMode`（S5 补，说实话）**：它**目前没有任何 `when` 在读** ——
+线2 那条键位（`anchorPdf.selectRegion`）绑的是 `activeCustomEditorId == 'anchorPdf.view'`。
+留着它是给"用户自己绑一个取消键"留入口，也方便在
+`Developer: Inspect Context Keys` 里看当前状态；宿主侧仍然会在进入/退出框选时如实置位。
+**不要在文档或注释里写"键位靠它"** —— 那是假话（同 D73 那一类：说了、代码里没有）。
 
 两个 key 的分工不重叠：`walkthroughActive` 管"要不要吃推进键"（`next`/`prev`/`goto`/`playPause`），
 `sessionOpen` 管"还有没有东西需要收尾"（`stop`）。合成一个 key 会让 `done` 之后的界面变成死局
@@ -531,6 +537,30 @@ interface CapturedGeometry {
 （页号与 bbox 都以重算结果为准，脚本给的那两个值被覆盖）；不在就退回它给的 `page`/`bbox`。
 两条路都要过 `parseSelectMessage` 的守卫：`coerceBBox` + `isValidBBox` ——
 **一个零面积的框进不了 `PDFLocation`**（它会卡在 §3.3 的 bbox 校验上，或变成一个谁也看不见的锚点）。
+
+**注入脚本必须与 pdf.js 共用同一个 `acquireVsCodeApi` 实例（S5 补 / D73，硬约束）**：
+
+- `acquireVsCodeApi()` 在一个 webview 里**只能成功调用一次**（第二次抛
+  `An instance of the VS Code API has already been acquired`）。VS Code 只对 notebook renderer
+  与 chat 输出开 `allowMultipleAPIAcquire`，自定义编辑器没有这个口子。
+- 而这份 PDF 页面里**上游的 pdf.js 自己就要用**它（`viewer.mjs` 的 `VSCodeLinkService`
+  把 PDF 里的链接交回宿主），且 `assets/main.mjs` 一开头就 `import` 了 viewer.mjs
+  —— 它**天然跑在我们前面**。
+- 所以契约是两条：① 注入脚本先接管 `globalThis.acquireVsCodeApi`、把实例**共享**出去
+  （自己取一次，之后谁来取都给同一个）；② 它的 `<script>` 必须排在 `pdf.mjs` / `main.mjs`
+  **之前**（module 脚本不带 `async` 时按文档顺序执行，"我们在前"是结构性保证）。
+- **违反的后果是静默的**：拿不到实例 → `postMessage` 全变空操作 → `anchor:ready` 发不出去
+  → 宿主永远不补发 `enterSelectMode` → 用户看到"框选毫无反应"，**屏幕上没有任何报错**。
+
+**宿主侧的兜底（S5 补 / D73）**：`anchorPdf.selectRegion` **不管有没有握手都先推一次**
+`enterSelectMode`（推早了无害：监听器还没注册，消息落地即消失）。
+握手只说明"页面还没说它准备好了"，不能说明"脚本一定是死的" —— 脚本活着而拿不到 API 时，
+这条消息是它**唯一**的入口，进去之后它会在页面上把故障说出来。
+
+**约束 1 的唯一例外（S5 补 / D73）**：注入脚本在**拿不到 VS Code API** 时，会在页面上显示
+一句故障说明（`#anchor-select-fault`，复用 VS Code 的报错配色）。那是这种情况下唯一还能说话的
+通道 —— 宿主只能一直等一个永远不来的 `anchor:ready`。它**只在用户按下框选之后**出现，
+其余任何时候 PDF 页面上仍然不允许出现任何东西。
 
 ### §5.3 ext-A 内部：宿主 ↔ 侧边栏 webview
 

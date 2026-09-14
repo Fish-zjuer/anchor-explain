@@ -62,10 +62,20 @@
 2. **配置命名空间：`getConfiguration("pdf")` → `getConfiguration("anchorPdf")`。**
    同时 `package.json` 里的两个配置项改名 `pdf.*` → `anchorPdf.*`。
    否则装了上游扩展的用户会发现两个扩展抢同一份配置。
-3. **S5：`getHtmlForWebview` 末尾追加一个 `<script src="media/anchor-select.js">`。**
+3. **S5：`getHtmlForWebview` 多插一个 `<script src="media/anchor-select.js">`。**
    这是框选 overlay 的注入点。选这个做法的关键是 **`assets/pdf.js/` 一个字节都没动** ——
    overlay 是独立文件，框选逻辑不往 pdf.js 里塞代码，所以将来升级 pdf.js 时这条注入不用重做
    （升级流程见本文档 §四）。
+
+   **注入位置：必须排在 `pdf.mjs` / `main.mjs` 之前**（S5 补，D73）。
+   不是依赖顺序，而是 `acquireVsCodeApi()` 在一个 webview 里**只能成功调用一次**，
+   而这份页面里 **pdf.js 自己也要用它**（`viewer.mjs` 的 `VSCodeLinkService` 把 PDF 里的链接
+   交回宿主，交给它那次 `{open: string}` 消息），且 `assets/main.mjs` 一开头就 `import` 了
+   viewer.mjs —— 它天然跑在我们前面。所以 overlay 先接管 `acquireVsCodeApi`、把实例共享出去，
+   之后 pdf.js 来取就拿到同一个。反过来的话，overlay 那次调用会抛，
+   宿主侧收到的是**一片静默**（用户看到"框选毫无反应"）。
+   module 脚本不带 `async` 时按文档顺序执行，所以"我们在前"是结构性保证。
+
 4. **S5：`onDidReceiveMessage` 多接一类消息。** 上游只看 `{open: string}`（页面里的链接），
    我们多接 §5.2 的框选消息；两类消息各看各的字段，`parseSelectMessage` 返回 null 就落回上游那条路。
    **没有改动上游原有的那段处理**，是在它前面加了一个分支。
@@ -73,6 +83,11 @@
    `get(uri)`（按文档找面板），而跨扩展定位（`revealPage`）要的是反过来的查询
    （"所有活着的面板"）。为了**不改上游那个文件**，宿主在自己的字段里再记一份。
    `src/webview-collection.ts` 因此仍然逐字未改。
+6. **S5 补（D73）：框选失败时不许静默。** `startSelectRegion` 不管页面有没有握过手都先推一次
+   `enterSelectMode`（推早了无害），没握手时再补一句人话；注入脚本在**拿不到 VS Code API** 时
+   会在页面上贴一句故障说明（`#anchor-select-fault`，复用 VS Code 的报错配色）。
+   这两处都不改上游行为，只是把"什么都发生了但屏幕上没有"变成"屏幕上有一句话"，理由见 D73。
+   界面文案（命令标题、通知文本）全部是中文，这是我们自己新增的字符串，与上游无冲突。
 
 （上面两个文件在版权声明之后都追加了一段"本文件已被修改"的显著声明，即 Apache-2.0 §4(b) 的要求。
 未列出的文件就是逐字未改的。）
@@ -126,8 +141,9 @@
 | 路径 | 说明 |
 |---|---|
 | `src/anchor/` | 框选相关的**可测**部分：像素→归一化换算（`rectToNormalizedBBox.ts`）、§5.2 消息守卫（`bridge.ts`）、Anchor 组装（`captureAnchor.ts`）。三个都**零 vscode 依赖**，所以能被 `node --test` 覆盖 |
-| `media/anchor-select.js` | 注入式框选 overlay。**不参与类型检查、也不进 bundle**（运行时从扩展目录读）。所以它的纪律是：**一行业务数学都不做**，只做"跟手的事"（画橡皮筋、报像素几何） |
+| `media/anchor-select.js` | 注入式框选 overlay。**不参与类型检查、也不进 bundle**（运行时从扩展目录读）。所以它的纪律是：**一行业务数学都不做**，只做"跟手的事"（画橡皮筋、报像素几何）。另外它必须先接管 `globalThis.acquireVsCodeApi`（D73，见上），并在拿不到 API 时在页面上贴一句故障说明 |
 | `test/anchor.test.ts` | 上面三个模块的单测（11 条） |
+| `test/anchorSelectClient.test.ts` | **S5 补（D73）**：注入脚本的行为夹具（9 条）。最小 DOM + 逐字复刻 VS Code 预加载语义的 `acquireVsCodeApi`，把"推 `enterSelectMode` → 拖框 → 消息过宿主守卫 → 算得出第几页哪一块"整条跑一遍。它也不碰 `vscode` |
 | `.gitattributes` | 字节敏感资源标 `binary`（见 D53 第 9 条） |
 
 ## 三、许可与署名

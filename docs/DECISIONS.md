@@ -1486,6 +1486,71 @@ S9c 剩下的（折叠已完成步骤、面板上的「下一步」按钮、斜�
 
 ---
 
+## D73 「框选PDF，并没有反应」= `acquireVsCodeApi()` 只能成功一次，而 pdf.js 先取走了
+
+**起因**：用户八个字：「框选PDF，并没有反应。」没有截图、没有报错。照例先找证据，这次能拿到的
+只有两样：**代码**与 **VS Code 自己的源码**（不猜）。
+
+**证据链（三步，都落在文件上）**：
+
+1. 页面里**不止我们一个脚本要这个 API**。`assets/main.mjs:18` 一开头就
+   `import ... from "./pdf.js/web/viewer.mjs"`，而 `viewer.mjs:24094` 在
+   `_initializeViewerComponents()` 里有一句 `const vscode = acquireVsCodeApi();`，
+   交给 `VSCodeLinkService`（把 PDF 里的链接交回宿主）。**它必然跑在我们前面。**
+2. 这个 API **一个 webview 只能成功调用一次**。VS Code 1.137.0 的 webview 预加载
+   （`resources/app/out/vs/workbench/contrib/webview/browser/pre/index.html:209`，`getVsCodeApiScript`）
+   就是这么写的：`let acquired = false;` + 第二次 `throw new Error('An instance of the VS Code API
+   has already been acquired')`；`allowMultipleAPIAcquire` 只在 notebook renderer 与 chat 输出里为
+   `true`，自定义编辑器没有。
+3. 于是我们的脚本（`media/anchor-select.js`）那次调用**抛了**，而第一版把它包在
+   `try { ... } catch { vscode = null }` 里 —— 注释还写着"退化成功能不可用，而不是整个页面报错"。
+   结果 `postMessage` 全变成静默空操作：`anchor:ready` 发不出去 → 宿主 `readyPanels` 永远空 →
+   `Ctrl+Alt+S` 只把面板记进 `pendingSelect` 而不推消息 → **连十字光标都不出现**。
+
+**用户那八个字本身就佐证了第 1 步**：他看到的是 PDF 正常渲染（能框选），说明 pdf.js 的初始化
+跑通了；若反过来是我们先取成功，`_initializeViewerComponents` 会当场抛，`load()` 不会执行，
+**PDF 根本渲染不出来**。
+
+**决策（四处）**：
+
+1. **注入脚本接管 `globalThis.acquireVsCodeApi`，把"只准调一次"换成"谁都拿到同一个"**：
+   自己先取一次、把实例记下来，之后 pdf.js 来取就拿到同一个。装壳之后要**验一下装上了没有**
+   —— 没装上就**不取**（取了会把 pdf.js 那一次变成"第二次"，等于用"我们能用"换"页面链接全坏"）。
+2. **注入位置改到 `pdf.mjs` / `main.mjs` 之前**（这是修法的另一半，光改脚本不够）。
+   module 脚本不带 `async` 时按文档顺序执行，所以"我们在前"是**结构性保证**，不靠时序运气。
+   冒烟里那条写着"框选脚本排在上游脚本之后"的断言**改了意图并写明理由**（它原本的理由是
+   "要靠 pdf.js 的 DOM 才能算位置" —— 那件事发生在拖拽时，与加载顺序无关）。
+3. **失败必须发声（这次是双通道）**：脚本拿不到 API 时，在页面上贴一句故障说明
+   （`#anchor-select-fault`，约束 1 的唯一例外 —— 那种情况下它是唯一还能说话的通道）；
+   宿主那边 `selectRegion` **不管有没有握手都先推一次**，没握手时还要说一句人话
+   （第一次："页面还在加载"；再来一次还是没握手："一直没有回应"+怎么查）。
+   原来的"未握手就先不推、也不出声"是把静默当保守。
+4. **顺带**：注入脚本那份"兜底副本" `pickDominantPageInScript` 里，交叠面积是 `NaN` 时
+   不再能赢下比较（原判据 `if (x2 <= x1 || y2 <= y1) continue` 对 `NaN` 不成立），
+   改成 `if (!Number.isFinite(overlap) || overlap <= 0) continue` —— 与 `intersectRects`
+   的语义对齐：**算不出来就当没相交**。少了这一条，一个 `[0,0,0,0]` 的框会发出去、
+   被宿主守卫静默丢掉，又是一次"拖了、没反应"。
+
+**这一片最大的教训（比 bug 本身重要）**：第一版**想到了**这个风险，还把它写进了注释，
+然后选择了"优雅退化成静默"。项目的规矩（D61~D72）一直是"失败必须发声"，
+而这里是我自己破的例 —— **一行 `catch { vscode = null }` 让整条链路哑了一整轮**。
+凡是"降级"，都要在用户能找到的地方留一句话；没有通道，就造一个（哪怕是在 PDF 页面上贴一句）。
+
+**验证**：新增 `packages/extension-anchor-pdf/test/anchorSelectClient.test.ts`（**9 条**）——
+线2 的注入脚本头一次有了行为夹具：最小 DOM + **逐字复刻 VS Code 预加载语义**的
+`acquireVsCodeApi`（含那条报错原文），把"宿主推 `enterSelectMode` → 拖一个框 → 发回来的消息
+能被宿主守卫收下、并算得出是第几页的哪一块"整条**跑一遍**。写测试时它当场抓出两个真问题：
+① `DOMRect` 同时有 `x/left`，脚本量的是 `left/top`（夹具少写一套就等于测了别的东西）；
+② 上面第 4 条那个 `NaN` 判据 —— 夹具喂进去的坏几何，让 `[0,0,0,0]` 原样发了出去。
+**顺序**这件事由冒烟守着（注入标签早于 `pdf.mjs`/`main.mjs`，且只认 script 标签本身 ——
+按裸文件名找会找到注释里的那个词，这条也踩过一次）。
+
+**验证数字**：`pnpm check` 全绿 —— **289 测**（core 40 + ext 228 + pdf **21**）/
+冒烟 73 + 146 + **74**。
+
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

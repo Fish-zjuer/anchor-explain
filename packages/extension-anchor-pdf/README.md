@@ -15,8 +15,9 @@
 
 ## 现在到哪了
 
-**S5：框选能用了**。改名 / 不劫持 / 能打开（S4）→ 现在还能**拖一个矩形**，
-把它变成 `Anchor` 交给线1 讲解（S5）。点击侧边栏滚动定位是 S6。
+**S5/S6 修完（D73）：框选那条链路原本第一颗螺丝就是断的，现在真的能用**。
+改名 / 不劫持 / 能打开（S4）→ **拖一个矩形**变成 `Anchor` 交给线1 讲解（S5）→
+点击侧边栏「第 N 页」滚到那一页（S6）。**PDF 上不出现任何高亮框**（约束 1）。
 
 ### 怎么框选
 
@@ -27,6 +28,22 @@
 5. 交给线1 之后侧边栏会出讲解（没装线1 会明确提示）
 
 **跨页拖**（从第 1 页底部拖到第 2 页里）会判给**盖得多的那一页**，不是按起点判。
+
+### 按了没反应？查这里（D73）
+
+先分清"哪一种没反应" —— 这两种的下一步完全不同：
+
+| 现象 | 说明 | 怎么办 |
+|---|---|---|
+| 有十字光标，拖完什么都没发生 | 页面活着（`anchor:ready` 到了），消息在半路被挡 | 输出面板「Anchor」里有没有日志；线1 那边装了没有（没装会明确提示） |
+| **没有十字光标**，第一次按弹「页面还在加载」 | 页面脚本还没握上手 | 等一下再按一次（加载完会自动进入框选模式） |
+| **没有十字光标**，再按弹「一直没有回应框选脚本」 | 页面里的脚本**没跑起来或拿不到 VS Code 接口** | 把 PDF 关掉重开；仍不行就看 Console：命令面板 → `Developer: Toggle Developer Tools` → Console。**把报错发我**（只说"没反应"没有可查的线索） |
+| PDF 页面底部贴出一句红底说明 | 脚本活着但拿不到 `acquireVsCodeApi`（D73 的故障出口） | 同上：关掉重开 + 看 Console |
+
+**为什么可能拿不到**：`acquireVsCodeApi()` 在一个 webview 里只能成功调用一次，而这份页面里
+pdf.js 自己也要用（PDF 里的链接要交回宿主）。所以我们先接管、再把实例共享出去，并**必须排在上游
+脚本之前**加载。这条链上任何一环坏了，旧版本的表现就是"框选毫无反应、屏幕上也没有任何字" ——
+现在至少会说话。
 
 ## 源码入口表
 
@@ -40,7 +57,8 @@
 | `src/anchor/rectToNormalizedBBox.ts` | **S5 新增**。像素矩形 → 「第几页 + 归一化 bbox」的**全部**换算（零 vscode 依赖，11 条单测） |
 | `src/anchor/bridge.ts` | **S5 新增**。§5.2 消息的 TS 落地 + 边界守卫 |
 | `src/anchor/captureAnchor.ts` | **S5 新增**。框选 → `Anchor`；`describePdfAnchor` 把 bbox 说成人话 |
-| `media/anchor-select.js` | **S5 新增**。注入式框选 overlay。**不参与类型检查、不进 bundle**（运行时从扩展目录读）。**一行业务数学都不做** |
+| `media/anchor-select.js` | **S5 新增**。注入式框选 overlay。**不参与类型检查、不进 bundle**（运行时从扩展目录读）。**一行业务数学都不做**；但必须先接管 `globalThis.acquireVsCodeApi`、把实例共享给 pdf.js，且排在上游脚本之前加载（D73） |
+| `test/anchorSelectClient.test.ts` | **S5 补（D73）新增**。注入脚本的行为夹具（9 条）：最小 DOM + 复刻 VS Code 预加载语义的 `acquireVsCodeApi`，跑通「推 enterSelectMode → 拖框 → 消息过宿主守卫 → 算得出页与框」 |
 | `assets/` | **页面运行时的全部资源**：`main.css` / `main.mjs` / vendored `pdf.js`（23MB） | 逐字未改，**必须提交** |
 | `patches/pdf.js.patch` | 上游给 pdf.js 打的补丁（拆掉 pdf.js 自带 CSP） | 逐字未改，**必须提交** |
 | `tools/check_pdfjs.mjs` | 上游的不变式守卫（CSP 恰好一次、pdf.js 补丁在位） | 逐字未改，**接进了本包的 `test`** |
@@ -50,8 +68,9 @@
 ```bash
 pnpm install                       # 仓库根
 pnpm build                         # 产物落在本包 dist/extension.cjs（根 esbuild.mjs 的 TARGETS 里）
-pnpm --filter anchor-pdf test      # 跑 test/anchor.test.ts（11 条）+ tools/check_pdfjs.mjs（上游的不变式守卫）
-pnpm smoke:pdf                     # 产物冒烟：不劫持 / 改名 / 命令 / **框选整条链路**（66 项）
+pnpm --filter anchor-pdf test      # test/anchor.test.ts（11 条）+ test/anchorSelectClient.test.ts（9 条）
+                                   # + tools/check_pdfjs.mjs（上游的不变式守卫）
+pnpm smoke:pdf                     # 产物冒烟：不劫持 / 改名 / 命令 / **注入顺序** / **框选整条链路**（74 项）
 pnpm --filter anchor-pdf typecheck # tsc --noEmit
 ```
 
