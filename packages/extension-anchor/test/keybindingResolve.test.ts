@@ -170,11 +170,27 @@ test('耦合锁：`when` 的语义分工（改错会让某个键变哑）', () =
   };
   const whenOf = (command: string) => pkg.contributes.keybindings.find((k) => k.command === command)?.when ?? '';
 
-  // 推进类键绑 walkthroughActive：讲完（done）之后它们必须失效
-  for (const command of ['anchorExplain.next', 'anchorExplain.prev', 'anchorExplain.goto', 'anchorExplain.playPause']) {
+  // **往前推进**的键绑 walkthroughActive：讲完之后确实没有可推进的东西
+  for (const command of ['anchorExplain.next', 'anchorExplain.playPause']) {
     assert.ok(
       whenOf(command).includes('anchorExplain.walkthroughActive'),
       `${command} 的 when 应当含 walkthroughActive，实际是 "${whenOf(command)}"`,
+    );
+  }
+
+  // **回看与跳回**绑 sessionOpen（D72 修正了这一条的原意）：
+  // 原来 prev / goto 也绑在 walkthroughActive 上，于是"走到最后一条"时它们与面板按钮**一起**哑掉
+  // —— 用户的实测原话是"按键、快捷键、按钮全不管用，进入最后一条就卡死"。
+  // 讲完那一刻唯一还想做的两件事就是**回看**（prev）与**跳回某一步**（goto），把它们禁掉不是保守，
+  // 是把面板变成死路（D61 的同一条规矩）。它们的 when 必须与面板上的「上一步」一致。
+  for (const command of ['anchorExplain.prev', 'anchorExplain.goto']) {
+    assert.ok(
+      whenOf(command).includes('anchorExplain.sessionOpen'),
+      `${command} 的 when 必须含 sessionOpen，实际是 "${whenOf(command)}"`,
+    );
+    assert.ok(
+      !whenOf(command).includes('walkthroughActive'),
+      `${command} 不能再绑 walkthroughActive —— 那会让"讲完回看"这条路彻底消失`,
     );
   }
 

@@ -62,7 +62,7 @@ export const WALKTHROUGH_CHORDS: readonly WalkthroughChordSpec[] = [
     command: 'anchorExplain.prev',
     key: 'alt+[',
     mac: 'alt+[',
-    when: 'anchorExplain.walkthroughActive',
+    when: 'anchorExplain.sessionOpen',
   },
   {
     id: 'stop',
@@ -79,7 +79,7 @@ export const WALKTHROUGH_CHORDS: readonly WalkthroughChordSpec[] = [
     command: 'anchorExplain.goto',
     key: 'ctrl+alt+w',
     mac: 'cmd+alt+w',
-    when: 'anchorExplain.walkthroughActive',
+    when: 'anchorExplain.sessionOpen',
   },
   {
     id: 'playPause',
