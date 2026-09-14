@@ -90,6 +90,21 @@ function peer(): vscode.Extension<unknown> | undefined {
 }
 
 /**
+ * 对端**有没有**这条命令。
+ *
+ * @anchor 为什么需要它（D76）：两条线是**各自安装**的（D27），"装了线2"不等于"线2 是新版"。
+ *         对着旧版线2 直接 `executeCommand('anchorPdf.flashRegion', …)` 会抛
+ *         "command 'anchorPdf.flashRegion' not found" —— 那句话对用户毫无意义，
+ *         而他其实只想要"滚到那一页"。查一下声明，能闪就闪、不能闪就退回老行为。
+ *         判据用 `packageJSON.contributes.commands`（那是**对端自己声明的**能力清单，
+ *         与我们这边的 `peer()` 用同一个来源，不另发明探测方式）。
+ */
+function peerHasCommand(id: string): boolean {
+  const declared = peer()?.packageJSON?.contributes?.commands as { command?: string }[] | undefined;
+  return Array.isArray(declared) && declared.some((entry) => entry.command === id);
+}
+
+/**
  * 弹给用户的那句话：**不带错误码**。
  *
  * @anchor 为什么专门写一个：`describeError` 给的是 `PROVIDER_ERROR: 没有可用的 provider（…）` ——
@@ -291,10 +306,13 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    *
    * @anchor 两条线的定位方式**必须是两套**（约束 1）：
    *   - 线1（代码）：在编辑器里高亮 + 滚过去（`CodeWalkthroughPlayer.revealStep`）
-   *   - 线2（PDF）：**只滚到那一页，不画任何框** —— 框选出来的位置信息仅用于导航
+   *   - 线2（PDF）：滚到那一页 + **闪现一下那一块**（S6 补 / D76）—— 只滚到页不够用，
+   *     用户的原话是「图里没有对应位置的指示的跳转，根本不知道讲的哪里」。
+   *     约束 1 因此收窄为：**不许常驻/自动的框，只允许"用户点击触发、会自动消失"的位置提示** ——
+   *     这条路只在用户点某一步时走，自动播放/推进永远不发（`smoke-walkthrough` 有断言）。
    *
-   * 这里也是"PDF 上不出现高亮框"的落点之一：PDF 那句话根本不经过播放器，
-   * 而 `decorationPlan` 又会过滤掉所有非 `CodeLocation`（约束 20），两头都不会画。
+   * 顺带：这一下**必须有回执**。以前点下去若目标就在当前页，画面上什么都不动，
+   * 看起来就像没反应；现在状态栏会说一句"已定位到第 N 页那一块"，日志里也留一行。
    */
   async function revealStep(step: WalkthroughStep): Promise<void> {
     if (primaryLocationOf(step)) {
@@ -303,7 +321,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     }
 
     if (isPDFLocation(step.location)) {
-      const { page } = step.location;
+      const { page, bbox } = step.location;
       if (peer() === undefined) {
         // §5.1：对端缺失时明确提示，不静默失败
         void vscode.window.showWarningMessage(
@@ -311,9 +329,17 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         );
         return;
       }
-      // §5.1 的调用形状就是 (page)。**不传文件**：`PDFLocation` 里没有路径字段
-      // （它只有 page/bbox），而线2 那边会把"该滚哪一份"落到当前聚焦的那个面板上。
-      await vscode.commands.executeCommand('anchorPdf.revealPage', page);
+      // 装了**旧版**线2 的机器上没有 flashRegion（两条线各自安装，D27）——
+      // 直接调会抛"命令未找到"，那句话对用户毫无意义。有就闪，没有就退回"只滚页"（D13 的老行为）。
+      if (peerHasCommand('anchorPdf.flashRegion')) {
+        await vscode.commands.executeCommand('anchorPdf.flashRegion', page, bbox);
+        note(`定位：第 ${page} 页（闪一下那一块）`);
+        void vscode.window.setStatusBarMessage(`Anchor：已定位到第 ${page} 页那一块`, 2000);
+      } else {
+        await vscode.commands.executeCommand('anchorPdf.revealPage', page);
+        note(`定位：第 ${page} 页（只滚页 —— 对端线2 没有 anchorPdf.flashRegion 命令）`);
+        void vscode.window.setStatusBarMessage(`Anchor：已定位到第 ${page} 页`, 2000);
+      }
       return;
     }
 

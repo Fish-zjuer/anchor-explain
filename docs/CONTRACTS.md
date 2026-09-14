@@ -463,6 +463,7 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `anchorExplain.sessionOpen` | boolean | **S1 新增（D46）**。从开会话起置 `true`，**只到 `stop` / 编辑器关闭才置 `false`**（`done` 不落） |
 | `anchorPdf.selectMode` | boolean | PDF 进入框选模式置 `true`；框选完成 / 取消 / 退出置 `false` |
 
+
 **关于 `anchorPdf.selectMode`（S5 补，说实话）**：它**目前没有任何 `when` 在读** ——
 线2 那条键位（`anchorPdf.selectRegion`）绑的是 `activeCustomEditorId == 'anchorPdf.view'`。
 留着它是给"用户自己绑一个取消键"留入口，也方便在
@@ -505,8 +506,9 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `caveat` | `editor.wordHighlightStrongBackground` | 1px 虚线 `editorWarning.foreground` |
 
 `rangeBehavior` 一律 `ClosedClosed`：编辑时不要把框自动撑到新行，否则高亮会追着光标跑。
-**非代码位置不产出任何框** —— 线2 的硬约束「PDF 上不出现任何高亮框」写在
-`decorationPlan.ts` 里（过滤非 `CodeLocation`），不靠调用方自觉。
+**非代码位置不产出任何框** —— PDF 那一侧因此在编辑器里画不出任何东西（`decorationPlan.ts`
+过滤非 `CodeLocation`，不靠调用方自觉）。**注意**：这条说的是**VS Code 的 decoration**；
+PDF 页面上的位置指示（闪现框）走的是注入脚本的 DOM，不在这条线上（见 §5.2 的"约束 1 的边界"）。
 
 ---
 
@@ -520,9 +522,22 @@ vscode.commands.executeCommand('anchorExplain.explainAnchor', anchor: Anchor);
 
 // ext-A(侧边栏) → ext-B：滚动 PDF 到指定页
 vscode.commands.executeCommand('anchorPdf.revealPage', page: number);
+
+// ext-A(侧边栏) → ext-B：滚到指定页 + 闪现一下那一块（S6 补 / D76）
+vscode.commands.executeCommand('anchorPdf.flashRegion', page: number, bbox: BBox);
 ```
 
 未安装对端时**明确提示，不静默失败**。
+
+**D76 的两条实现约定**：
+
+1. **`flashRegion` 是加法扩展，不是 `revealPage` 加参数**：`revealPage` 的契约是"只滚不画"
+   （D13），把它改成"顺手画个框"会让那条契约定不下来。两条命令并存，各有各的说法。
+2. **调之前先查对端声明**：两条线是**各自安装**的（D27），装了旧版线2 的机器上
+   `anchorPdf.flashRegion` 不存在 —— 直接调会抛 `command ... not found`，那句话对用户毫无意义。
+   判据用对端 `packageJSON.contributes.commands`（它自己声明的能力清单）。有就闪，没有就退回
+   `revealPage`（老行为），两条路都**在状态栏回执一句**「已定位到第 N 页…」——
+   目标就在当前页时，那句回执是唯一说明"刚才那一下成功了"的东西。
 
 **S6 落地时的两点实现约定**：
 
@@ -530,9 +545,11 @@ vscode.commands.executeCommand('anchorPdf.revealPage', page: number);
    所以线1 报不出"该滚哪一份"。线2 那边的处置是：落到**当前聚焦的那个面板**上
    （同时开着两份 PDF 对比着看时，用户按下侧边栏那一条，想动的显然是他刚才在看的那一份）。
 2. **两条线的定位走两套**：`commands.ts` 的 `revealStep` 先看 `primaryLocationOf(step)`
-   （只对 `CodeLocation` 有值）→ 走播放器；否则看 `isPDFLocation` → 走 `anchorPdf.revealPage`。
-   `decorationPlan` 会过滤掉所有非 `CodeLocation`（约束 20），所以 PDF 那一侧**天然画不出框** ——
-   两头都不画，"PDF 上不出现任何高亮框"因此是结构性的，不是靠自觉。
+   （只对 `CodeLocation` 有值）→ 走播放器；否则看 `isPDFLocation` → 走 `anchorPdf.flashRegion`
+   （线2 旧版没有这条命令时退回 `anchorPdf.revealPage`，见上面 D76 第 2 条）。
+   `decorationPlan` 会过滤掉所有非 `CodeLocation`（约束 20），所以 PDF 那一侧在**编辑器里**
+   天然画不出框 —— 那是结构性的，不是靠自觉。至于 PDF **页面**上的那个闪现框，
+   走的是注入脚本的 DOM，边界写在 §5.2 的"约束 1 的边界"里。
 
 ### §5.2 ext-B 内部：宿主 ↔ 注入脚本
 
@@ -541,7 +558,8 @@ vscode.commands.executeCommand('anchorPdf.revealPage', page: number);
 type HostToSelect =
   | { type: 'anchor:enterSelectMode' }
   | { type: 'anchor:exitSelectMode' }
-  | { type: 'anchor:gotoPage'; page: number };
+  | { type: 'anchor:gotoPage'; page: number }
+  | { type: 'anchor:flashRegion'; page: number; bbox: [number,number,number,number] };  // ← S6 补（D76）
 
 // 注入脚本 → 宿主
 type SelectToHost =
@@ -584,10 +602,19 @@ interface CapturedGeometry {
 握手只说明"页面还没说它准备好了"，不能说明"脚本一定是死的" —— 脚本活着而拿不到 API 时，
 这条消息是它**唯一**的入口，进去之后它会在页面上把故障说出来。
 
-**约束 1 的唯一例外（S5 补 / D73）**：注入脚本在**拿不到 VS Code API** 时，会在页面上显示
-一句故障说明（`#anchor-select-fault`，复用 VS Code 的报错配色）。那是这种情况下唯一还能说话的
-通道 —— 宿主只能一直等一个永远不来的 `anchor:ready`。它**只在用户按下框选之后**出现，
-其余任何时候 PDF 页面上仍然不允许出现任何东西。
+**约束 1 的边界（S5 补 / D73、S6 补 / D76）**：PDF 页面上允许出现的东西只有三样，
+其余一律不许 —— 尤其**不许有常驻的框，也不许有任何框自己冒出来**（播放/推进时一个框都没有）：
+
+| 允许 | 何时出现 | 何时消失 |
+|---|---|---|
+| 框选模式的橡皮筋 | 按住指针期间 | 抬手 / Esc / 退出（D69 那条"退出后不留东西"） |
+| 故障说明（`#anchor-select-fault`） | 拿不到 VS Code API、用户又按了框选 | 不退隐（会自己消失的报错等于没报错） |
+| **闪现框（`#anchor-select-flash`）** | **用户点了某一步**（`anchorPdf.flashRegion`） | 约 2 秒后自动摘掉（下限 300ms，见 `FLASH_MS`） |
+
+闪现框的位置**每帧重算**（滚动是平滑的、用户也可能正在滚），页还没渲染出来就干脆不画 ——
+"屏幕上一个看起来很确定的假框"比没有框更坏（D69）。它的逆换算（归一化 → 像素）留在注入脚本里，
+但**正确性由夹具往返校验**：用有单测的 `rectToNormalizedBBox` 正向算出 bbox，再让脚本画回来，
+必须画成当初那块像素（`packages/extension-anchor-pdf/test/anchorSelectClient.test.ts`）。
 
 ### §5.3 ext-A 内部：宿主 ↔ 侧边栏 webview
 

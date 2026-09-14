@@ -140,8 +140,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     loc.setAttribute("data-act", "reveal");
     loc.setAttribute("data-index", String(i));
     // 两条线的定位方式不同，提示词也不能一样 ——
-    // 对 PDF 说"在编辑器里定位"是句假话，用户会以为是它坏了（S6）
-    loc.title = isPdfLoc(step.location) ? "把 PDF 滚到这一页" : "在编辑器里定位到这一段";
+    // 对 PDF 说"在编辑器里定位"是句假话，用户会以为是它坏了（S6）；
+    // D76 起这句还要说清"会闪一下那一块"——只滚页的话，目标就在当前页时看着像没反应。
+    loc.title = isPdfLoc(step.location) ? "把 PDF 滚到这一页，并闪一下那一块" : "在编辑器里定位到这一段";
     head.appendChild(loc);
     li.appendChild(head);
 

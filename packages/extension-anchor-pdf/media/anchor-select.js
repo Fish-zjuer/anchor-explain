@@ -88,6 +88,10 @@
   const OVERLAY_ID = 'anchor-select-overlay';
   const BAND_ID = 'anchor-select-band';
   const FAULT_ID = 'anchor-select-fault';
+  const FLASH_ID = 'anchor-select-flash';
+
+  /** 闪现框活多久（毫秒）。够看清位置、又不到"赖在屏幕上"的程度（D76）。 */
+  const FLASH_MS = 2000;
 
   /** 框选模式是否开着。**默认关**：不给页面添任何默认行为。 */
   let active = false;
@@ -95,6 +99,8 @@
   let origin = null;
   let overlay = null;
   let band = null;
+  /** 闪现框（D76）。同一时刻只留一个：新的来了先收旧的。 */
+  let flash = null;
 
   function ensureStyles() {
     if (document.getElementById('anchor-select-style')) return;
@@ -107,6 +113,11 @@
       // 橡皮筋：只在按住期间存在。用 dashed 边框而不是填充色，是为了不遮住下面的字
       '#anchor-select-band{position:fixed;z-index:2147483001;display:none;pointer-events:none;border:1px dashed var(--vscode-focusBorder,#0a84ff);background:color-mix(in srgb, var(--vscode-focusBorder,#0a84ff) 12%, transparent)}',
       '#anchor-select-band.anchor-active{display:block}',
+      // 闪现框（D76）：回答"讲的是页内哪一块"。**只在你点某一步时出现、到点自己消失**，
+      // 自动播放/推进时一个框都不会出现 —— 这是放宽后的约束 1（不许常驻/自动的框）。
+      // 配色跟橡皮筋同一族（不是同一个元素），这样用户能看出"这是刚才那个框选的地方"。
+      '#anchor-select-flash{position:fixed;z-index:2147482999;display:none;pointer-events:none;border:2px solid var(--vscode-focusBorder,#0a84ff);background:color-mix(in srgb, var(--vscode-focusBorder,#0a84ff) 14%, transparent);border-radius:2px;box-shadow:0 0 0 1px rgba(0,0,0,.25), 0 0 12px rgba(10,132,255,.35)}',
+      '#anchor-select-flash.anchor-active{display:block}',
       // 故障说明（D73）：postMessage 那条通道不存在时，这句是页面上唯一还能说话的出口。
       // 复用 VS Code 自己的报错配色，不另发明一套视觉语言。
       '#anchor-select-fault{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:2147483002;max-width:78%;padding:10px 14px;border-radius:6px;font:13px/1.5 var(--vscode-font-family,sans-serif);color:var(--vscode-inputValidation-errorForeground,#fff);background:var(--vscode-inputValidation-errorBackground,#7a1f1f);border:1px solid var(--vscode-inputValidation-errorBorder,#be1100);box-shadow:0 2px 8px rgba(0,0,0,.4)}',
@@ -199,6 +210,113 @@
     active = false;
     clearBand();
     if (overlay) overlay.classList.remove('anchor-active');
+  }
+
+  // ── 定位与"闪一下那一块"（S6 补 / D76）────────────────────────────────────────
+
+  /** 把视图滚到第 N 页。pdf.js 自己的 API，没有改它。 */
+  function scrollToPage(page) {
+    const app = window.PDFViewerApplication;
+    if (app && app.pdfViewer) app.pdfViewer.currentPageNumber = page;
+  }
+
+  /**
+   * 第 N 页的纸面矩形（屏幕坐标）；这一页还没渲染出来就返回 null。
+   * 与 `visiblePages` 用同一个"纸面"判据：`.canvasWrapper` 优先 —— page 容器可能带 padding。
+   */
+  function pageRectOf(page) {
+    const nodes = document.querySelectorAll('#viewer .page[data-page-number], .pdfViewer .page[data-page-number]');
+    for (const node of nodes) {
+      if (Number(node.getAttribute('data-page-number')) !== page) continue;
+      const target = node.querySelector('.canvasWrapper') || node;
+      const r = target.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
+      return { x: r.left, y: r.top, width: r.width, height: r.height };
+    }
+    return null;
+  }
+
+  /**
+   * 归一化 bbox → 屏幕矩形。**这是 `src/anchor/rectToNormalizedBBox.ts` 的逆运算**。
+   *
+   * @anchor 为什么这条"业务数学"可以留在注入脚本里（别的都留在有单测的宿主那边）：
+   *         它是**正向换算的逆**，而正向那份有单测（`rectToNormalizedBBox`）。
+   *         所以它的正确性由夹具**往返校验**钉住：用正向函数把一块像素换算成 bbox，
+   *         再让脚本反过来画，画出来的矩形应当就是当初那块像素（`test/anchorSelectClient.test.ts`）。
+   *         写成别的形式（比如自己去算缩放比例）就没有这条保证了 —— 别加新判据。
+   */
+  function bboxToRect(bbox, pageRect) {
+    const x1 = pageRect.x + bbox[0] * pageRect.width;
+    const y1 = pageRect.y + bbox[1] * pageRect.height;
+    const x2 = pageRect.x + bbox[2] * pageRect.width;
+    const y2 = pageRect.y + bbox[3] * pageRect.height;
+    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+  }
+
+  /** 消息里的 bbox 也不可信（webview 里的任何东西都能往这条通道灌）。与宿主守卫同一套判据。 */
+  function readBBox(raw) {
+    if (!Array.isArray(raw) || raw.length !== 4) return null;
+    const out = [];
+    for (const n of raw) {
+      if (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1) return null;
+      out.push(n);
+    }
+    return out[0] < out[2] && out[1] < out[3] ? out : null;
+  }
+
+  function hideFlash() {
+    if (!flash) return;
+    flash.classList.remove('anchor-active');
+    if (flash.parentNode) flash.parentNode.removeChild(flash);
+    flash = null;
+  }
+
+  /**
+   * 滚到那一页，并在那块区域上闪现一个框，到点自己消失（D76）。
+   *
+   * @anchor 两条刻意的做法：
+   *         1. **位置每帧重算**：pdf.js 的滚动是平滑的，用户也可能在闪的这一两秒里自己滚 ——
+   *            画一次就不管，框会留在原地骗人。所以只要它还在屏幕上，就跟着页面走。
+   *         2. **页还没渲染出来就不画**（`pageRectOf` 返回 null）：宁可不闪，也不闪错地方 ——
+   *            屏幕上"看起来很确定的假框"比没有框更坏（D69 那条教训）。
+   */
+  function flashRegion(page, bbox, ms) {
+    ensureStyles();
+    hideFlash();
+
+    const first = pageRectOf(page);
+    if (!first) return;
+
+    flash = document.createElement('div');
+    flash.id = FLASH_ID;
+    flash.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(flash);
+
+    let stopped = false;
+    const paint = () => {
+      if (stopped || !flash) return;
+      const rect = pageRectOf(page);
+      if (!rect) return; // 这一页滚出去了：这一帧不画，等它回来
+      const box = bboxToRect(bbox, rect);
+      flash.classList.add('anchor-active');
+      flash.style.left = `${box.x}px`;
+      flash.style.top = `${box.y}px`;
+      flash.style.width = `${box.width}px`;
+      flash.style.height = `${box.height}px`;
+      schedule(paint);
+    };
+    paint();
+
+    setTimeout(() => {
+      stopped = true;
+      hideFlash();
+    }, Math.max(300, Math.min(10000, Number.isFinite(ms) && ms > 0 ? ms : FLASH_MS)));
+  }
+
+  /** `requestAnimationFrame` 在 webview 里有；没有就退化成 16ms 的定时器（夹具里走这条）。 */
+  function schedule(fn) {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fn);
+    else setTimeout(fn, 16);
   }
 
   function enterSelectMode() {
@@ -335,8 +453,18 @@
         const page = Number(data.page);
         if (!Number.isInteger(page) || page < 1) return;
         // 滚动，不画框（约束 1 / S6 的"点击滚动定位"）。pdf.js 自己的 API，没有改它。
-        const app = window.PDFViewerApplication;
-        if (app && app.pdfViewer) app.pdfViewer.currentPageNumber = page;
+        scrollToPage(page);
+        break;
+      }
+      case 'anchor:flashRegion': {
+        // S6 补（D76）：滚到那一页 + 在那块区域闪现一个框，到点自己消失。
+        // 只由"用户点了某一步"触发（宿主那边只有 revealStep 会发这条），自动播放不发。
+        const page = Number(data.page);
+        if (!Number.isInteger(page) || page < 1) return;
+        const bbox = readBBox(data.bbox);
+        if (!bbox) return;
+        scrollToPage(page);
+        flashRegion(page, bbox, Number(data.ms));
         break;
       }
       default:

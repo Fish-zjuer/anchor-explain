@@ -45,7 +45,7 @@ import {
   workspace,
 } from "vscode";
 
-import { basenameOf, samePath } from "@anchor/core";
+import { basenameOf, coerceBBox, isValidBBox, samePath } from "@anchor/core";
 import rawViewerHtml from "../assets/pdf.js/web/viewer.html";
 import { parseSelectMessage } from "./anchor/bridge";
 import type { HostToSelect, SelectToHost } from "./anchor/bridge";
@@ -393,6 +393,40 @@ export class PDFViewerProvider implements CustomReadonlyEditorProvider {
       return;
     }
     for (const panel of alive) instance.post(panel, { type: "anchor:gotoPage", page: target });
+  }
+
+  /**
+   * 跨扩展入口（§5.1）/ 命令面板：滚到第 N 页 **并闪现一下那一块**（S6 补，D76）。
+   *
+   * @anchor 与 `revealPage` 的分工：那个是"只滚不画"（D13 的原文，S6 落地），
+   *         这个多给一个 `bbox`，于是能在页内指出**是哪一块**。用户的原话是
+   *         「图里没有对应位置的指示的跳转，根本不知道讲的哪里」—— 只滚到页不够用。
+   *         参数来自别的扩展，属于外部输入，所以先过 core 的 `coerceBBox` + `isValidBBox`
+   *         （与 §3.3 判 PDF 位置用的是同一对函数）：宁可明确说"定位信息不合法"，
+   *         也不要拿一个坏框去页面上画 —— 屏幕上"看起来很确定的假框"比没有框更坏（D69）。
+   */
+  static async flashRegion(page: unknown, bbox: unknown): Promise<void> {
+    const instance = PDFViewerProvider.current;
+    if (!instance) {
+      void window.showWarningMessage(
+        "Anchor：没有打开的 Anchor PDF 视图。先用命令 `Anchor: 用 Anchor 打开 PDF` 打开一份。",
+      );
+      return;
+    }
+
+    const target = typeof page === "number" && Number.isInteger(page) && page >= 1 ? page : undefined;
+    const box = coerceBBox(bbox);
+    if (target === undefined || !box || !isValidBBox(box)) {
+      void window.showWarningMessage("Anchor：收到的位置信息不合法（来自其他扩展），已忽略。");
+      return;
+    }
+
+    const panel = instance.lastFocusedPanel();
+    if (!panel) {
+      void window.showWarningMessage("Anchor：先点一下 PDF 面板，再定位。");
+      return;
+    }
+    instance.post(panel, { type: "anchor:flashRegion", page: target, bbox: box });
   }
 
   /**

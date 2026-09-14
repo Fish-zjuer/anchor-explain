@@ -17,7 +17,16 @@ import type { PixelRect } from './rectToNormalizedBBox.ts';
 export type HostToSelect =
   | { type: 'anchor:enterSelectMode' }
   | { type: 'anchor:exitSelectMode' }
-  | { type: 'anchor:gotoPage'; page: number };
+  | { type: 'anchor:gotoPage'; page: number }
+  /**
+   * S6 补（D76）：滚到那一页 + 在那块区域上闪现一个框，到点自己消失。
+   *
+   * 为什么加它：S6 只做"滚到那一页"，而用户实测的原话是「图里没有对应位置的指示的跳转，
+   * 根本不知道讲的哪里」—— 页数对上了，页**内**那一块还是得自己找。约束 1（PDF 上不出现
+   * 任何高亮框）因此收窄为：**不许常驻/自动的框，只允许"用户点击触发、会自动消失"的位置提示**。
+   * 这条消息只由宿主在"用户点了某一步"时发出（`revealStep`），自动播放永远不发。
+   */
+  | { type: 'anchor:flashRegion'; page: number; bbox: BBox };
 
 // ── §5.2 注入脚本 → 宿主 ────────────────────────────────────────────────────
 

@@ -25,7 +25,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseSelectMessage } from '../src/anchor/bridge.ts';
-import { resolveSelection } from '../src/anchor/rectToNormalizedBBox.ts';
+import { rectToNormalizedBBox, resolveSelection } from '../src/anchor/rectToNormalizedBBox.ts';
 
 const CLIENT_SOURCE = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '..', 'media', 'anchor-select.js'),
@@ -98,10 +98,12 @@ interface FakeEl {
   id: string;
   textContent: string;
   children: FakeEl[];
+  parentNode: FakeEl | null;
   attrs: Record<string, string>;
   style: Record<string, string>;
   classList: { add(c: string): void; remove(c: string): void; contains(c: string): boolean };
   appendChild(child: FakeEl): void;
+  removeChild(child: FakeEl): void;
   setAttribute(key: string, value: string): void;
   getAttribute(key: string): string | null;
   querySelector(sel: string): FakeEl | null;
@@ -122,6 +124,7 @@ function fakeEl(tag: string, rect: FakeRect = { x: 0, y: 0, width: 0, height: 0 
     id: '',
     textContent: '',
     children: [],
+    parentNode: null,
     attrs: {},
     style: {},
     classList: {
@@ -130,7 +133,12 @@ function fakeEl(tag: string, rect: FakeRect = { x: 0, y: 0, width: 0, height: 0 
       contains: (c) => classes.has(c),
     },
     appendChild(child) {
+      child.parentNode = node;
       node.children.push(child);
+    },
+    removeChild(child) {
+      child.parentNode = null;
+      node.children = node.children.filter((c) => c !== child);
     },
     setAttribute(key, value) {
       node.attrs[key] = value;
@@ -405,6 +413,118 @@ test('origin 不匹配的消息一律忽略（上游那条检查要保持）', (
   const env = loadClient(api.acquire);
   env.messageFrom('https://evil.example', { type: 'anchor:enterSelectMode' });
   assert.equal(env.hasClass('anchor-active'), false);
+});
+
+test('gotoPage：把 PDF 滚到指定那一页（S6 的"只滚，不画框"）', () => {
+  // 这条守的是 S6 那条链路的**最后一颗螺丝**：侧边栏点「第 N 页」→ 宿主 → 注入脚本 → pdf.js。
+  // 前几颗在链式冒烟里有断言，这一颗没有 —— 而注入脚本既不进类型检查也不进 bundle（D73 的教训）。
+  const api = makeVsCodeApi();
+  const env = loadClient(api.acquire);
+  const viewer = { pdfViewer: { currentPageNumber: 1 } };
+  (env.win as { PDFViewerApplication?: unknown }).PDFViewerApplication = viewer;
+
+  env.message({ type: 'anchor:gotoPage', page: 7 });
+  assert.equal(viewer.pdfViewer.currentPageNumber, 7, '页码要真的落到 pdf.js 上');
+
+  // 坏页号不许动它：宁可不滚，也不能把视图推到第 0 页或 NaN
+  env.message({ type: 'anchor:gotoPage', page: 0 });
+  env.message({ type: 'anchor:gotoPage', page: 'x' });
+  env.message({ type: 'anchor:gotoPage' });
+  assert.equal(viewer.pdfViewer.currentPageNumber, 7, '坏页号一律当作没收到');
+
+  assert.deepEqual(api.posted, [{ type: 'anchor:ready' }], '滚动是单向的：一个字都不回发（§5.2）');
+  assert.equal(env.hasClass('anchor-active'), false, '滚动不等于框选：橡皮筋与 overlay 都不该动');
+});
+
+// ── 闪现框（S6 补 / D76）──────────────────────────────────────────────────
+
+/** 把内联样式里的 px 读成数字（`199.99999999999997px` → 199.99999999999997） */
+function px(value: string | undefined): number {
+  return Number.parseFloat(String(value ?? '').replace('px', ''));
+}
+
+function flashBox(env: Env): { x: number; y: number; w: number; h: number } | null {
+  const node = env.byId('anchor-select-flash');
+  if (!node || !node.classList.contains('anchor-active')) return null;
+  return { x: px(node.style.left), y: px(node.style.top), w: px(node.style.width), h: px(node.style.height) };
+}
+
+test('（D76 核心）闪现框的像素位置 = 已单测的正向换算的**逆**：往返校验', () => {
+  // 这一条是"注入脚本里那门逆换算凭什么可以被信任"的全部答案：
+  // 用**有单测的正向函数**（rectToNormalizedBBox）把一块像素换算成 bbox，
+  // 再让脚本把 bbox 画回像素 —— 画出来的矩形必须就是当初那块像素。
+  const api = makeVsCodeApi();
+  const env = loadClient(api.acquire);
+  const viewer = { pdfViewer: { currentPageNumber: 1 } };
+  (env.win as { PDFViewerApplication?: unknown }).PDFViewerApplication = viewer;
+
+  const dragged = { x: 200, y: 200, width: 100, height: 100 };
+  const bbox = rectToNormalizedBBox(dragged, PAGE_PX);
+  assert.ok(bbox, '正向换算本身要先成立');
+
+  env.message({ type: 'anchor:flashRegion', page: PAGE_NUMBER, bbox });
+
+  const box = flashBox(env);
+  assert.ok(box, '框要画出来');
+  const near = (a: number, b: number, what: string) =>
+    assert.ok(Math.abs(a - b) < 1e-6, `${what}：期望 ${b}，实得 ${a}`);
+  near(box!.x, dragged.x, 'left');
+  near(box!.y, dragged.y, 'top');
+  near(box!.w, dragged.width, 'width');
+  near(box!.h, dragged.height, 'height');
+  assert.equal(viewer.pdfViewer.currentPageNumber, PAGE_NUMBER, '先把视图滚到那一页，再画');
+});
+
+test('闪现框到点自己消失（不许赖在屏幕上）', async () => {
+  const api = makeVsCodeApi();
+  const env = loadClient(api.acquire);
+  const bbox = [0.1, 0.1, 0.3, 0.3];
+
+  // 时长有下限（300ms）：不许出现"5 毫秒闪一下"这种根本看不见的东西 —— 那等于没闪（D76）
+  env.message({ type: 'anchor:flashRegion', page: PAGE_NUMBER, bbox, ms: 320 });
+  assert.ok(flashBox(env), '刚发出来时应当在');
+
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(flashBox(env), null, '到点必须消失（约束 1 放宽后的那一半：只允许"会自己消失"的框）');
+  assert.equal(
+    env.byId('anchor-select-flash')?.parentNode,
+    null,
+    '而且要真的从 DOM 上摘掉，不只是隐藏（`byId` 查的是"建过的节点"，所以看它有没有被摘下来）',
+  );
+});
+
+test('闪现框只在收到消息时出现 —— 自动播放/推进不会自己冒框', () => {
+  const api = makeVsCodeApi();
+  const env = loadClient(api.acquire);
+  env.message({ type: 'anchor:ready' }); // 无关消息
+  env.message({ type: 'anchor:enterSelectMode' });
+  env.key('Escape');
+  assert.equal(env.byId('anchor-select-flash'), undefined, '没让我们闪，一个框都不许有');
+});
+
+test('闪现框：坏页号 / 坏 bbox 一律不画（宁可不闪，也不闪错地方）', () => {
+  const api = makeVsCodeApi();
+  const env = loadClient(api.acquire);
+  const good = [0.1, 0.2, 0.5, 0.6];
+  const bad: unknown[] = [
+    undefined,
+    null,
+    [],
+    [0, 0, 1],
+    [0, 0, 0, 1], // 零宽度
+    [0.5, 0.5, 0.5, 0.5], // 零面积
+    ['0', '0', '1', '1'],
+    [0, 0, Number.NaN, 1],
+    [0, 0, 1, 2], // 超出 [0,1]
+  ];
+  for (const bbox of bad) {
+    env.message({ type: 'anchor:flashRegion', page: PAGE_NUMBER, bbox });
+    assert.equal(env.byId('anchor-select-flash'), undefined, `坏 bbox ${JSON.stringify(bbox)} 不许画框`);
+  }
+  env.message({ type: 'anchor:flashRegion', page: 0, bbox: good });
+  env.message({ type: 'anchor:flashRegion', page: 99, bbox: good }); // 这一页不在文档里
+  assert.equal(env.byId('anchor-select-flash'), undefined, '页号不对也不画');
+  assert.equal(env.byId('anchor-select-fault'), undefined, '这些是坏输入，不是故障，不用吓用户');
 });
 
 test('脏消息不炸：缺字段 / 未知类型都当没发生', () => {

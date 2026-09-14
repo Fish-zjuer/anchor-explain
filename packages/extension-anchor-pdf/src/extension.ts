@@ -72,6 +72,16 @@ function revealPage(page: number, filePath?: string): void {
   PDFViewerProvider.revealPage(page, filePath);
 }
 
+/**
+ * 跨扩展入口（§5.1）：滚到第 N 页的某一块，并**闪现**一下那块区域（S6 补，D76）。
+ *
+ * 与 `revealPage` 是两条：那个只滚（D13），这个多一个 `bbox`，于是能指出页内是哪一块。
+ * 同样也是"注册成命令"的 —— 命令面板里手动调用时它会问页号，参数不合法时明确提示。
+ */
+function flashRegion(page: number, region: [number, number, number, number]): void {
+  PDFViewerProvider.flashRegion(page, region);
+}
+
 export function activate(context: ExtensionContext): void {
   context.subscriptions.push(
     PDFViewerProvider.register(context),
@@ -79,6 +89,8 @@ export function activate(context: ExtensionContext): void {
     commands.registerCommand("anchorPdf.selectRegion", () => PDFViewerProvider.startSelectRegion()),
     // 注意：**不注册成 executeCommand 的返回值依赖**（§5.1：单向）。
     commands.registerCommand("anchorPdf.revealPage", revealPage),
+    // S6 补（D76）：滚到那一页 + 闪现一下那一块。跨扩展入口与命令面板同一处实现。
+    commands.registerCommand("anchorPdf.flashRegion", flashRegion),
   );
 }
 

@@ -23,7 +23,8 @@
   "activationEvents": [
     "onCommand:anchorPdf.openInAnchorViewer",
     "onCommand:anchorPdf.selectRegion",
-    "onCommand:anchorPdf.revealPage"
+    "onCommand:anchorPdf.revealPage",
+    "onCommand:anchorPdf.flashRegion"
   ],
   "contributes": {
     "commands": [
@@ -41,6 +42,11 @@
       {
         "command": "anchorPdf.revealPage",
         "title": "跳到指定页（PDF）",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorPdf.flashRegion",
+        "title": "定位到某一页的某一块（PDF）",
         "category": "Anchor"
       }
     ],

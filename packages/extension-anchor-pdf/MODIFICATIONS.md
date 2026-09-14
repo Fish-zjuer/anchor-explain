@@ -88,17 +88,25 @@
    会在页面上贴一句故障说明（`#anchor-select-fault`，复用 VS Code 的报错配色）。
    这两处都不改上游行为，只是把"什么都发生了但屏幕上没有"变成"屏幕上有一句话"，理由见 D73。
    界面文案（命令标题、通知文本）全部是中文，这是我们自己新增的字符串，与上游无冲突。
+7. **S6 补（D76）：`anchor:flashRegion` —— 用户点了某一步时，滚到那一页并闪现一下那一块。**
+   它是"约束 1 收窄"的落点（`CONTRACTS.md` §5.2 的边界表）：PDF 页面上的位置指示
+   只允许**用户点击触发、约 2 秒后自己摘掉**这一种。实现仍在 `media/anchor-select.js` 里
+   （DOM 元素 `#anchor-select-flash`，每帧跟着页面重算位置），**`assets/` 依旧一个字节没动**。
+   归一化 → 像素的逆换算也留在这个文件里，但正确性由 `test/anchorSelectClient.test.ts`
+   的**往返校验**兜着（用有单测的正向函数反过来验）。
 
 （上面两个文件在版权声明之后都追加了一段"本文件已被修改"的显著声明，即 Apache-2.0 §4(b) 的要求。
 未列出的文件就是逐字未改的。）
 
 ### `src/extension.ts`（续）
 
-3. **S5/S6：新增两个命令** `anchorPdf.selectRegion`（让当前面板进入框选模式）
-   与 `anchorPdf.revealPage`（跨扩展入口：把 PDF 滚到第 N 页）。
-   后者也声明进了 `contributes.commands`（标题「跳到指定页（PDF）」）：
+3. **S5/S6：新增三个命令** `anchorPdf.selectRegion`（让当前面板进入框选模式）、
+   `anchorPdf.revealPage`（跨扩展入口：把 PDF 滚到第 N 页）、
+   `anchorPdf.flashRegion`（跨扩展入口：滚到第 N 页 **并闪现一下那一块**，D76）。
+   后两个也声明进了 `contributes.commands`：
    **"注册了但没声明"是最坏的一种状态** —— 命令面板里根本看不见，
-   而一个看不见的入口等于没有。没有参数时它会问用户要页号，所以手动调用也有意义。
+   而一个看不见的入口等于没有。`revealPage` 没有参数时会问用户要页号，所以手动调用也有意义；
+   `flashRegion` 的参数（页码 + bbox）不合法时**明确提示**,而不是拿一个坏框去页面上画。
 
 ### `package.json`
 

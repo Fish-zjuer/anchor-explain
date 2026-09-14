@@ -409,6 +409,35 @@ posted.length = 0;
 await registeredCommands.get('anchorPdf.revealPage')?.('不是数字');
 check(posted.length === 0, '页号不合法时什么都不推（它会去问用户，而不是瞎滚一页）');
 
+// S6 补（D76）：定位到"页内哪一块" —— 滚到那一页 + 闪现一下那块区域
+posted.length = 0;
+warnings.length = 0;
+await registeredCommands.get('anchorPdf.flashRegion')?.(7, [0.1, 0.2, 0.5, 0.6]);
+check(
+  posted.at(-1)?.type === 'anchor:flashRegion' && posted.at(-1)?.page === 7,
+  'flashRegion 推的是带 bbox 的 anchor:flashRegion（跨扩展入口 §5.1）',
+  JSON.stringify(posted.at(-1)),
+);
+check(
+  JSON.stringify(posted.at(-1)?.bbox) === '[0.1,0.2,0.5,0.6]',
+  'bbox 原样带过去（脚本那边"每帧重算位置"要用它）',
+  JSON.stringify(posted.at(-1)?.bbox),
+);
+
+// 跨扩展参数不可信（§5.1）：坏页号 / 坏 bbox 一律不推，而且**要说一句话**
+posted.length = 0;
+warnings.length = 0;
+await registeredCommands.get('anchorPdf.flashRegion')?.('七', [0.1, 0.2, 0.5, 0.6]);
+await registeredCommands.get('anchorPdf.flashRegion')?.(7, [0, 0, 0, 0]); // 零面积
+await registeredCommands.get('anchorPdf.flashRegion')?.(7, [0, 0, 1]); // 三项
+await registeredCommands.get('anchorPdf.flashRegion')?.(0, [0.1, 0.2, 0.5, 0.6]);
+check(posted.length === 0, '坏位置信息一个都不推（宁可不画，也不画错地方）');
+check(
+  warnings.some((w) => w.includes('位置信息不合法')),
+  '坏位置信息明确提示而不是静默（跨扩展输入是外部输入）',
+  warnings.at(-1) ?? '(无)',
+);
+
 // ---- 6. 「PDF 上不出现任何高亮框」的结构性保证 -----------------------------
 check(
   !bundleText.includes('createTextEditorDecorationType') && !bundleText.includes('TextEditorDecorationType'),
@@ -417,8 +446,20 @@ check(
 const overlay = readFileSync(path.join(PKG_DIR, 'media', 'anchor-select.js'), 'utf8');
 check(existsSync(path.join(PKG_DIR, 'media', 'anchor-select.js')), 'media/anchor-select.js 在（运行时从扩展目录读）');
 check(
-  overlay.includes('anchor:captured') && overlay.includes('anchor:enterSelectMode') && overlay.includes('anchor:gotoPage'),
-  '注入脚本用的是 §5.2 冻结的三个消息名，没有自创字段',
+  overlay.includes('anchor:captured') &&
+    overlay.includes('anchor:enterSelectMode') &&
+    overlay.includes('anchor:gotoPage') &&
+    overlay.includes('anchor:flashRegion'),
+  '注入脚本用的是 §5.2 冻结的四个消息名，没有自创字段',
+);
+// D76：闪现框必须是"会自己消失"的那种（约束 1 放宽后的那一半）
+check(
+  overlay.includes('anchor-select-flash') && /setTimeout\([\s\S]{0,200}?hideFlash\(\)/.test(overlay),
+  '闪现框有明确的到点收场（约束 1：不许常驻的框）',
+);
+check(
+  !overlay.includes('setInterval'),
+  '注入脚本里没有 setInterval —— 不留任何"可能一直跑下去"的东西',
 );
 check(
   !/classList\.add\(['"]anchor-active['"]\)[\s\S]{0,400}?post\(/.test(overlay) === false ||

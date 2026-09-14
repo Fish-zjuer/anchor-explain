@@ -98,6 +98,10 @@ let onCloseDocument;
 let fetchMode = 'with-fetch';
 let fetchFail;
 let peerPdfInstalled = true;
+/** D76：装的这份线2 有没有 `anchorPdf.flashRegion`（旧版没有 → 退回"只滚页"） */
+let peerPdfHasFlash = true;
+/** D76：定位之后的状态栏回执（点下去有没有反应，用户靠它看得出来） */
+const statusBarMessages = [];
 
 /** main.c 第 40-48 行的三个步骤（内容对应 rb_pop）——这就是"模型返回什么" */
 const EXPLANATION_JSON = JSON.stringify({
@@ -341,6 +345,9 @@ const vscodeStub = {
     showInformationMessage: (m) => (messages.push(['info', m]), Promise.resolve(undefined)),
     showWarningMessage: (m) => (messages.push(['warn', m]), Promise.resolve(warningAnswer)),
     showErrorMessage: (m) => (messages.push(['error', m]), Promise.resolve(undefined)),
+    // D76：定位之后那一句回执（"已定位到第 7 页那一块"）。它只是状态栏，不打断任何人，
+    // 但没有它的话"点了一下、画面上什么都没动"就真的像没反应 —— 所以桩记下来，测例断言它。
+    setStatusBarMessage: (text) => (statusBarMessages.push(String(text)), { dispose() {} }),
     showQuickPick: (items) => {
       quickPicks.push(items);
       // S2：capture 先弹一次确认。答什么由 `quickPickAnswer` 决定 ——
@@ -476,8 +483,24 @@ const vscodeStub = {
 
   // S6：线2 装没装，会改变"点侧边栏定位"那一跳的行为
   // S8：开始面板还要在装/卸线2 时刷新
+  // D76：还多一种形状 —— 装了**旧版**线2（有 revealPage、没有 flashRegion）。
+  //      那正是"两条线各自安装"的现实：能闪就闪，不能闪就退回只滚页，
+  //      绝不能抛一句 "command 'anchorPdf.flashRegion' not found"。
   extensions: {
-    getExtension: (id) => (peerPdfInstalled && id === 'anchor.anchor-pdf' ? { id } : undefined),
+    getExtension: (id) =>
+      peerPdfInstalled && id === 'anchor.anchor-pdf'
+        ? {
+            id,
+            packageJSON: {
+              contributes: {
+                commands: [
+                  { command: 'anchorPdf.revealPage' },
+                  ...(peerPdfHasFlash ? [{ command: 'anchorPdf.flashRegion' }] : []),
+                ],
+              },
+            },
+          }
+        : undefined,
     onDidChange: () => ({ dispose() {} }),
   },
 };
@@ -1195,13 +1218,61 @@ check(
 const dirty = decorationTypes.filter((t) => (editor.decorations.get(t) ?? []).length > 0);
 check(dirty.length === 0, '**PDF 会话一拍都不画框**（约束 1：PDF 上不出现任何高亮框）', `${dirty.length} 个 type 有框`);
 
-// 点「第 23 页」那条 → 应该去滚 PDF，而不是去编辑器里定位
+// 点「第 23 页」那条 → 去线2 **滚到那一页并闪一下那一块**（D76），而不是去编辑器里定位。
+// 这条断言在 D76 之前写的是"只滚不画"（`anchorPdf.revealPage`）—— 用户实测把这件事说清楚了：
+// 只滚到页不够用，"根本不知道讲的哪里"。所以改成 flashRegion，并把 bbox 一起带上。
 executed.length = 0;
+statusBarMessages.length = 0;
 receiveFromWebview?.({ type: 'ui:revealStep', index: 0 });
 await flush();
-const revealCall = executed.find((c) => c.id === 'anchorPdf.revealPage');
-check(Boolean(revealCall), '点 PDF 那一步 → 调 anchorPdf.revealPage（滚动定位）', executed.map((c) => c.id).join(','));
+const revealCall = executed.find((c) => c.id === 'anchorPdf.flashRegion');
+check(
+  Boolean(revealCall),
+  '点 PDF 那一步 → 调 anchorPdf.flashRegion（滚到那一页 + 闪一下那一块）',
+  executed.map((c) => c.id).join(','),
+);
 check(revealCall?.args?.[0] === 23, '带的是那一步的页码', String(revealCall?.args?.[0]));
+check(
+  JSON.stringify(revealCall?.args?.[1]) === '[0.1,0.1,0.6,0.4]',
+  '带的是那一步的 bbox（不给它，线2 只能说得出"哪一页"，说不出"页内哪一块"）',
+  JSON.stringify(revealCall?.args?.[1]),
+);
+check(
+  statusBarMessages.some((m) => m.includes('已定位到第 23 页')),
+  '定位之后状态栏必须回执一句（否则目标就在当前页时，画面上什么都不动，看起来像没反应）',
+  statusBarMessages.at(-1) ?? '(无)',
+);
+
+// 旧版线2（有 revealPage、没有 flashRegion）：退回"只滚页"，**不许**抛"命令未找到"
+peerPdfHasFlash = false;
+executed.length = 0;
+statusBarMessages.length = 0;
+receiveFromWebview?.({ type: 'ui:revealStep', index: 0 });
+await flush();
+check(
+  executed.some((c) => c.id === 'anchorPdf.revealPage') &&
+    !executed.some((c) => c.id === 'anchorPdf.flashRegion'),
+  '对端是旧版线2 时退回 anchorPdf.revealPage（两条线各自安装，D27）',
+  executed.map((c) => c.id).join(','),
+);
+check(
+  statusBarMessages.some((m) => m.includes('已定位到第 23 页')),
+  '退回老行为时同样给回执',
+  statusBarMessages.at(-1) ?? '(无)',
+);
+peerPdfHasFlash = true;
+
+// 自动推进**一个框都不发**（D76 放宽约束 1 的前提：只有"用户点了某一步"才允许出现框）。
+// 这条是"框不会自己冒出来"的机器证明 —— 用户没点，就没人在页面上画东西。
+executed.length = 0;
+receiveFromWebview?.({ type: 'ui:next' });
+receiveFromWebview?.({ type: 'ui:playPause' });
+await flush();
+check(
+  !executed.some((c) => c.id.startsWith('anchorPdf.')),
+  '按「下一步」/播放不会去动 PDF（约束 1 放宽后的那一半：框只能由用户点击触发）',
+  executed.map((c) => c.id).join(',') || '(一个都没调)',
+);
 
 // 对端缺失：明确提示，不静默失败（§5.1）
 peerPdfInstalled = false;
@@ -1209,7 +1280,10 @@ executed.length = 0;
 messages.length = 0;
 receiveFromWebview?.({ type: 'ui:revealStep', index: 0 });
 await flush();
-check(!executed.some((c) => c.id === 'anchorPdf.revealPage'), '没装线2 时不去 executeCommand（会抛"命令未找到"）');
+check(
+  !executed.some((c) => c.id === 'anchorPdf.revealPage' || c.id === 'anchorPdf.flashRegion'),
+  '没装线2 时不去 executeCommand（会抛"命令未找到"）',
+);
 check(messages.some((m) => String(m[1]).includes('没有安装线2')), '没装线2 时明确提示', String(messages.at(-1)?.[1] ?? ''));
 peerPdfInstalled = true;
 

@@ -173,12 +173,15 @@ CodeAdapter.capture()
    ▼ 侧边栏：文字讲解；每条 step 显示位置标签「第 23 页」
    │
    ▼ 用户点击某条 step
-   executeCommand('anchorPdf.revealPage', 23)                  ← 跨扩展
-     → ext-B 找到 webview panel → postMessage {anchor:gotoPage, page:23}
-     → 注入脚本 → PDFViewerApplication.page = 23
+   executeCommand('anchorPdf.flashRegion', 23, bbox)           ← 跨扩展（D76）
+     → ext-B 找到 webview panel → postMessage {anchor:flashRegion, page:23, bbox}
+     → 注入脚本 → 滚到第 23 页 + 在那块区域上闪现一个框（约 2s 后自己消失）
 ```
 
-**PDF 上不出现任何高亮框。** `next` 只推进侧边栏文字，不动 PDF。滚动定位是点击触发的、唯一的 PDF 侧视觉联动（`DECISIONS.md` D13）。
+**PDF 上一个框都不许常驻、也不许自己出现。** `next`/播放只推进侧边栏文字，不动 PDF；
+唯一会出现在 PDF 页面上的位置指示是**用户点某一步时闪现的那个框**（约 2 秒后自动消失，
+`DECISIONS.md` D13 → D76）。另有两条明确边界：拿不到 VS Code API 时的故障说明（D73），
+以及框选模式里的橡皮筋（只在按住指针期间存在）。
 
 ### 4.3 取件（两条线共用）
 
