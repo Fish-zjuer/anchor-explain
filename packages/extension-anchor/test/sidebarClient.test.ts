@@ -34,6 +34,7 @@ test('内联客户端脚本必须能解析（解析不过 = 面板一片空白�
 interface FakeNode {
   tag: string;
   className: string;
+  disabled?: boolean;
   textContent: string;
   title: string;
   id: string;
@@ -86,10 +87,13 @@ function runSidebarClient(script: string): {
   root: FakeNode;
   posted: { type?: string }[];
   send: (message: unknown) => void;
+  key: (type: string, ev: Record<string, unknown>) => void;
 } {
   const root = fakeNode('div');
   const handlers: ((ev: { data: unknown }) => void)[] = [];
   const posted: { type?: string }[] = [];
+
+  const windowHandlers: Record<string, ((ev: unknown) => void)[]> = {};
 
   const documentStub = {
     getElementById: (id: string) => (id === 'root' ? root : null),
@@ -100,18 +104,28 @@ function runSidebarClient(script: string): {
   const windowStub = {
     addEventListener: (type: string, handler: (ev: { data: unknown }) => void) => {
       if (type === 'message') handlers.push(handler);
+      (windowHandlers[type] ??= []).push(handler as (ev: unknown) => void);
     },
     // 客户端会用它在面板里派发用户键位（D47）；这里只要存在
     removeEventListener: () => {},
   };
 
   // eslint-disable-next-line no-new-func -- 这就是被测对象：一段要在 webview 里跑的字符串
-  const factory = new Function('document', 'window', 'acquireVsCodeApi', 'setTimeout', script);
+  const factory = new Function(
+    'document',
+    'window',
+    'acquireVsCodeApi',
+    'setTimeout',
+    'ANCHOR_CHORDS',
+    script,
+  );
   factory(
     documentStub,
     windowStub,
     () => ({ postMessage: (m: { type?: string }) => posted.push(m) }),
     () => 0,
+    // 面板里被转发的那几个键（宿主内联进来的**用户实际绑定**，D47）
+    { next: 'alt+]', prev: 'alt+[', stop: 'escape' },
   );
 
   return {
@@ -120,7 +134,20 @@ function runSidebarClient(script: string): {
     send: (message) => {
       for (const handler of handlers) handler({ data: message });
     },
+    key: (type: string, ev: Record<string, unknown>) => {
+      for (const handler of windowHandlers[type] ?? []) handler(ev);
+    },
   };
+}
+
+/** 在假 DOM 里按文字找一个元素（按钮的状态断言要靠它） */
+function findByText(node: FakeNode, text: string): FakeNode | undefined {
+  if (node.textContent === text) return node;
+  for (const child of node.children) {
+    const hit = findByText(child, text);
+    if (hit) return hit;
+  }
+  return undefined;
 }
 
 const ANCHOR = 'C:\\repo\\Core\\Src\\main.c';
@@ -296,5 +323,54 @@ test('D70：面板脚本抛异常时，错因要出现在面板里（而不是"�
     client.root.text,
     /面板脚本出错：/,
     '异常必须变成面板上看得见的一行 —— 否则用户只看到"卡死"，我们两头都拿不到证据',
+  );
+});
+
+// ── 四、讲完之后不许是死路（D72）：按钮要和键盘说同一句话 ────────────────────
+
+test('D72：讲完之后「上一步」与「退出」仍然可点，「下一步」才该禁', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  // 宿主真实顺序：先把最后一拍按 state=done 推一次，再推 session:end
+  // （下标必须落在 result.steps 里 —— 这不是客套：下标越界时客户端会在建头部那一步抛，
+  //   被 D70 的兜底接住并显示红字，工具栏根本轮不到渲染）
+  const steps = (realWorldSession() as { result: unknown }).result;
+  client.send(sessionUpdate({ result: steps, index: 1, pointIndex: -1, state: 'done' }));
+  client.send({ type: 'session:end' });
+
+  const prev = findByText(client.root, '上一步');
+  const next = findByText(client.root, '讲完了');
+  const stop = findByText(client.root, '退出');
+
+  assert.equal(next?.disabled, true, '讲完了确实没东西可推进');
+  assert.equal(
+    prev?.disabled,
+    false,
+    '回看是把讲解用完 —— 而键盘那边 Alt+[ 一直是好的，按钮不能比键盘还小气',
+  );
+  assert.equal(
+    stop?.disabled,
+    false,
+    '「退出」是收掉高亮的唯一按钮出口，禁掉它 = 面板成了死路（D61 同一条规矩）',
+  );
+  assert.match(
+    client.root.text,
+    /可以按「上一步」回看，或按「退出」收掉高亮/,
+    '那句话要说清现在还能做什么，而不是只说"结束了"',
+  );
+});
+
+test('D72：按住不放（键盘自动重复）不许变成连发', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+
+  const before = client.posted.length;
+  client.key('keydown', { key: ']', altKey: true, repeat: true, preventDefault() {} });
+  assert.equal(client.posted.length, before, '自动重复不该再发 ui:next（那是把面板和编辑器一起压住）');
+
+  client.key('keydown', { key: ']', altKey: true, repeat: false, preventDefault() {} });
+  assert.equal(
+    client.posted.at(-1)?.type,
+    'ui:next',
+    '真正的按键仍然要转发（面板有焦点时工作台的键位到不了这儿，D47）',
   );
 });

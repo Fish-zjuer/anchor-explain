@@ -178,20 +178,32 @@ export const SIDEBAR_CLIENT_SCRIPT = `
    * 一拍 = 一个扫描点之后，最后一步的第一拍还没走完它内部的点，
    * 按步骤下标去禁用「下一步」会把剩下的点直接憋死。
    */
+  /**
+   * 底部三个按钮。**「讲完」之后不许变成死路**（D61 的同一条规矩，D72 落到这里）。
+   *
+   * （这段注释里**不许出现反引号** —— 它会把模板字符串提前截断，整个面板就白屏了。
+   * 写代码时踩过三次，记在这儿。）
+   * 原来 ended 会把三个按钮**全部**禁掉，而键盘那边 ESC / Alt+[ 仍然是好的 ——
+   * 同一时刻、同一个人，按键盘能回看、点按钮不能，这不是"保守"，是自相矛盾
+   * （用户看到的就是"面板卡死了"）。而且"讲完想回看一步"恰恰是这时候最常想做的事。
+   * 现在：上一步 = 只要不在开头就能按（**结束后也允许**：回看是把讲解用完）；
+   * 下一步 = 讲完/结束就禁（确实没东西可推进）；退出 = **永远能按**（与 ESC 一致，
+   * 而且它是"收掉高亮"的唯一按钮出口）。
+   */
   function buildToolbar(done, atStart, ended) {
     var bar = mk("div", "toolbar");
 
     var prev = mk("button", null, "上一步");
     prev.setAttribute("data-act", "prev");
-    prev.disabled = ended || atStart;
+    prev.disabled = atStart;
 
     var next = mk("button", null, done ? "讲完了" : "下一步");
     next.setAttribute("data-act", "next");
-    next.disabled = ended || done;
+    next.disabled = done || ended;
 
     var stop = mk("button", null, "退出");
     stop.setAttribute("data-act", "stop");
-    stop.disabled = ended;
+    stop.disabled = false; // 明写出来（而不是"不赋值"）：这是"永远能按"的意图，测试也钉着它
 
     bar.appendChild(prev);
     bar.appendChild(next);
@@ -262,7 +274,11 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     }
     root.appendChild(list);
 
-    if (snapshot.ended) root.appendChild(mk("p", "ended", "讲解已结束。重新选中一段再发起即可。"));
+    if (snapshot.ended) {
+      root.appendChild(
+        mk("p", "ended", "讲解已结束 —— 可以按「上一步」回看，或按「退出」收掉高亮；重新选中一段再发起即可。"),
+      );
+    }
     root.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
     root.appendChild(buildTrace());
 
@@ -374,6 +390,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   var FORWARDED = ["next", "prev", "stop"];
 
   window.addEventListener("keydown", function (ev) {
+    // 按住不放会以每秒几十次的速度重复触发：每一次都是一条 ui:next + 一次换拍 + 一次"打开文件"，
+    // 那不是"快速推进"，是把面板与编辑器一起压住（松开之后才慢慢缓过来）。自动重复一律忽略。
+    if (ev.repeat) return;
     var chords = (typeof ANCHOR_CHORDS === "object" && ANCHOR_CHORDS) || {};
     for (var i = 0; i < FORWARDED.length; i++) {
       var chord = chords[FORWARDED[i]];
