@@ -18,10 +18,13 @@
 
 import Module from 'node:module';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG_DIR = path.join(ROOT, 'packages', 'extension-anchor');
@@ -542,17 +545,52 @@ check(
 
 // ---- 纯视觉：产物里根本不存在写文件的路径 ----------------------------------
 // 比运行期断言更强：不是"这次没调用"，而是"没有可调用的东西"。
-// 用词边界匹配：裸 includes('TextEdit') 会被 TextEditorDecorationType 误命中。
+// 匹配**调用形状**（`<某模块>.TextEdit` 一类），不是裸名字 —— D74 那次修复把 pdf.js 的
+// worker 也打进了产物，而那份代码里有一串 XFA 的枚举名（`… Text, TextEdit, Time …`）
+// 和一个 `_FreeTextEditor`，裸名字扫描当场误报。要守的是"**我们的代码**调用过写入 API"，
+// 所以模式里必须带上"谁在调用"（`\w+.`）这半截。
 const writeApiPatterns = [
-  [/\bapplyEdit\b/, 'applyEdit'],
-  [/\bWorkspaceEdit\b/, 'WorkspaceEdit'],
-  [/\bTextEdit\b/, 'TextEdit'],
-  [/\binsertSnippet\b/, 'insertSnippet'],
-  [/\bsaveAll\b/, 'saveAll'],
-  [/\bcreateFileSystemWatcher\b/, 'createFileSystemWatcher'],
+  [/\b\w+\.applyEdit\b/, 'applyEdit'],
+  [/\b\w+\.(TextEdit|WorkspaceEdit)\b/, 'TextEdit / WorkspaceEdit'],
+  [/\b\w+\.insertSnippet\b/, 'insertSnippet'],
+  [/\b\w+\.saveAll\b/, 'saveAll'],
+  [/\b\w+\.createFileSystemWatcher\b/, 'createFileSystemWatcher'],
 ];
 const leaked = writeApiPatterns.filter(([re]) => re.test(bundleText)).map(([, name]) => name);
 check(leaked.length === 0, '产物里没有任何文档写入 API', leaked.join(', ') || '一个都没有');
+
+// ---- 9. 产物里 pdf.js 真的能打开一份 PDF 吗（D74）----------------------------
+// 这一节补的是一条**跑掉了一整片**的锁。pdf.js 的"假 worker"在**源码**里靠 `import.meta.url`
+// 推路径，正好推得到 `node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs`；打成 cjs 之后
+// 那个路径变成了**产物旁边**（`dist/pdf.worker.mjs`），那儿没有这个文件 ——
+// 于是 `Setting up fake worker failed: Cannot find module …`。
+// 表现是"PDF 取件永远被拒（无法确定这份文档的总页数）"，而 `pnpm check` 全绿，
+// 因为 `node --test` 跑的是源码。**差别只有一个字：打包。** 所以这条锁必须在打包之后跑。
+const probeEntry = path.join(ROOT, 'scripts', 'pdf-open-probe.mjs');
+const probeOut = path.join(tmpdir(), `anchor-pdf-probe-${process.pid}.cjs`);
+const fixturePdf = path.join(ROOT, 'test', 'fixtures', 'sample-30p.pdf');
+let probeDetail = '';
+try {
+  // 与根 esbuild.mjs 的 optionsFor() 同一套选项（那是"用户真的会跑的那份产物"的形状）
+  await build({
+    entryPoints: [probeEntry],
+    outfile: probeOut,
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    target: 'node20',
+    external: ['vscode'],
+    logLevel: 'silent',
+  });
+  const stdout = execFileSync(process.execPath, [probeOut, fixturePdf], { encoding: 'utf8' });
+  probeDetail = stdout.trim();
+  check(/pages=30/.test(stdout), '打包之后 pdf.js 仍能打开一份真 PDF（worker 那条路没被 esbuild 打断）', probeDetail);
+} catch (err) {
+  const why = String(err?.stdout ?? err?.message ?? err).trim().split('\n')[0];
+  check(false, '打包之后 pdf.js 仍能打开一份真 PDF（worker 那条路没被 esbuild 打断）', why || '(无输出)');
+} finally {
+  rmSync(probeOut, { force: true });
+}
 
 ext.deactivate();
 check(true, 'deactivate 可调用');

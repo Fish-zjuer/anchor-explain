@@ -291,6 +291,22 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 **拒绝不抛错**：回灌一条工具结果「请求被拒绝：<reason>，请基于现有信息作答」，让模型自我纠正。
 **每次取件必须落日志**（见 §7）。
 
+**`page_range` 的前提：线1 必须能读到那份 PDF（S7 补 / D74）**。`pageCount` 拿不到时**拒绝**
+（不能盲放：`1 ≤ page ≤ pageCount` 那条上界就是这个字段唯一的作用），但**拒绝的话必须说两件事**：
+给模型的（"别请求了"）与给人的（"往哪看"）。为此：
+
+- `PDFAdapter` 的 `onError` 是**注入**的（本文件零 vscode 依赖，D19），接到线1 的输出通道；
+  打开失败的**原因**必须出现在那里，不能像 D74 之前那样被 `catch` 吞成 `null` 就完事
+  （那次一整片都没人知道真实原因是"产物里 pdf.js 找不到 worker"）。
+- 拒绝文本第一句以句号收尾：进度通知只取第一句（`briefReason`），不分句会被截成半截。
+
+**pdf.js 在产物里的前置条件（D74）**：`disableWorker: true` 并不等于"不需要 worker 代码" ——
+pdf.js 仍要把它加载进主线程，而默认路径由 pdf.js 自己的 `import.meta.url` 推出，
+**打包后那个路径指向产物旁边**。所以 `pdfjsSource.ts` 必须自己挂上官方钩子
+（`globalThis.pdfjsWorker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs')`，
+`legacy/build/pdf.mjs:22948` 读的就是它）。这条**只能靠打包之后的锁守住** ——
+`node --test` 跑源码，永远看不到这个差异（S7 的 PDF 取件因此在用户手上从没成功过）。
+
 #### §3.2 的实现约定（S3 定，都不改上表五条判据，只把边界说清楚）
 
 **S9a：规则 3 的"允许范围"（`anchorExplain.fetchScope`）**

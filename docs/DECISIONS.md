@@ -1551,6 +1551,71 @@ S9c 剩下的（折叠已完成步骤、面板上的「下一步」按钮、斜�
 
 ---
 
+## D74 「PDF 取件全被拒」= pdf.js 的 worker 在产物里找不到，而 `node --test` 一直是绿的
+
+**起因**：D73 修完，用户重测 —— 框选那条链路**活了**（面板出了讲解、定位标签对、取件日志在动），
+但新的卡点很明确：模型两次按页取件都被拒，屏幕上写着「无法确定这份文档的总页数，拒绝按页取件」，
+面板于是只剩一段"我没拿到原文"的空讲。
+
+**证据（这次是自己动手复现，没停在读代码上）**：先看 `Anchor` 输出通道，两行拒绝原因一模一样；
+再看实现 —— `PDFAdapter.pageCount` 把异常**吞成 null**，闸门于是拒绝。手上一点原因都没有，
+所以直接造复现：把 `openPdfJsSource` 用**与真实构建同一套 esbuild 选项**打成一个 cjs 再跑 ——
+
+```
+[probe] 打开失败： 打不开这份 PDF（Setting up fake worker failed:
+  "Cannot find module '…\dist\pdf.worker.mjs' imported from …\dist\extension.cjs"）
+```
+
+同一份代码**源码直跑**则成功（fixture 30 页、用户那份 arXiv 论文 26 页）。
+
+**机制**：`disableWorker: true` 只是"不用线程"，pdf.js 仍然要把 worker 那份代码**加载进主线程**，
+方式是 `import(GlobalWorkerOptions.workerSrc)`，而那个默认值是从 pdf.js 自己的 `import.meta.url`
+推出来的。**源码直跑**时它正好指到 `node_modules/pdfjs-dist/legacy/build/`；
+**打成 cjs 之后 `import.meta.url` 被改写成产物自己的位置** —— 于是它去 `dist/pdf.worker.mjs`
+找一个不存在的文件。差别只有一个字：打包。
+
+**四件事合起来让它藏了整整一片（S7 → 现在）**：
+
+1. `pageCount` 的 `catch` 把它吞成 `null`，**一句日志都没留**（"降级=静默"的老毛病）；
+2. 闸门那句「无法确定这份文档的总页数」把线索**全部指向那份 PDF 本身**（用户就是这么被引偏的，
+   他大概会以为是自己那份论文有什么特殊之处）；
+3. `node --test` 跑的是**源码**，`node_modules` 就在旁边 —— 全绿；
+4. 冒烟叫"产物冒烟"，但它从来没有真的**打开过一份 PDF**（它查的是字符串、命令、消息、HTML）。
+
+**修法（四处）**：
+
+1. **挂 pdf.js 官方留的钩子**：`globalThis.pdfjsWorker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs')`
+   （`legacy/build/pdf.mjs:22948` 读的就是它）。说明符是**字面量**，所以 esbuild 会把它一起打进
+   产物（cjs 不分包 = 内联成惰性求值的一段）—— 产物因此自洽，不依赖 `node_modules` 在旁边。
+2. **不再静默**：`PDFAdapter` 加一个注入的 `onError`（本文件零 vscode 依赖，所以是注入），
+   在 `commands.ts` 里接到输出通道；`withPdfText` 的 catch 也记一行
+   （"框选那块取不到字"过去和"这份 PDF 打不开"在屏幕上是同一副样子）。
+3. **闸门那句话说成两句**：「无法确定这份文档的总页数，拒绝按页取件**。**线1 读不到这份 PDF ——
+   输出面板「Anchor」里有一行原因。」第一句以句号收尾不是文风 —— 进度通知只取第一句
+   （`briefReason`），不分句就会被截成半截。
+4. **补上跑掉的那条锁**：冒烟里用同一套打包选项把 `scripts/pdf-open-probe.mjs` 打成一个 cjs 再跑，
+   断言"打包之后仍能打开 `test/fixtures/sample-30p.pdf`（30 页）"。**并验证过这条新锁能红**：
+   把 `ensureFakeWorker()` 拿掉，它报的正是上面那句 `Setting up fake worker failed`。
+
+**一处连带**：把 worker 打进产物之后，那条"产物里没有任何文档写入 API"的锁（按**裸名字**扫
+`\bTextEdit\b`）当场误报 —— pdf.js 里有一串 XFA 的枚举名（`… Text, TextEdit, Time …`）
+和一个 `_FreeTextEditor`。要守的其实是"**我们的代码**调用过写入 API"，所以模式改成按**调用形状**
+扫（`\b\w+\.(TextEdit|WorkspaceEdit)\b` 一类）。**锁红了先想清楚它守的是什么**，别顺手把它删了。
+
+**代价**：dev 产物从 4.5MB 涨到 13.4MB（worker 源 2.4MB + inline sourcemap；生产构建无 sourcemap）。
+它是**惰性求值**的（不进那条路就不会执行），本扩展也只本地安装，可接受。
+
+**这一片最该记住的一条（比 bug 本身重要）**：**测试绿不等于用户能用，当两边跑的不是同一份代码时。**
+`node --test` 跑源码、用户跑产物 —— 凡是"打包之后才可能出现"的差异（`import.meta.url`、
+动态 import、tree-shaking、charset、相对路径），锁就必须打在打包**之后**。
+这也是 D73 那条教训的另一半：那次是"我以为它会说话，其实它哑了"，
+这次是"我以为测过了，其实测的不是它"。
+
+**验证数字**：`pnpm check` 全绿 —— **289 测**（core 40 + ext 228 + pdf 21）/
+冒烟 **74** + 146 + 74（线1 冒烟 +1：那条真打开 PDF 的锁）。
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

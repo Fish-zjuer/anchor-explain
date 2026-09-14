@@ -474,6 +474,37 @@ S7 点名的两条验收都在：`fetchContext({type:'page_range', start:22, end
 拿框选出来的那一块，讲解里第一步的内容应该就是那一块的字（`extractedText` 生效），
 而不是模型"凭空猜"出来的。
 
+### S7 补（D74，2026-09-14）：**PDF 取件在用户手上从来没成功过** —— pdf.js 的 worker 在产物里找不到
+
+**用户实测报出来的形状**（D73 修完框选之后）：面板说「无法定位内容：第 2 页取件被拒」，
+取件日志两行都是「无法确定这份文档的总页数，拒绝按页取件」。**不是 PDF 的问题，是打包的问题。**
+
+- 复现方式：把 `openPdfJsSource` 用**与真实构建同一套 esbuild 选项**打成一个 cjs 再跑 ——
+  报 `Setting up fake worker failed: Cannot find module '…\dist\pdf.worker.mjs'`；
+  同一份代码**源码直跑**成功（fixture 30 页 / 用户那份 arXiv 26 页）。
+- 机制：`disableWorker: true` 只是不用线程，pdf.js 仍要把 worker 代码加载进主线程，靠
+  `import(GlobalWorkerOptions.workerSrc)`；那个默认值由 pdf.js 自己的 `import.meta.url` 推出，
+  而 **esbuild 把它改写成了产物路径**。
+- 为什么全绿还漏了一整片：① `pageCount` 的 catch 吞成 null（零日志）；② 闸门那句把线索全指向 PDF；
+  ③ `node --test` 跑**源码**；④ 冒烟从没真的**打开过一份 PDF**。
+
+**修法**：① 挂官方钩子 `globalThis.pdfjsWorker`（`legacy/build/pdf.mjs:22948` 认它），
+worker 用字面量动态 import 让 esbuild 一起打包（产物自洽、不依赖 node_modules）；
+② 不再静默：`PDFAdapter` 加注入的 `onError` → 输出通道；`withPdfText` 的 catch 记一行；
+闸门那条拒绝改成两句（第二句指去看哪）；③ **补锁**：冒烟里用同一套打包选项把
+`scripts/pdf-open-probe.mjs` 打成 cjs 再跑，断言真能打开 fixture（**并验证过这条锁能红**）；
+④ 连带：产物那条"没有文档写入 API"的锁改成按**调用形状**扫（worker 进来后，pdf.js 里的
+XFA 枚举名 `TextEdit` 让裸名字扫描误报）。
+
+**代价**：dev 产物 4.5MB → 13.4MB（worker 2.4MB + inline sourcemap；惰性求值，本地扩展可接受）。
+
+**验收靠**：**用户实操** —— 重新 `pnpm build` + 重载窗口，框选同一处再讲一次：
+**取件日志里那两行应该从"拒绝"变成"接受"**，讲解第一步应该引到那一页的原文。
+
+**自动化验收结果**：`pnpm check` 全绿 —— **289 测**（core 40 + ext 228 + pdf 21）/
+冒烟 **74** + 146 + 74。**注意口径**：这一片之前的所有"自动化验收结果"都是绿着报的，
+而用户那边一次都没成功过 —— 差别只在"测试跑源码、用户跑产物"（D74 末段）。
+
 ## S7 PDF 取件
 
 - **目标**：`page_range` 取附近页文字（`pdfjs-dist` legacy 无头，**不依赖 webview**）。

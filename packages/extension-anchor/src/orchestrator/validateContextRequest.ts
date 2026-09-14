@@ -207,7 +207,13 @@ export function validateContextRequest(
       return reject('锚点不是 PDF 位置，不能按页取件');
     }
     if (state.pageCount === null) {
-      return reject('无法确定这份文档的总页数，拒绝按页取件');
+      // 第二句是留给"读不到页数"这条路的（D74）：它过去只说前半句，而那半句把线索全引向
+      // **那份 PDF 本身**（用户就是这么被引偏的）—— 真正的原因在线1 自己的输出通道里
+      // （pdf.js 在产物里找不到它的 worker）。第一句以句号收尾：进度通知只取第一句
+      // （`briefReason`），不这么写的话那句长的会被截成半截。
+      return reject(
+        '无法确定这份文档的总页数，拒绝按页取件。线1 读不到这份 PDF —— 输出面板「Anchor」里有一行原因。',
+      );
     }
     if (span.end > state.pageCount) {
       return reject(`页码范围越界：end=${span.end}，总页数 ${state.pageCount}`);

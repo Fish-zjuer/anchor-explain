@@ -52,6 +52,38 @@ interface PdfJsPage {
   getTextContent(): Promise<{ items: unknown[] }>;
 }
 
+/**
+ * 把 worker 那份代码**挂到 pdf.js 官方的钩子上**，而不是让它自己去动态 import（D74）。
+ *
+ * @anchor 为什么非有这一句不可（这是 S7 的取件在用户手上从来没成功过的原因）：
+ *         `disableWorker: true` 只是"不用线程"，pdf.js 仍然要把 worker 的代码**加载进主线程**，
+ *         方式是 `import(GlobalWorkerOptions.workerSrc)`，而那个默认值是从 pdf.js 自己的
+ *         `import.meta.url` 推出来的。**源码直跑**时它正好指到
+ *         `node_modules/pdfjs-dist/legacy/build/`（所以 `node --test` 一直是绿的）；
+ *         但**打成一个 cjs 之后，`import.meta.url` 被改写成产物自己的位置** —— 于是它去
+ *         `dist/pdf.worker.mjs` 找一个不存在的文件，报
+ *         `Setting up fake worker failed: Cannot find module '…\dist\pdf.worker.mjs'`。
+ *
+ *         更坏的是**它是静默的**：`PDFAdapter.pageCount` 的 catch 把它变成 null，闸门于是报
+ *         "无法确定这份文档的总页数，拒绝按页取件" —— 一句话把所有线索都指向那份 PDF，
+ *         指向不了我们的打包方式。用户看到的正是这一句。
+ *
+ *         pdf.js 留了官方出口：`globalThis.pdfjsWorker?.WorkerMessageHandler`
+ *         （`legacy/build/pdf.mjs:22948`）。挂上去它就不走动态 import 了。
+ *         下面的 `import()` 说明符是**字面量**，所以 esbuild 会把它一起打进产物
+ *         （cjs 不分包 = 内联成惰性求值的一段），产物因此自洽，不依赖 node_modules 在旁边。
+ */
+let workerReady: Promise<void> | null = null;
+
+async function ensureFakeWorker(): Promise<void> {
+  workerReady ??= (async () => {
+    // 类型来自隔壁的 `pdfjsWorkerTypes.d.ts`（pdfjs-dist 没给 worker 配类型）
+    const worker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+    (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = worker;
+  })();
+  return workerReady;
+}
+
 function isRawItem(v: unknown): v is { str: string; transform: number[]; width: number; height: number } {
   if (typeof v !== 'object' || v === null) return false;
   const item = v as Record<string, unknown>;
@@ -64,6 +96,8 @@ export const openPdfJsSource: OpenPDFSource = async (filePath: string): Promise<
   let task: PdfJsLoadingTask;
   let doc: PdfJsDocument;
   try {
+    // 必须在 getDocument 之前（D74）：它一建立 fake worker 就会去找 worker 代码
+    await ensureFakeWorker();
     // `pathToFileURL` 是必需的：Windows 上裸路径会被当成相对路径，
     // 而 pdf.js 那边只接受 URL 或字节。
     task = getDocument({
@@ -71,7 +105,7 @@ export const openPdfJsSource: OpenPDFSource = async (filePath: string): Promise<
       // 取文字不需要字体数据；不关掉的话 pdf.js 会去 fetch 标准字体，
       // 在宿主里表现为一条无意义的告警（实测过）。
       useSystemFonts: false,
-      // Node 里没有 worker：关掉它，pdf.js 走"假 worker"路径
+      // Node 里没有 worker：关掉它，pdf.js 走"假 worker"路径（那条路径要 ensureFakeWorker 兜着）
       disableWorker: true,
     } as Parameters<typeof getDocument>[0]) as unknown as PdfJsLoadingTask;
     doc = await task.promise;

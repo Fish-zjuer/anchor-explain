@@ -45,6 +45,16 @@ export interface PDFAdapter {
 
 export interface PDFAdapterDeps {
   cache: PdfDocumentCache;
+  /**
+   * 打不开 PDF 时的落点（D74）。**注入而不是 import vscode**：本文件零 vscode 依赖（D19）。
+   *
+   * @anchor 为什么必须有它：`pageCount` 失败要被吞成 `null`（§3.3 靠这个跳过页数上界），
+   *         而"吞成 null"在过去是**彻底静默**的 —— 闸门只会说"无法确定这份文档的总页数，
+   *         拒绝按页取件"。那句话把所有线索都引向**那份 PDF 本身**（用户就是这么被引偏的），
+   *         而我们这边一句原因都没留下：没有日志、没有报错、`node --test` 还是全绿。
+   *         真实原因（产物里 pdf.js 找不到 worker）因此藏了整整一片（S7 → D74）。
+   */
+  onError?: (message: string) => void;
 }
 
 /** 取件结果的页头。**这个格式是 S7 验收里点名的**，别随手改。 */
@@ -88,8 +98,10 @@ export function createPdfAdapter(deps: PDFAdapterDeps): PDFAdapter {
     async pageCount(filePath: string): Promise<number | null> {
       try {
         return (await deps.cache.acquire(filePath)).pageCount;
-      } catch {
-        // 打不开就当"不知道页数" → §3.3 跳过那条上界检查，而不是让讲解失败
+      } catch (err) {
+        // 打不开就当"不知道页数" → §3.3 跳过那条上界检查，而不是让讲解失败。
+        // **但原因必须留下**（D74）：这条 catch 静默过一次，代价是排查时手上什么都没有。
+        deps.onError?.(`取不到这份 PDF 的页数（${(err as Error).message}）—— 无法按页取件`);
         return null;
       }
     },

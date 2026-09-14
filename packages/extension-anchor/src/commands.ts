@@ -127,7 +127,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   // S7：PDF 侧。缓存是有界 LRU（打开一份 30 页 PDF 要读盘 + 解析，同一轮讲解会问好几次），
   // 淘汰时释放句柄 —— 见 pdfDocumentCache.ts 的注释。
-  const pdfAdapter = createPdfAdapter({ cache: createPdfDocumentCache(openPdfJsSource) });
+  // `onError` 接到输出通道（D74）：拿不到页数就会导致"按页取件全被拒"，
+  // 而这条路上过去没有任何痕迹 —— 用户只看到闸门说"无法确定总页数"。
+  const pdfAdapter = createPdfAdapter({
+    cache: createPdfDocumentCache(openPdfJsSource),
+    onError: (message) => note(message),
+  });
 
   /**
    * 按锚点选适配器。
@@ -559,7 +564,10 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     try {
       const text = await pdfAdapter.textInBBox(loc.filePath, loc.page, loc.bbox);
       return text ? { ...anchor, extractedText: text } : anchor;
-    } catch {
+    } catch (err) {
+      // 这里仍然只降级（扫描件没有文字层是正常情况），但**原因留一行**（D74）——
+      // "框选那块取不到字"过去和"这份 PDF 打不开"在屏幕上是同一副样子，谁也分不出来。
+      note(`框选那块取不到文字（${(err as Error).message}）—— 交给模型自己去取件`);
       return anchor;
     }
   }

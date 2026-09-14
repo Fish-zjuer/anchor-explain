@@ -100,6 +100,14 @@ test('规则 2：页码范围、整数性、页跨度', () => {
     state({ capabilities: PDF_CAPS, pageCount: null }),
   );
   assert.equal(unknownCount.accepted, false, '不知道总页数时不能盲放');
+  // D74：这条拒绝对模型是"别请求了"，对**人**却是唯一的线索 ——
+  // 它过去只说"无法确定总页数"，把原因指向那份 PDF 本身，而真正的原因（pdf.js 在产物里
+  // 找不到 worker）在我们自己的输出通道里。所以它必须指出往哪看。
+  assert.match(
+    unknownCount.accepted === false ? unknownCount.reason : '',
+    /输出面板/,
+    '读不到页数时要说清往哪看（那一句才是能救人的）',
+  );
 });
 
 test('规则 3：file 只能取锚点所在的那个文件（这条是主要理由）', () => {
