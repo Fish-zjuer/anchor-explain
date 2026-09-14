@@ -505,6 +505,30 @@ XFA 枚举名 `TextEdit` 让裸名字扫描误报）。
 冒烟 **74** + 146 + 74。**注意口径**：这一片之前的所有"自动化验收结果"都是绿着报的，
 而用户那边一次都没成功过 —— 差别只在"测试跑源码、用户跑产物"（D74 末段）。
 
+### S7 补 2（D75，2026-09-14）：**还是被拒** —— pdf.js 把扩展宿主误判成了浏览器
+
+D74 修完用户重测，取件**仍被拒**，但这次屏幕上有线索（D74 那条"不再静默"当场回收了成本）：
+`Anchor` 输出通道写着 `打不开这份 PDF（window is not defined）`。
+
+- **不是 Electron 的 Node 不行**：`ELECTRON_RUN_AS_NODE=1 Code.exe` 跑同一探针是成功的。
+- **是 pdf.js 的 `isNodeJS` 判定**：最后半句 `!(process.versions.electron && process.type && process.type !== "browser")`
+  是为 Electron **渲染进程**写的，而 VS Code 的扩展宿主是 Electron 的 **utility** 进程 ——
+  于是 pdf.js 认为"我不是 Node"。给它补上这个形状后，探针**一字不差复现**。
+- **栈顶是 `getUrlProp`**：`url:` 这个参数**只有浏览器环境支持**（要拿 `window.location`）。
+- 修法：① **喂字节而不是给 `url:`**（字节由注入的 `PdfBytesPort` 读，真实现是 `workspace.fs` ——
+  顺带对 remote/虚拟工作区成立，`node:fs` 在那种工作区里会静默读到空）；② 入口把字节归一化成
+  **真正的 `Uint8Array`**（pdf.js 明确拒绝 Node 的 `Buffer`，而 `node:fs` 给的就是 Buffer ——
+  这条是**改完①之后测试当场红出来的**）。
+- **探针也升级**：`scripts/pdf-open-probe.mjs` 现在先把自己伪装成宿主（`process.type='utility'`
+  + `process.versions.electron`），再动态 import pdf.js。上一版的锁"在我这儿是绿的"，
+  就是因为它跑在干净的 CLI Node 里。**并验证过升级后的锁能红**（把 `data` 改回 `url:`，
+  它报的正是 `window is not defined`）。
+
+**验收靠**：**用户实操**，同 S7 补 —— 重载后取件日志那两行应当变成"接受"。
+
+**自动化验收结果**：`pnpm check` 全绿 —— **289 测** / 冒烟 74 + 146 + 74。
+手工另验：真 fixture（30 页）与用户那份 arXiv（26 页、第 1 页 4009 字）在**宿主形状**下都能打开。
+
 ## S7 PDF 取件
 
 - **目标**：`page_range` 取附近页文字（`pdfjs-dist` legacy 无头，**不依赖 webview**）。

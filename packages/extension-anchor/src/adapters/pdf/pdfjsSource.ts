@@ -23,7 +23,6 @@
  * **禁止 import 'vscode'**。
  */
 
-import { pathToFileURL } from 'node:url';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { AnchorError } from '@anchor/core';
 import type { PDFPageText, PDFSource, OpenPDFSource } from './PDFSource.ts';
@@ -92,44 +91,87 @@ function isRawItem(v: unknown): v is { str: string; transform: number[]; width: 
   );
 }
 
-export const openPdfJsSource: OpenPDFSource = async (filePath: string): Promise<PDFSource> => {
-  let task: PdfJsLoadingTask;
-  let doc: PdfJsDocument;
-  try {
-    // 必须在 getDocument 之前（D74）：它一建立 fake worker 就会去找 worker 代码
-    await ensureFakeWorker();
-    // `pathToFileURL` 是必需的：Windows 上裸路径会被当成相对路径，
-    // 而 pdf.js 那边只接受 URL 或字节。
-    task = getDocument({
-      url: pathToFileURL(filePath).href,
-      // 取文字不需要字体数据；不关掉的话 pdf.js 会去 fetch 标准字体，
-      // 在宿主里表现为一条无意义的告警（实测过）。
-      useSystemFonts: false,
-      // Node 里没有 worker：关掉它，pdf.js 走"假 worker"路径（那条路径要 ensureFakeWorker 兜着）
-      disableWorker: true,
-    } as Parameters<typeof getDocument>[0]) as unknown as PdfJsLoadingTask;
-    doc = await task.promise;
-  } catch (err) {
-    throw new AnchorError('CONTEXT_REJECTED', `打不开这份 PDF（${(err as Error).message}）`);
-  }
+/**
+ * 读字节的端口。**注入**而不是在这里 `import 'node:fs'`：`adapters/` 零 vscode 依赖（D19），
+ * 真实现是 `vscode/ports/fileSystemPort.ts`（走 `workspace.fs`，对 remote / 虚拟文件系统同样成立 ——
+ * 拿 `node:fs` 在那类工作区里会**静默读到空**，那条理由见该文件顶部的 @anchor）。
+ */
+export interface PdfBytesPort {
+  readBytes(path: string): Promise<Uint8Array>;
+}
 
-  return {
-    pageCount: doc.numPages,
+/**
+ * 造一个"按路径打开 PDF"的实现。
+ *
+ * @anchor **为什么喂字节（`data`）而不是给路径（`url`）**（D75，用户实测逼出来的）：
+ *         pdf.js 的 `url:` 那条路**只在浏览器环境成立** —— `getDocument` 会先调 `getUrlProp`
+ *         去拿 `window.location` 解析相对地址，在宿主里直接 `ReferenceError: window is not defined`。
+ *         而 pdf.js 判断"我是不是在 Node 里"的那一句是：
+ *
+ *           const isNodeJS = typeof process === "object" && ... && !process.versions.nw &&
+ *             !(process.versions.electron && process.type && process.type !== "browser");
+ *
+ *         最后那半句是为 **Electron 的渲染进程**写的，而 VS Code 的扩展宿主现在是
+ *         **Electron 的 utility 进程**（`process.versions.electron` 有值、`process.type === "utility"`）
+ *         —— 于是 pdf.js 误判成"浏览器"，走上那条需要 `window` 的路。
+ *         喂字节就绕开了整条 URL/环境判断：数据是我们从自己的端口读来的，与 pdf.js 觉得
+ *         自己在哪儿无关。这条比"想办法把 isNodeJS 掰成 true"稳得多（那要么去动
+ *         `process.versions`，要么依赖 pdf.js 的内部判定，两个都不该由我们改）。
+ */
+/**
+ * 把读到的字节统一成**真正的 `Uint8Array`**。
+ *
+ * @anchor pdf.js 会明确拒绝 Node 的 `Buffer`：`Please provide binary data as Uint8Array,
+ *         rather than Buffer.` —— 而 `node:fs` 读出来的正好就是 Buffer 的子类。
+ *         真实现（`vscode.workspace.fs`）给的是普通 `Uint8Array`，但端口是**注入**的，
+ *         下一个实现（从压缩包/网络里读）完全可能给 Buffer —— 与其让每个调用方记着这件事，
+ *         不如在入口一次性摆平。`Uint8Array.from` 是**复制**：既换掉 Buffer 的身份，
+ *         也避开 Node 小块内存池（小 Buffer 共享同一块 ArrayBuffer，而 pdf.js 会 transfer 它）。
+ */
+function toPlainUint8(data: Uint8Array): Uint8Array {
+  return Object.getPrototypeOf(data) === Uint8Array.prototype ? data : Uint8Array.from(data);
+}
 
-    async page(page: number): Promise<PDFPageText | null> {
-      if (!Number.isInteger(page) || page < 1 || page > doc.numPages) return null;
-      const pdfPage = await doc.getPage(page);
-      const viewport = pdfPage.getViewport({ scale: 1 });
-      const content = await pdfPage.getTextContent();
-      const items = normalizeItems(content.items.filter(isRawItem), viewport);
-      return { page, text: joinLines(items), items, viewport };
-    },
+export function createPdfJsSource(deps: { bytes: PdfBytesPort }): OpenPDFSource {
+  return async (filePath: string): Promise<PDFSource> => {
+    let task: PdfJsLoadingTask;
+    let doc: PdfJsDocument;
+    try {
+      // 必须在 getDocument 之前（D74）：它一建立 fake worker 就会去找 worker 代码
+      await ensureFakeWorker();
+      // 每次都现读：pdf.js 可能把这块缓冲**转移**（transfer）走，缓存复用的只是文档句柄
+      const data = await deps.bytes.readBytes(filePath);
+      task = getDocument({
+        data: toPlainUint8(data),
+        // 取文字不需要字体数据；不关掉的话 pdf.js 会去 fetch 标准字体，
+        // 在宿主里表现为一条无意义的告警（实测过）。
+        useSystemFonts: false,
+        // 宿主里没有 worker 线程：关掉它，pdf.js 走"假 worker"路径（那条路径由 ensureFakeWorker 兜着）
+        disableWorker: true,
+      } as Parameters<typeof getDocument>[0]) as unknown as PdfJsLoadingTask;
+      doc = await task.promise;
+    } catch (err) {
+      throw new AnchorError('CONTEXT_REJECTED', `打不开这份 PDF（${(err as Error).message}）`);
+    }
 
-    dispose(): void {
-      // 打在 task 上（见上面 PdfJsLoadingTask 的注释）。
-      // `destroy()` 是异步的，但缓存淘汰不等它 —— 我们只需要"句柄被交还"，
-      // 而 pdf.js 自己会在这个 promise 里收干净。
-      void task.destroy();
-    },
+    return {
+      pageCount: doc.numPages,
+
+      async page(page: number): Promise<PDFPageText | null> {
+        if (!Number.isInteger(page) || page < 1 || page > doc.numPages) return null;
+        const pdfPage = await doc.getPage(page);
+        const viewport = pdfPage.getViewport({ scale: 1 });
+        const content = await pdfPage.getTextContent();
+        const items = normalizeItems(content.items.filter(isRawItem), viewport);
+        return { page, text: joinLines(items), items, viewport };
+      },
+
+      dispose(): void {
+        // 打在 task 上（见上面 PdfJsLoadingTask 的注释）。
+        // `destroy()` 是异步的，但缓存淘汰不等它 —— 我们只需要"句柄被交还"，
+        // 而 pdf.js 自己会在这个 promise 里收干净。
+        void task.destroy();
+      },
+    };
   };
-};
+}

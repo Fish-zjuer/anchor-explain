@@ -300,12 +300,23 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
   （那次一整片都没人知道真实原因是"产物里 pdf.js 找不到 worker"）。
 - 拒绝文本第一句以句号收尾：进度通知只取第一句（`briefReason`），不分句会被截成半截。
 
-**pdf.js 在产物里的前置条件（D74）**：`disableWorker: true` 并不等于"不需要 worker 代码" ——
-pdf.js 仍要把它加载进主线程，而默认路径由 pdf.js 自己的 `import.meta.url` 推出，
-**打包后那个路径指向产物旁边**。所以 `pdfjsSource.ts` 必须自己挂上官方钩子
-（`globalThis.pdfjsWorker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs')`，
-`legacy/build/pdf.mjs:22948` 读的就是它）。这条**只能靠打包之后的锁守住** ——
-`node --test` 跑源码，永远看不到这个差异（S7 的 PDF 取件因此在用户手上从没成功过）。
+**pdf.js 在产物里的前置条件（D74/D75）**：
+
+- **worker 要自己挂**：`disableWorker: true` 并不等于"不需要 worker 代码" —— pdf.js 仍要把它
+  加载进主线程，而默认路径由 pdf.js 自己的 `import.meta.url` 推出，**打包后那个路径指向产物旁边**。
+  所以 `pdfjsSource.ts` 必须挂官方钩子
+  （`globalThis.pdfjsWorker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs')`，
+  `legacy/build/pdf.mjs:22948` 读的就是它）。
+- **喂字节，不要给 `url:`**：pdf.js 的 `url:` 只在浏览器环境成立（`getUrlProp` 要拿
+  `window.location`），而 pdf.js 那句 `isNodeJS` 判定里有一个为 Electron **渲染进程**写的条件 ——
+  VS Code 的扩展宿主是 Electron 的 **utility** 进程，会被它误判成"浏览器"，
+  于是 `ReferenceError: window is not defined`。字节由注入的 `PdfBytesPort` 读
+  （真实现是 `fileSystemPort` = `workspace.fs`，对 remote / 虚拟文件系统成立）。
+- **字节要归一化成 `Uint8Array`**：pdf.js 拒绝 Node 的 `Buffer`
+  （`Please provide binary data as Uint8Array, rather than Buffer.`）。
+- 这几条**只能靠打包之后 + 宿主形状的锁守住** —— `node --test` 跑源码、且跑在干净的 CLI Node 里，
+  两个差异都看不到（S7 的 PDF 取件因此在用户手上从没成功过）。落点是
+  `scripts/pdf-open-probe.mjs`（自己伪装成宿主）+ `smoke-extension.mjs` 第 9 节。
 
 #### §3.2 的实现约定（S3 定，都不改上表五条判据，只把边界说清楚）
 

@@ -11,9 +11,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { createPdfAdapter, pageHeader } from '../src/adapters/PDFAdapter.ts';
 import { createPdfDocumentCache } from '../src/adapters/pdf/pdfDocumentCache.ts';
-import { openPdfJsSource } from '../src/adapters/pdf/pdfjsSource.ts';
+import { createPdfJsSource } from '../src/adapters/pdf/pdfjsSource.ts';
 import { joinLines, normalizeItems, readingOrder } from '../src/adapters/pdf/pageTextIndex.ts';
 import type { PDFPageText, PDFSource } from '../src/adapters/pdf/PDFSource.ts';
 import { HIT_RATIO, itemsInBBox, textInBBox } from '../src/adapters/pdf/textSearch.ts';
@@ -269,7 +270,12 @@ test('adapter.textInBBox：命中不到返回 null（扫描件是正常情况，
 // ── 真解析（一条，验坐标系换算） ───────────────────────────────────────────
 
 test('真 fixture：30 页、第 23 页能取到文字、bbox 能命中', async () => {
-  const cache = createPdfDocumentCache(openPdfJsSource);
+  // 真解析这条用 `node:fs` 喂字节，两个原因都是刻意的（D75）：
+  //   1. 测试跑在 Node 里，没有必要为了读一个文件去惊动 vscode 那一层；
+  //   2. `node:fs` 读出来是 **Buffer**，而 pdf.js 明确拒绝 Buffer
+  //      （"Please provide binary data as Uint8Array, rather than Buffer."）——
+  //      端口是注入的，下一个实现完全可能给 Buffer，所以这条断言顺带守着那门归一化。
+  const cache = createPdfDocumentCache(createPdfJsSource({ bytes: { readBytes: (p) => readFile(p) } }));
   const adapter = createPdfAdapter({ cache });
 
   try {

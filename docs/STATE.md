@@ -34,6 +34,7 @@
 | S8 | **固定按钮（活动栏）+ 开始界面**（webview 面板 + 欢迎页演练卡片 + `Ctrl+Alt+A`），三处入口通向同一批命令 | `slice-S8` | 2026-09-13 |
 | S5/S6 补 | 线2 框选链路修复：`acquireVsCodeApi` 单例共享 + 注入顺序 + 两处"失败必须发声"（D73），并给注入脚本补了行为夹具 | `slice-S5-fix` | 2026-09-14 |
 | S7 补 | PDF 取件修复：pdf.js 的 worker 在产物里找不到（挂 `globalThis.pdfjsWorker` 官方钩子）+ 不再静默 + **打包之后**才跑的真打开 PDF 的锁 | `slice-S7-fix` | 2026-09-14 |
+| S7 补 2 | PDF 取件修复之二：扩展宿主是 Electron 的 utility 进程，pdf.js 会误判成浏览器 → 改**喂字节**（注入 `workspace.fs` 端口）+ 字节归一化成 `Uint8Array`；探针升级为**自带宿主伪装** | `slice-S7-fix2` | 2026-09-14 |
 
 **线1（代码编辑器）的功能面到此完整**：真选区 → 真适配器 → 真 AI（带取件）→ 真校验 → 真渲染。
 **产物里已经没有任何替身。**
@@ -222,6 +223,9 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
 90. **注入脚本的行为也得有夹具**（D73）：`media/anchor-select.js` 既不进类型检查、也不进 bundle，改它以前只能靠 F5 手拖 —— 结果它哑了一整轮没人知道。现在 `test/anchorSelectClient.test.ts` 用**最小 DOM + 逐字复刻 VS Code 预加载语义的 `acquireVsCodeApi`**（含那条报错原文）把整条链路跑一遍。**复刻对方语义时要把出处写进注释**（版本 + 文件路径 + 行号），否则夹具会随时间变成童话。
 91. **测试跑源码、用户跑产物 —— 凡"打包后才会出现的差异"，锁必须打在打包之后**（D74）：`import.meta.url` 会被 esbuild 改写成产物路径，于是 pdf.js 去 `dist/pdf.worker.mjs` 找它的 worker（`Setting up fake worker failed`），而 `node --test` 全绿 —— **S7 的 PDF 取件因此在用户手上从来没成功过**。同类差异还有：动态 import 的说明符、tree-shaking（字体/图标/字符串变体）、charset、相对路径。线1 冒烟里那条"用同一套打包选项把 `scripts/pdf-open-probe.mjs` 打成 cjs 再真的打开一份 PDF"就是这条规矩的落点。**锁红了先想清楚它守的是什么，别顺手删**（D74 里那条"没有文档写入 API"的锁被 pdf.js 的 XFA 枚举名 `TextEdit` 误报了，正确做法是把模式改成按**调用形状**扫，不是删掉它）。
 92. **pdf.js 在产物里必须自己挂 worker**（D74）：`disableWorker: true` 只是"不用线程"，pdf.js 仍要把 worker 代码加载进主线程（默认靠 `import(GlobalWorkerOptions.workerSrc)`，那个值由 pdf.js 自己的 `import.meta.url` 推出）。所以 `pdfjsSource.ts` 里 `await import('pdfjs-dist/legacy/build/pdf.worker.mjs')` 后挂到 `globalThis.pdfjsWorker`（`legacy/build/pdf.mjs:22948` 读它）。说明符必须是**字面量**，esbuild 才会一起打包 —— 产物因此自洽，不依赖 `node_modules` 在旁边。代价：dev 产物 4.5MB → 13.4MB（惰性求值）。
+93. **喂字节，不要给 pdf.js `url:`**（D75）：pdf.js 的 `url` 参数**只在浏览器环境成立**（`getUrlProp` 要拿 `window.location`），而它那句 `isNodeJS` 判定里有一个为 Electron **渲染进程**写的条件 —— VS Code 的扩展宿主是 Electron 的 **utility** 进程（`process.versions.electron` 有值、`process.type === 'utility'`），会被误判成"浏览器"，于是 `ReferenceError: window is not defined`。字节由注入的 `PdfBytesPort` 读（真实现 `fileSystemPort` = `workspace.fs`，对 remote/虚拟文件系统成立；`node:fs` 在那种工作区里会静默读到空）。**不要去掰 `isNodeJS`**：要么动 `process.versions`（影响整个宿主），要么依赖 pdf.js 内部判定，两个都不该由我们改。
+94. **给 pdf.js 的字节必须是真正的 `Uint8Array`**（D75）：它明确拒绝 Node 的 `Buffer`（`Please provide binary data as Uint8Array, rather than Buffer.`），而 `node:fs` 给的正是 Buffer。端口是注入的，所以归一化放在入口（`Uint8Array.from` 复制一份：换掉 Buffer 身份，也避开 Node 小块内存池共享 ArrayBuffer 而 pdf.js 会 transfer 它）。
+95. **"在我这儿是对的"必须先问"我这儿是什么形状"**（D73/D74/D75 是同一教训的三层）：D73 我以为它会说话（其实 `catch` 成了静默）；D74 我以为测过了（其实测的是源码，不是产物）；**D75 我以为环境一样（其实是干净的 CLI Node，宿主是 Electron 的 utility 进程）**。锁的三条要求：**跑产物、跑在宿主的形状里、并且验证过它能红**（`scripts/pdf-open-probe.mjs` 就是这三条的落点 —— 它自己打包、自己伪装成宿主，红过两次：一次 worker 找不到，一次 `window is not defined`）。
 
 ## 待补 docs
 
@@ -268,19 +272,20 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
 
 ## 最后更新
 
-2026-09-14，**S7 补（D74）**：用户实测出「PDF 取件全被拒（无法确定这份文档的总页数）」——
-根因是 **pdf.js 的 worker 在产物里找不到**（`import.meta.url` 被 esbuild 改写成产物路径，
-它去 `dist/pdf.worker.mjs` 找一个不存在的文件）。**这条路在用户手上从来没成功过**，
-而 `pnpm check` 一直全绿：测试跑源码、用户跑产物。修法：挂官方钩子 `globalThis.pdfjsWorker`、
-不再静默（`onError` → 输出通道）、补一条**打包之后**才跑的真打开 PDF 的锁。
-`pnpm check` 全绿：**289 测**（core 40 + ext 228 + pdf 21）/ 冒烟 74 + 146 + 74。
+2026-09-14，**S7 补 2（D75）**：D74 之后用户重测，取件**还是被拒** —— 但这次屏幕上有线索
+（`打不开这份 PDF（window is not defined）`，D74 那条"不再静默"当场回收了成本）。
+根因：pdf.js 那句 `isNodeJS` 判定里有一个为 Electron **渲染进程**写的条件，而 VS Code 的扩展宿主
+是 Electron 的 **utility** 进程 → pdf.js 误判成"浏览器" → 而它只支持浏览器环境下的 `url:` 参数
+（`getUrlProp` 要 `window.location`）。修法：**喂字节**（注入 `workspace.fs` 端口）+ 归一化成
+`Uint8Array`（pdf.js 拒绝 Buffer）。探针升级为**自带宿主伪装**（`process.type='utility'` +
+`process.versions.electron`），并验证过能红。`pnpm check` 全绿：**289 测** / 冒烟 74 + 146 + 74。
 
-紧接着同一天还有 **S5/S6 补（D73）**：用户报「框选PDF，并没有反应」—— 根因是
-`acquireVsCodeApi()` 一个 webview 只能成功调一次，而 pdf.js 先取走了，注入脚本那次调用抛了却被
-`catch` 成静默。修法：脚本接管并共享实例 + 注入位置提到上游脚本之前 + 两处"失败必须发声"，
-并给注入脚本补了 9 条行为夹具（线2 的注入脚本头一次有测试）。
+同日更早，**S7 补（D74）**：PDF 取件在用户手上从来没成功过 —— 产物里 pdf.js 的 worker
+（`import.meta.url` 被 esbuild 改写成产物路径，它去 `dist/pdf.worker.mjs` 找不存在的文件）。
+挂官方钩子 `globalThis.pdfjsWorker`；不再静默（`onError` → 输出通道）；补一条**打包之后**才跑的锁。
 
-在此之前的 2026-09-13：**S8 收工** + D58/D59/D60（三条"起宿主"的路）；
-再往后是 S9a 的一串实测返工（D67~D72：许可不可执行 / 假日志与重复讲解 / 落点画错 /
-整条路径印进标签 / 取件 60→400 行 / 讲完之后是死路）。
-计划内的 F0/F1/F2 + S1~S7 也早已全部做完。只剩**用户实操确认**（见「下次第一件事」）。
+再往前同一天还有 **S5/S6 补（D73）**：「框选PDF，并没有反应」= `acquireVsCodeApi()` 一个 webview
+只能成功调一次而 pdf.js 先取走了，注入脚本抛错被 `catch` 成静默。
+2026-09-13 及其后：**S8 收工** + D58/D59/D60（三条"起宿主"的路）+ S9a 的一串实测返工
+（D67~D72）。计划内的 F0/F1/F2 + S1~S7 早已全部做完 —— 现在只剩**用户实操确认**
+（见「下次第一件事」），没有待做的代码。

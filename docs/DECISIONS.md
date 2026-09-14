@@ -1616,6 +1616,69 @@ S9c 剩下的（折叠已完成步骤、面板上的「下一步」按钮、斜�
 
 ---
 
+## D75 「还是被拒」的下一层：pdf.js 在扩展宿主里被误判成浏览器，`url:` 那条路走不通
+
+**起因**：D74 修完（worker 挂上官方钩子 + 不再静默），用户重测 —— 框选、面板、日志都好，
+取件**还是被拒**，而且拒绝文案已经是我新写的那句（说明新产物生效）。这一回屏幕上有了线索：
+`Anchor` 输出通道里写着
+
+```
+框选那块取不到文字（打不开这份 PDF（window is not defined））—— 交给模型自己去取件
+取不到这份 PDF 的页数（打不开这份 PDF（window is not defined））—— 无法按页取件
+```
+
+**D74 那句"不再静默"当场回收了成本** —— 上一版这里一个字的线索都不会有。
+
+**证据（两步，都在本机复现）**：
+
+1. 先排除环境版本：`ELECTRON_RUN_AS_NODE=1 "<VS Code 的 Code.exe>"` 跑同一个探针 ——
+   **成功**（30 页）。所以不是"Electron 的 Node 不行"。
+2. 再看 pdf.js 的判定：
+
+   ```js
+   const isNodeJS = typeof process === "object" && process + "" === "[object process]" &&
+     !process.versions.nw &&
+     !(process.versions.electron && process.type && process.type !== "browser");
+   ```
+
+   最后半句是为 **Electron 的渲染进程**写的。而 VS Code 的扩展宿主现在是 **Electron 的
+   utility 进程**（`process.versions.electron` 有值、`process.type === "utility"`）——
+   于是 pdf.js 判定"我不是 Node"，走浏览器那条路。给它补上这个形状（`process.type = 'utility'`
+   且 `process.versions.electron` 有值）后，探针**一字不差地复现**了 `window is not defined`。
+3. 调用栈把最后一块拼上：`at getUrlProp … at getDocument` —— **`url:` 这个参数只有浏览器环境
+   支持**（pdf.js 要拿 `window.location` 去解析相对地址）。
+
+**修法（两处，都在 `createPdfJsSource` 里）**：
+
+1. **喂字节（`data`）而不是给路径（`url`）**，字节由注入的端口读 —— 真实现是
+   `fileSystemPort`（`workspace.fs`），顺带对 remote / 虚拟文件系统成立（`node:fs` 在那类
+   工作区里会**静默读到空**，这是 `fileSystemPort` 顶部早就写下的理由）。
+   端口是注入的，所以 `adapters/` 仍然零 vscode 依赖（D19）。
+   **不去掰 `isNodeJS`**：那要么去动 `process.versions`（影响整个宿主），要么依赖 pdf.js 的内部
+   判定 —— 两个都不该由我们改。喂字节绕开了整条环境判断：数据是我们读来的，
+   与 pdf.js 觉得自己在哪儿无关。
+2. **入口把那块字节归一化成真正的 `Uint8Array`**：pdf.js 明确拒绝 Node 的 `Buffer`
+   （`Please provide binary data as Uint8Array, rather than Buffer.`），
+   而 `node:fs` 读出来正好就是 Buffer —— 这条是**改完第一处之后测试当场红出来的**
+   （`真 fixture：fixture 是 30 页` 失败）。用 `Uint8Array.from` 复制一份：既换掉 Buffer 的身份，
+   也避开 Node 小块内存池（小 Buffer 共享同一块 ArrayBuffer，而 pdf.js 会 transfer 它）。
+
+**探针也跟着升级了（这是这一片最重要的部分）**：`scripts/pdf-open-probe.mjs` 现在**先把这个
+进程伪装成扩展宿主**（`process.type = 'utility'` + `process.versions.electron`，再动态 import
+pdf.js —— 它的判定是模块级常量，必须晚于伪装）。上一版的锁之所以"在我这儿是绿的"，
+就是因为它跑在**干净的 CLI Node** 里，而宿主是另一个形状。
+**并且验证过升级后的锁能红**：把 `data` 改回 `url:`，它报的正是 `window is not defined`。
+
+**这一片连着 D73/D74，凑成同一条教训的三层**：D73「我以为它会说话，其实它哑了」→
+D74「我以为测过了，其实测的不是产物」→ **D75「我以为环境一样，其实形状不一样」**。
+凡是"在我这儿是对的"，都要问一句：**我这儿是什么形状？**
+
+**验证数字**：`pnpm check` 全绿 —— **289 测**（core 40 + ext 228 + pdf 21）/
+冒烟 74 + 146 + 74。另外手工验过：真 fixture（30 页）、用户那份 arXiv
+（`2509.06342v1 (1).pdf`，26 页、第 1 页 4009 字）在**宿主形状**下都能打开。
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

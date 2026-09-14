@@ -37,7 +37,7 @@ import type {
 import { createCodeAdapter } from './adapters/CodeAdapter.ts';
 import { createPdfAdapter } from './adapters/PDFAdapter.ts';
 import { createPdfDocumentCache } from './adapters/pdf/pdfDocumentCache.ts';
-import { openPdfJsSource } from './adapters/pdf/pdfjsSource.ts';
+import { createPdfJsSource } from './adapters/pdf/pdfjsSource.ts';
 import { primaryLocationOf } from './playback/decorationPlan.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
 import {
@@ -127,10 +127,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   // S7：PDF 侧。缓存是有界 LRU（打开一份 30 页 PDF 要读盘 + 解析，同一轮讲解会问好几次），
   // 淘汰时释放句柄 —— 见 pdfDocumentCache.ts 的注释。
+  // 读字节走 `fsPort`（= `workspace.fs`）注入进去，而不是让适配器自己去 `node:fs`：
+  // remote / 虚拟文件系统只有前者读得到，而后者会**静默读到空**（D75）。
   // `onError` 接到输出通道（D74）：拿不到页数就会导致"按页取件全被拒"，
   // 而这条路上过去没有任何痕迹 —— 用户只看到闸门说"无法确定总页数"。
   const pdfAdapter = createPdfAdapter({
-    cache: createPdfDocumentCache(openPdfJsSource),
+    cache: createPdfDocumentCache(createPdfJsSource({ bytes: fsPort })),
     onError: (message) => note(message),
   });
 
