@@ -118,34 +118,31 @@ pnpm package:vsix # 先 build 再打 .vsix 安装包（线1+线2），产物落 
 
 ## 许可
 
-**从这里开始不要照抄上游的说法：本仓库自身的代码已改为专有软件（All rights reserved），不再是 MIT（D85）。**
-分发形态是**本地安装的 `.vsix`**，不带源码；线1 的安装包里带 `LICENSE.txt`（最终用户许可协议，
-禁止再分发），线2 的安装包里带 `LICENSE`（Apache-2.0）。
-
-**两线的许可必须不同，这不是选择而是约束**：
+**整个仓库以 [Apache-2.0](LICENSE) 开源（D87）。** 两线同一许可，原因是线2 的上游本身就是
+Apache-2.0 —— 把 Apache-2.0 的派生作品再套一个更严或更松的许可都会产生条款冲突，统一成
+Apache-2.0 最省事，也保留了专利授权与署名要求。
 
 | | 线1 `anchor-explain` | 线2 `anchor-pdf` |
 |---|---|---|
-| 自身许可 | **专有**（`LICENSE.txt`，禁止再分发） | **Apache-2.0**（fork 的上游许可要求，见下） |
-| 能不能要求"别人不得再分发" | **能** | **不能** —— Apache-2.0 §4 已经授予任何拿到它的人再分发的权利 |
+| 许可 | Apache-2.0 | Apache-2.0（fork 的上游许可，见下） |
+| 能不能再分发 | 能 —— 保留 `LICENSE` / `NOTICE` 与署名即可 | 同左 |
 
-- 线1 的产物里**打包**了 `pdfjs-dist`（**Apache-2.0**，S7 的 PDF 取件要用）。把 Apache-2.0 组件
-  打进专有产品是允许的，但**必须保留它的许可与署名**，所以包里同时带
+- 根目录 [`LICENSE`](LICENSE) 是 Apache-2.0 原文，[`NOTICE`](NOTICE) 列出第三方组件与派生来源。
+- 线1 的产物里**打包**了 `pdfjs-dist`（**Apache-2.0**，PDF 取件要用）：署名保留在
   [`THIRD_PARTY_NOTICES.md`](packages/extension-anchor/THIRD_PARTY_NOTICES.md)
   （产物里那条 `/*!` 注释是唯一还留着的署名，有断言守着）。
 - 线2 的 PDF 扩展是
-  [`mathematic-inc/vscode-pdf`](https://github.com/mathematic-inc/vscode-pdf) 的 fork（**Apache-2.0**），
-  因此那个包整体沿用 Apache-2.0：
+  [`mathematic-inc/vscode-pdf`](https://github.com/mathematic-inc/vscode-pdf) 的 fork（**Apache-2.0**）：
 
-  - 上游 `LICENSE` 原文逐字保留；上游**没有 `NOTICE` 文件**，所以没有需要一并保留的 NOTICE
+  - 上游 `LICENSE` 原文逐字保留；上游**没有 `NOTICE` 文件**，所以没有需要一并保留的上游 NOTICE
     （Apache-2.0 §4(d) 的前提是原作品包含 NOTICE）
   - 改动逐条声明在 [`packages/extension-anchor-pdf/MODIFICATIONS.md`](packages/extension-anchor-pdf/MODIFICATIONS.md)，
     含上游 commit SHA（作 diff 基线）
   - **已移除上游品牌**：`publisher` / `displayName` 不再使用上游标识，上游的募捐弹窗也已删除
-  - **不上架 Marketplace**（上游 `CONTRIBUTING.md` 要求先开 Discussion），`.vsix` 只做本地安装
+  - **不上架 Marketplace**（上游 `CONTRIBUTING.md` 要求先开 Discussion），分发走仓库 Release 的 `.vsix`
 
-**所以要"只有我能分发"是能做到的 —— 前提是只分发行1。** 只要把线2 的安装包也交出去，
-线2 那部分就等于按 Apache-2.0 授权给了对方（可以再分发）。要让 PDF 那条线也受同一约束，
-只剩"不分发线2"这一条路。
+**源码已在 GitHub 公开，所以"只有我能分发"这条不再成立** —— 这是开源本身的题中之义。
+你仍然保留的是：署名权、商标（名字/图标），以及别人再分发时必须保留 `LICENSE` / `NOTICE`
+与署名的义务。
 
-安装包怎么打、怎么装、怎么给出去：见 [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md)。
+想打 `.vsix` 安装包（不想让人从源码构建时）：见 [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md)。

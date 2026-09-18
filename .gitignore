@@ -29,6 +29,8 @@ release/
 # 一律 `.tmp-` 开头，方便一眼认出是垃圾；**别拿它存任何要看的东西**。
 .tmp-*.txt
 .tmp-*.json
+.tmp-*.py
+.tmp-*.bin
 
 # 操作系统
 .DS_Store

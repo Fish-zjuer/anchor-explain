@@ -343,7 +343,8 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
 - **D85（新能力）**「把这个插件变成可分发的形式」：`.vsix` 本地安装包（**双击即装**），
   `pnpm package:vsix` 一条命令出两个包，产物落 `release/`。包里**没有源码、没有任何 key** ——
   打包脚本把 `.vsix` 读回来核"禁带"清单（src/test/map/lockfile/env），再把每个 entry 解压出来扫密钥特征。
-  许可分层是**约束**不是选择：线1 改专有（`packages/extension-anchor/LICENSE.txt`，禁止再分发），
+  许可分层是**约束**不是选择：线1 改专有（`packages/extension-anchor/LICENSE.txt`，禁止再分发）
+  —— **D87 已把线1 也改成 Apache-2.0，这一条作废**，
   线2 是 Apache-2.0 的 fork、**只能**留在 Apache-2.0 —— "别人不能二次分发"对线2 做不到，除非不分发它。
   操作手册在 `docs/DISTRIBUTION.md`（怎么打、怎么装、怎么给、许可边界、常见报错）。
 - **D86（分发修正）**「作者是我的 GitHub 名」+「详情页漏的信息太多」：publisher
@@ -352,6 +353,12 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   安装包里的 README 换成**用户版** `README.dist.md`（`--readme-path` 指定，源码入口表 /
   pnpm 命令 / 切片编号不再出门）。**换 ID 的代价**：SecretStorage 按 ID 隔离要重存 Key、
   旧 `anchor.*` 联接要手动删 —— 步骤在 `docs/DISTRIBUTION.md` §3。
+- **D87（许可反转）**「开源到 GitHub，挂到我的号上」：**整仓改 Apache-2.0**，仓库公开在
+  `github.com/Fish-zjuer/anchor-explain`。D85 定的"只有我能分发"随之作废（源码公开后
+  这条在事实上不成立）。落地：根新增 `LICENSE` + `NOTICE`，线1 的 `LICENSE.txt`
+  从专有 EULA 换成 Apache-2.0 原文（它随 `.vsix` 分发），两线 `package.json` 补 `repository`；
+  开源前清掉 README 里 4 处本机路径（`C:\Users\29927`），并扫过全库与全部历史提交 ——
+  **没有真密钥、没有 `.env` 进过库**，所以历史无需重写。`docs/` 的过程记录全部保留公开。
 
 `pnpm check` 全绿：**318 测**（core 48 / ext-A 244 / pdf 26）、四个冒烟 **48 + 111 + 11 + 52**。
 （冒烟条数改按**干净重定向**的输出数；先前几节是数在换行被合并过的日志上，偏低。）

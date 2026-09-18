@@ -5,7 +5,12 @@
   "version": "0.1.0",
   "private": true,
   "publisher": "Fish-zjuer",
-  "license": "SEE LICENSE IN LICENSE.txt",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fish-zjuer/anchor-explain.git",
+    "directory": "packages/extension-anchor"
+  },
   "type": "module",
   "engines": {
     "vscode": "^1.90.0"

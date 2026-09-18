@@ -2351,10 +2351,50 @@ n+1 拍：**第 1 拍只铺块级底色**，之后每拍点亮一个子高亮；
 
 ---
 
+## D87 开源到 GitHub：整仓 Apache-2.0（D85 的"专有分发"作废）
+
+**起因**（用户原话）：「我改了想法了，开源到github上吧。挂到我的号上。」
+
+**决策**：
+
+1. **整个仓库以 Apache-2.0 开源**，挂到 `github.com/Fish-zjuer/anchor-explain`。
+2. **线1 的许可从专有 EULA 改回 Apache-2.0**：根目录新增 `LICENSE`（原文）与 `NOTICE`
+   （第三方组件与派生来源），`packages/extension-anchor/LICENSE.txt` 换成 Apache-2.0 原文
+   （它随 `.vsix` 分发，包里那份也必须是正确的许可），`package.json` 的
+   `license` 从 `SEE LICENSE IN LICENSE.txt` 改回 `Apache-2.0`。
+3. **D85 里"别人不能二次分发"的目标作废** —— 源码公开之后这条在事实上不成立，
+   继续写在文档里就是从"现实"变成"假话"（D73 同类）。现在保留的是署名权、商标，
+   以及再分发时必须带 `LICENSE` / `NOTICE` 与署名的义务。
+4. **两线统一 Apache-2.0**，不是"随便挑一个"：线2 是 Apache-2.0 的 fork，把 Apache-2.0 的
+   派生作品再套一个更严或更松的许可都会产生条款冲突（MIT 缺 Apache 的专利授权与
+   "声明改动"要求）；统一最省事，也最诚实。
+
+**开源前做的清理（都是"别把不该公开的东西公开"这一类）**：
+
+- `packages/extension-anchor/README.md` 里 **4 处 `C:\Users\29927`**（本机用户名）
+  换成 `<仓库根目录>` / `code .`。开发文档照常公开，但本机路径不是给别人看的。
+- **密钥扫描**：扫全部已跟踪文件，命中的只有冒烟脚本里的**假值** `sk-from-secret-storage`；
+  再查全部历史提交的路径，`.env` / 凭据类文件**从未进过库** → 历史是干净的，
+  可以直接公开（不需要重写历史来洗掉密钥）。
+- `.gitignore` 补 `.tmp-*.py` / `.tmp-*.bin`（原先只有 `.txt` / `.json`，
+  临时脚本会冒出来污染 `git status`）。
+- `release/` 与 `*.vsix` 本来就被忽略，不会上传；`packages/*/dist/` 同理。
+- 两线 `package.json` 补 `repository`（指向 GitHub），顺带**根治**了 D85 时遇到的
+  vsce 报错 `Couldn't detect the repository…`（当时只能把 README 的相对链接改成代码块绕过）。
+
+**刻意保留的部分**：`docs/` 下的 DECISIONS / STATE / CONTRACTS 全部公开 ——
+它们就是这个项目的过程记录，藏着反而让仓库变得不可理解；D85 / D86 原文不改，
+只在"已被取代"表里标注，历史决策就是历史决策。
+
+**状态**：生效。
+
+---
+
 ## 已被取代 / 已废弃（保留记录，勿重蹈）
 
 | 原计划 | 取代者 | 说明 |
 |---|---|---|
+| 线1 专有许可（`LICENSE.txt` EULA，禁止再分发） | D87 | 改主意开源：整仓 Apache-2.0，"只有我能分发"不再成立 |
 | MCP server 双出口 + `SocketBridge` + `RenderBridge` | D14 | 单机单进程场景的过度设计 |
 | React + Tailwind 做侧边栏 | D12 | 唯一 UI 只剩一段文字 |
 | `CustomReadonlyEditorProvider` 接管 `*.pdf` | D23 | 会劫持默认 PDF 打开 |

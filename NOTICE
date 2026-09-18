@@ -1,0 +1,16 @@
+Anchor Explain
+Copyright 2026 Fish-zjuer
+
+This product includes software developed at / derived from the following
+third-party projects:
+
+1. packages/extension-anchor-pdf is a fork of
+   mathematic-inc/vscode-pdf (https://github.com/mathematic-inc/vscode-pdf),
+   licensed under the Apache License, Version 2.0.
+   The upstream commit SHA used as the diff baseline and the itemized list of
+   modifications are recorded in packages/extension-anchor-pdf/MODIFICATIONS.md.
+
+2. pdfjs-dist (Mozilla PDF.js), licensed under the Apache License, Version 2.0,
+   is vendored by packages/extension-anchor. Required attribution is kept in
+   packages/extension-anchor/THIRD_PARTY_NOTICES.md and in the bundled
+   artifact (extension.cjs).

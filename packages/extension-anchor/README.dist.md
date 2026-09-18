@@ -53,5 +53,6 @@
 
 ## 许可
 
-本扩展为专有软件，随包附有 `LICENSE.txt`：仅限安装者本人使用，禁止再分发。
+依 **Apache-2.0** 开源，全文见包内 `LICENSE.txt`（源码在
+[github.com/Fish-zjuer/anchor-explain](https://github.com/Fish-zjuer/anchor-explain)）。
 包内包含的第三方组件及其许可见 `THIRD_PARTY_NOTICES.md`。

@@ -197,7 +197,7 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 ### 0. 前提（只做一次，在仓库根）
 
 ```bash
-cd C:\Users\29927\Desktop\anchor-explain
+cd <仓库根目录>          # 你 clone 下来的那一层（里面有 pnpm-workspace.yaml）
 pnpm install
 pnpm build
 ```
@@ -226,10 +226,12 @@ pnpm build
 
 ### 1. 用 **VS Code（桌面版）** 打开**仓库根目录**
 
-必须打开 `C:\Users\29927\Desktop\anchor-explain` **本身**：
+必须打开**仓库根目录本身**（你 clone 下来的那一层，里面有 `.vscode/` 与 `pnpm-workspace.yaml`），
+而不是它的任何子目录：
 
 ```bash
-code C:\Users\29927\Desktop\anchor-explain
+cd <仓库根目录>
+code .
 ```
 
 `.vscode/launch.json` 与 `.vscode/tasks.json` 都在这里，F5 只有在这个窗口里才有意义。
@@ -330,7 +332,7 @@ pnpm devhost:pdf      # 线2（PDF 视图）
 |---|---|---|
 | 按 F5 **什么都没发生**（连报错框都没有） | 有三种可能，**先按下面「F5 完全没反应的查法」走一遍** | 见下方小节 |
 | **新窗口起来了、也稳定，但左侧没有 Anchor 图标、命令面板搜不到 `Anchor:`** | **开发路径没解析对**（相对路径的经典坑，D59）——VS Code 只在日志里写一行，不弹错 | 用 `pnpm devhost`（它算绝对路径）。想确认是不是这个原因：`%APPDATA%\Code\logs\<最新>\window*/renderer.log` 里搜 `Error scanning extensions` |
-| 按 F5 没反应，或弹出一个"选择环境"下拉 | 当前窗口不是仓库根目录 / 这个窗口里没有 launch 配置 | 用 `code C:\Users\29927\Desktop\anchor-explain` 重开；或直接用方式 B |
+| 按 F5 没反应，或弹出一个"选择环境"下拉 | 当前窗口不是仓库根目录 / 这个窗口里没有 launch 配置 | 在仓库根目录用 `code .` 重开；或直接用方式 B |
 | F5 报「preLaunchTask "anchor: watch" 已终止，退出代码 1」 | 没跑 `pnpm install`（找不到 esbuild），或 `node` 不在 PATH | 在仓库根跑 `pnpm install`；看底部"终端"面板里 `anchor: watch` 的输出 |
 | 新窗口里命令面板搜不到 `Anchor:` | 扩展没被载入：产物缺失/损坏 | 在那个新窗口执行 `Developer: Show Running Extensions`，看 `Fish-zjuer.anchor-explain` 在不在；不在就回仓库根重跑 `pnpm build` 再起一次 |
 | 有 `Anchor:` 命令，但 `Ctrl+Shift+A` 没反应 | `when: editorTextFocus` 不满足（焦点在资源管理器/终端），或键被别的扩展抢了 | 先点一下 `main.c` 的编辑区；或改用命令面板；或加 `--disable-extensions` 重起方式 B |

@@ -1,0 +1,27 @@
+name: check
+
+# 与本机 `pnpm check` 同门：typecheck → test → build → 四个冒烟。
+# 它是"这份代码能不能构建、有没有跑坏"的公开证明，不是部署流水线。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm 版本从 package.json 的 packageManager 字段读（pnpm@11.x），不在这里另写一份。
+      - uses: pnpm/action-setup@v4
+
+      # engines.node >= 24，且测试用 node --test 直接跑 .ts（靠 Node 的类型剥离）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm check

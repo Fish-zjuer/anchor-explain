@@ -158,7 +158,15 @@ const bundleText = rawBundle.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
 
 check(manifest.publisher === 'Fish-zjuer', 'publisher 是作者本人、且不沿用上游（商标要求，D86）', String(manifest.publisher));
 check(!/mathematic/i.test(manifest.displayName ?? ''), 'displayName 里没有上游品牌', String(manifest.displayName));
-check(manifest.author === undefined && manifest.repository === undefined, 'author / repository 没指回上游');
+// 判据是"**不许指回上游**"（那是上游的商标/归属，不是我们的），不是"不许有 repository"。
+// D87 开源后我们自己填了 repository → 这里从"必须为空"改成"不得指向上游"。
+const repoUrl =
+  typeof manifest.repository === 'string' ? manifest.repository : (manifest.repository?.url ?? '');
+check(
+  manifest.author === undefined && !/mathematic/i.test(repoUrl),
+  'author / repository 没指回上游（repository 可以指我们自己的仓库，但不能是上游的）',
+  repoUrl || '(未填 repository)',
+);
 check(!/mathematic/i.test(bundleText), '产物里没有上游品牌字样（含版权头以外的引用）');
 check(!bundleText.includes('Support Mathematic'), '上游的募捐弹窗已经删掉（不再替用户做主）');
 

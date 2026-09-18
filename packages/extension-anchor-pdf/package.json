@@ -6,6 +6,11 @@
   "private": true,
   "publisher": "Fish-zjuer",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fish-zjuer/anchor-explain.git",
+    "directory": "packages/extension-anchor-pdf"
+  },
   "type": "module",
   "engines": {
     "vscode": "^1.90.0"
