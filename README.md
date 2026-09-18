@@ -1,5 +1,7 @@
 # Anchor Explain
 
+**[English README](README.en.md) · [贡献指南 CONTRIBUTING.md](CONTRIBUTING.md)**
+
 跨场景 AI 截图讲解系统。核心命题：
 
 > **截图 = 带地址的锚点，不是像素包。**
@@ -108,6 +110,8 @@ pnpm package:vsix # 先 build 再打 .vsix 安装包（线1+线2），产物落 
 
 | 文件 | 内容 |
 |---|---|
+| `README.en.md` | **英文版** README（对外入口，内容与本文档对齐） |
+| `CONTRIBUTING.md` | **贡献指南**：怎么起环境、`pnpm check` 这道门、容易踩坏的三条规则 |
 | `AGENTS.md` | 工作协议：切片纪律、读文件预算、报告格式 |
 | `docs/STATE.md` | 当前切片 + **下次第一件事**（续接锚点） |
 | `docs/SLICES.md` | F1/F2 + S1~S8 切片计划，含硬门与每片的回退点 |
