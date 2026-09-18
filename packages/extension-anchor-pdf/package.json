@@ -4,7 +4,7 @@
   "description": "线2 的 PDF 侧：把 PDF 上框选的一块变成带地址的锚点（第 N 页 + 归一化 bbox），并把位置交给线1 讲解。fork 自 mathematic-inc/vscode-pdf（Apache-2.0），改动见 MODIFICATIONS.md。",
   "version": "0.1.0",
   "private": true,
-  "publisher": "anchor",
+  "publisher": "Fish-zjuer",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {

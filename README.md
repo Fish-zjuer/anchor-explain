@@ -44,7 +44,7 @@
 
 ```
 packages/core                  @anchor/core —— 类型契约 / ports / 纯函数（零 vscode 依赖）
-packages/extension-anchor      线1 代码编辑器扩展（ID anchor.anchor-explain）
+packages/extension-anchor      线1 代码编辑器扩展（ID Fish-zjuer.anchor-explain）
 packages/extension-anchor-pdf  线2 PDF 扩展（fork，Apache-2.0；改动见该包 MODIFICATIONS.md）
 scripts/make-fixture-pdf.mjs   生成 30 页验收样本 PDF
 scripts/smoke-extension.mjs    产物冒烟：能加载 / 命令注册与声明对齐 / 视图与图标在不在 / webview 资源在不在 / 两个替身都已退出产物 / 真跑一遍开始面板的宿主侧

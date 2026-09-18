@@ -197,6 +197,10 @@ for (const n of names) {
       '--no-dependencies',
       '--skip-license',
       '--allow-missing-repository',
+      // README 用**用户版**：仓库里的 README.md 是开发文档（源码入口表、pnpm 命令、切片编号），
+      // 那些不该跟着安装包出门。用户版单独一份，在这里指给 vsce（D86）。
+      '--readme-path',
+      'README.dist.md',
       '--out',
       outPath,
     ],

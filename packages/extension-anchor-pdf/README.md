@@ -11,7 +11,7 @@
 （写成代码块而不是链接：这份 README 会随 `.vsix` 一起分发，相对链接在 Extensions 视图里是坏的，
 而 vsce 对"没有 repository 却带相对链接"直接报错 —— 我们没有 repository 也不想要一个假的。）
 
-- 扩展 ID：`anchor.anchor-pdf`（线1 的 `PEER_EXTENSION_ID` 就是它）
+- 扩展 ID：`Fish-zjuer.anchor-pdf`（线1 的 `PEER_EXTENSION_ID` 就是它）
 - 入口：`src/extension.ts` → 产物 `dist/extension.cjs`
 - **不劫持**：`customEditors` 里写了 `priority: "option"`，用户的默认 PDF 打开方式不受影响。
   想用我们的视图 → 命令面板 `Anchor: 用 Anchor 打开 PDF`

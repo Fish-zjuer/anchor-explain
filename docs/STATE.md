@@ -346,6 +346,12 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   许可分层是**约束**不是选择：线1 改专有（`packages/extension-anchor/LICENSE.txt`，禁止再分发），
   线2 是 Apache-2.0 的 fork、**只能**留在 Apache-2.0 —— "别人不能二次分发"对线2 做不到，除非不分发它。
   操作手册在 `docs/DISTRIBUTION.md`（怎么打、怎么装、怎么给、许可边界、常见报错）。
+- **D86（分发修正）**「作者是我的 GitHub 名」+「详情页漏的信息太多」：publisher
+  `anchor` → **`Fish-zjuer`**（扩展 ID 变为 `Fish-zjuer.anchor-explain` / `Fish-zjuer.anchor-pdf`，
+  命令/设置命名空间不变；两条线互查对端的**硬编码 ID**与提示语、测试、三份冒烟同步改）；
+  安装包里的 README 换成**用户版** `README.dist.md`（`--readme-path` 指定，源码入口表 /
+  pnpm 命令 / 切片编号不再出门）。**换 ID 的代价**：SecretStorage 按 ID 隔离要重存 Key、
+  旧 `anchor.*` 联接要手动删 —— 步骤在 `docs/DISTRIBUTION.md` §3。
 
 `pnpm check` 全绿：**318 测**（core 48 / ext-A 244 / pdf 26）、四个冒烟 **48 + 111 + 11 + 52**。
 （冒烟条数改按**干净重定向**的输出数；先前几节是数在换行被合并过的日志上，偏低。）

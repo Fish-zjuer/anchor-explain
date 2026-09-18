@@ -535,7 +535,7 @@ const vscodeStub = {
   //      绝不能抛一句 "command 'anchorPdf.flashRegion' not found"。
   extensions: {
     getExtension: (id) =>
-      peerPdfInstalled && id === 'anchor.anchor-pdf'
+      peerPdfInstalled && id === 'Fish-zjuer.anchor-pdf'
         ? {
             id,
             packageJSON: {
@@ -606,7 +606,7 @@ const memoryStub = {
 };
 ext.activate({
   subscriptions: { push: (...items) => subscriptions.push(...items) },
-  globalStorageUri: { fsPath: path.join(ROOT, '.tmp-smoke', 'User', 'globalStorage', 'anchor.anchor-explain') },
+  globalStorageUri: { fsPath: path.join(ROOT, '.tmp-smoke', 'User', 'globalStorage', 'Fish-zjuer.anchor-explain') },
   workspaceState: memoryStub,
   // S3：apiKey 默认从 SecretStorage 读（§6 的 preferSecretStorage），所以桩必须有一个
   secrets: {

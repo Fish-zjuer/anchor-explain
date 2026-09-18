@@ -285,7 +285,7 @@ const REQUIREMENT_REASON: Record<StartRequirement, string> = {
   // 说清缺什么，并**指出下一步按哪颗按钮**（D61）：灰按钮只写"缺钱"不写"去哪儿取"，
   // 就是把这句提示变成一句废话。名字必须写全 —— 面板上的顺序会变，"上面那颗"会过期。
   provider: '还没有配 anchorExplain.providers —— 先用「配置模型端点」填一下（三个输入框）',
-  peer: '没有安装线2（anchor.anchor-pdf）',
+  peer: '没有安装线2（Fish-zjuer.anchor-pdf）',
   session: '现在没有进行中的讲解',
   queue: '队列是空的 —— 先选中一段，按「把选中的一段加入队列」',
   // D83：还没有任何存档时的理由。同样要**指出下一步按哪颗按钮**（D61）——

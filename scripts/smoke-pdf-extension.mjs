@@ -66,7 +66,7 @@ const vscodeStub = {
     parse: (s) => ({ ...makeUri(s), toString: () => s }),
   },
   extensions: {
-    getExtension: (id) => (peerInstalled && id === 'anchor.anchor-explain' ? { id } : undefined),
+    getExtension: (id) => (peerInstalled && id === 'Fish-zjuer.anchor-explain' ? { id } : undefined),
   },
   window: {
     get activeTextEditor() {
@@ -156,7 +156,7 @@ const bundleText = rawBundle.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
   String.fromCharCode(parseInt(hex, 16)),
 );
 
-check(manifest.publisher === 'anchor', 'publisher 不再沿用上游（商标要求）', String(manifest.publisher));
+check(manifest.publisher === 'Fish-zjuer', 'publisher 是作者本人、且不沿用上游（商标要求，D86）', String(manifest.publisher));
 check(!/mathematic/i.test(manifest.displayName ?? ''), 'displayName 里没有上游品牌', String(manifest.displayName));
 check(manifest.author === undefined && manifest.repository === undefined, 'author / repository 没指回上游');
 check(!/mathematic/i.test(bundleText), '产物里没有上游品牌字样（含版权头以外的引用）');

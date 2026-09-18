@@ -17,7 +17,7 @@
 而 `pdfjs-dist/legacy` 是官方给 Node 用的入口。它是 ESM-only，
 CommonJS 产物里没法用 `require` 去外部加载，所以只能打包。
 
-**署名放在哪**：`src/adapters/pdf/pdfjsSource.ts` 顶部有一条 `/*! ... */` 注释 ——
+**署名放在哪**：打包产物 `extension.cjs` 的末尾有一条 `/*! ... */` 注释 ——
 esbuild 的 `legalComments` 会把它原样保留到产物末尾。
 `scripts/smoke-extension.mjs` 有一条断言守着它（注释被删/被压掉时会红），
 因为"打包了别人的代码却不带署名"是这类问题里最难在事后发现的一种。

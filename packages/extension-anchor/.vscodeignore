@@ -25,6 +25,8 @@ pdfjs_version.txt
 **/.env
 **/.env.*
 *.vsix
+README.dist.md
+README.md
 .gitattributes
 pnpm-lock.yaml
 !dist/**

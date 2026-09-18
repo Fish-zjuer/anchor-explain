@@ -160,7 +160,7 @@ test('没装线2：两个线2 动作灰掉并且理由是同一句（不静默�
   for (const id of ['openPdf', 'selectRegion']) {
     const action = actionOf(model, id);
     assert.equal(action.enabled, false, id);
-    assert.ok(action.note.includes('anchor.anchor-pdf'), action.note);
+    assert.ok(action.note.includes('Fish-zjuer.anchor-pdf'), action.note);
   }
   assert.equal(model.status[1]?.tone, 'warn');
   assert.ok(model.status[1]?.value.includes('未安装'));

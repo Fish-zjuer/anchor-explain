@@ -80,7 +80,14 @@ release/anchor-pdf-0.1.0.vsix       线2：PDF 视图（4.62 MB）
 - **继续开发**：什么都不用做 —— 联接版就是最新代码（`pnpm build` + 重载窗口即生效），
   `.vsix` 只拿来发给别人；
 - **想测打包出来的产物**：先 `pnpm unlink:ext`，再 `code --install-extension …`；
-  测完想回到开发态：`code --uninstall-extension anchor.anchor-explain`（线2 同理）→ `pnpm link:ext`。
+  测完想回到开发态：`code --uninstall-extension Fish-zjuer.anchor-explain`（线2 同理）→ `pnpm link:ext`。
+
+> **D86 改过 publisher**（`anchor` → `Fish-zjuer`）：扩展 ID 变了，旧 ID 的联接/安装
+> 不会被 `pnpm unlink:ext` 认出来（它按当前 manifest 算目录名）。改 publisher 后第一次
+> `pnpm link:ext` 之前，把旧的 `~/.vscode/extensions/anchor.anchor-explain-0.0.0` 与
+> `anchor.anchor-pdf-0.0.0` 两个联接删掉（`cmd /c rmdir "<目录>"`，只删联接不碰源码）。
+> SecretStorage 按**扩展 ID**隔离：换 ID 后要在新扩展里重新存一次 API Key；
+> `anchorExplain.*` 设置是全局的，不受影响。
 
 ## 4. 首次使用要配一次模型端点（每个装它的人自己配）
 

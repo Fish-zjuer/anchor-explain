@@ -112,7 +112,7 @@
 
 | 字段 | 上游 | 现在 | 为什么 |
 |---|---|---|---|
-| `name` | `vscode-pdf` | `anchor-pdf` | 与线1 的 `anchor-explain` 配成一对，扩展 ID 是 `anchor.anchor-pdf`（`CONTRACTS` §9 里线1 的 `PEER_EXTENSION_ID` 就写着它） |
+| `name` | `vscode-pdf` | `anchor-pdf` | 与线1 的 `anchor-explain` 配成一对，扩展 ID 是 `Fish-zjuer.anchor-pdf`（`CONTRACTS` §9 里线1 的 `PEER_EXTENSION_ID` 就写着它） |
 | `publisher` | `mathematic` | `anchor` | **商标要求**：发布者标识不能沿用上游 |
 | `displayName` | `PDF Viewer` | `Anchor PDF 视图` | 同上 |
 | `author` | `Mathematic Inc` | 删除 | 署名在 `LICENSE` 与上面的 fork 基线里，不在 `publisher` 旁边 |

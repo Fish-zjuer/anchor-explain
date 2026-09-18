@@ -68,10 +68,10 @@ const viewerHtml = rawViewerHtml
 
 const resourcePathRegex = /\/[^/]+?\.\w+$/u;
 
-/** 线1 的扩展 ID。`CONTRACTS` §5.1 要求对端缺失时**明确提示，不静默失败**。 */
-const PEER_EXTENSION_ID = "anchor.anchor-explain";
+/** 线1 的扩展 ID。`CONTRACTS` §5.1 要求对端缺失时**明确提示，不静默失败**。D86 起 publisher 换成作者本人。 */
+const PEER_EXTENSION_ID = "Fish-zjuer.anchor-explain";
 const PEER_MISSING_MESSAGE =
-  "Anchor：没有安装线1（anchor.anchor-explain）扩展，框选结果无处可交。请先安装它。";
+  "Anchor：没有安装线1（Fish-zjuer.anchor-explain）扩展，框选结果无处可交。请先安装它。";
 
 /**
  * 按下框选但页面还没握上手时的两句话（D73）。

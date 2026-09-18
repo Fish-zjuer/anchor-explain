@@ -3,7 +3,9 @@
 把**当前选区**变成带地址的锚点：AI 讲解 → 校验 → 逐步高亮流转。走 VS Code 原生能力
 （`TextEditorDecorationType` + `setDecorations` + `revealRange`），**纯视觉，不修改文件**。
 
-- 扩展 ID：`anchor.anchor-explain`（publisher `anchor`，见 `DECISIONS.md` D27）
+- 扩展 ID：`Fish-zjuer.anchor-explain`（publisher `Fish-zjuer`；D27 定的 `anchor` 在 D86 换成作者本人，
+  命令与设置命名空间 `anchorExplain.*` 不变。**分发给别人的 README 是 `README.dist.md`**，
+  这份 README 是开发文档，不进安装包）
 - 入口：`src/extension.ts` → 打包产物 `dist/extension.cjs`（CommonJS，宿主的 `require` 不吃 ESM 入口）
 
 ## 现在到哪了
@@ -330,7 +332,7 @@ pnpm devhost:pdf      # 线2（PDF 视图）
 | **新窗口起来了、也稳定，但左侧没有 Anchor 图标、命令面板搜不到 `Anchor:`** | **开发路径没解析对**（相对路径的经典坑，D59）——VS Code 只在日志里写一行，不弹错 | 用 `pnpm devhost`（它算绝对路径）。想确认是不是这个原因：`%APPDATA%\Code\logs\<最新>\window*/renderer.log` 里搜 `Error scanning extensions` |
 | 按 F5 没反应，或弹出一个"选择环境"下拉 | 当前窗口不是仓库根目录 / 这个窗口里没有 launch 配置 | 用 `code C:\Users\29927\Desktop\anchor-explain` 重开；或直接用方式 B |
 | F5 报「preLaunchTask "anchor: watch" 已终止，退出代码 1」 | 没跑 `pnpm install`（找不到 esbuild），或 `node` 不在 PATH | 在仓库根跑 `pnpm install`；看底部"终端"面板里 `anchor: watch` 的输出 |
-| 新窗口里命令面板搜不到 `Anchor:` | 扩展没被载入：产物缺失/损坏 | 在那个新窗口执行 `Developer: Show Running Extensions`，看 `anchor.anchor-explain` 在不在；不在就回仓库根重跑 `pnpm build` 再起一次 |
+| 新窗口里命令面板搜不到 `Anchor:` | 扩展没被载入：产物缺失/损坏 | 在那个新窗口执行 `Developer: Show Running Extensions`，看 `Fish-zjuer.anchor-explain` 在不在；不在就回仓库根重跑 `pnpm build` 再起一次 |
 | 有 `Anchor:` 命令，但 `Ctrl+Shift+A` 没反应 | `when: editorTextFocus` 不满足（焦点在资源管理器/终端），或键被别的扩展抢了 | 先点一下 `main.c` 的编辑区；或改用命令面板；或加 `--disable-extensions` 重起方式 B |
 | 按 `Esc` 没反应、高亮清不掉 | 焦点在终端/别的输入框里，Esc 到不了命令 | 先点一下编区或侧边栏面板；或点面板里的「退出」；或命令面板 `Anchor: 退出讲解` |
 | 弹了「只放了光标，没有选中内容」 | 这就是 S2 的行为：没选区不猜，问你要不要讲整份 | 点「讲解整个文件」，或先选中一段再按一次 |
@@ -388,7 +390,7 @@ pnpm devhost:pdf      # 线2（PDF 视图）
 在新窗口里按 `Ctrl+Shift+P` 搜 `Anchor`：
 - **搜得到 `Anchor:` 命令** → 扩展载入了。此时没有活动栏图标 = 看上一张表的图标那一行
 - **搜不到** → 扩展没载入（**先去第零步看日志**）；也可以在新窗口执行
-  `Developer: Show Running Extensions`，看 `anchor.anchor-explain` 在不在
+  `Developer: Show Running Extensions`，看 `Fish-zjuer.anchor-explain` 在不在
 
 > **还有两个常见原因**：① 已经有一个调试会话"卡"着（比如别的扩展起的）——
 > 命令面板执行 `调试: 停止调试` 再试；② 在**仓库根**这个窗口操作，

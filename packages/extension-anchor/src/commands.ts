@@ -84,8 +84,8 @@ import {
 import { createEditorPort } from './vscode/ports/editorPort.ts';
 import { countLines, createFileSystemPort } from './vscode/ports/fileSystemPort.ts';
 
-/** 线2 的扩展 ID（D27）。对端缺失时必须明确提示，不静默失败。 */
-const PDF_EXTENSION_ID = 'anchor.anchor-pdf';
+/** 线2 的扩展 ID（D27 定名，D86 起挂到作者自己的 publisher 下）。对端缺失时必须明确提示，不静默失败。 */
+const PDF_EXTENSION_ID = 'Fish-zjuer.anchor-pdf';
 
 /**
  * 线2 装没装。三处问的是同一个问题（`revealStep` / `runStartAction` / `showState`），
@@ -449,7 +449,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       if (peer() === undefined) {
         // §5.1：对端缺失时明确提示，不静默失败
         void vscode.window.showWarningMessage(
-          'Anchor：没有安装线2（anchor.anchor-pdf），无法把 PDF 滚到这一页。',
+          'Anchor：没有安装线2（Fish-zjuer.anchor-pdf），无法把 PDF 滚到这一页。',
         );
         return;
       }
@@ -769,7 +769,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     if (!action) return; // 表里没有的 id：不是我们的按钮，丢掉
 
     if (action.requires === 'peer' && peer() === undefined) {
-      void vscode.window.showWarningMessage('Anchor：没有安装线2（anchor.anchor-pdf），这条命令用不了。');
+      void vscode.window.showWarningMessage('Anchor：没有安装线2（Fish-zjuer.anchor-pdf），这条命令用不了。');
       return;
     }
     if (action.requires === 'session' && !session) {

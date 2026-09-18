@@ -20,6 +20,8 @@ node_modules/**
 **/.env
 **/.env.*
 *.vsix
+README.dist.md
+README.md
 .gitattributes
 pnpm-lock.yaml
 pdfjs_version.txt

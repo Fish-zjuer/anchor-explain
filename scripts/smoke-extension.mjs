@@ -30,7 +30,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG_DIR = path.join(ROOT, 'packages', 'extension-anchor');
 const BUNDLE = path.join(PKG_DIR, 'dist', 'extension.cjs');
 const SHOW_STATE = 'anchorExplain.showState';
-const PEER_ID = 'anchor.anchor-pdf';
+const PEER_ID = 'Fish-zjuer.anchor-pdf';
 
 const pkg = JSON.parse(readFileSync(path.join(PKG_DIR, 'package.json'), 'utf8'));
 const declaredCommands = pkg.contributes.commands.map((c) => c.command);
@@ -229,7 +229,7 @@ const SETTINGS = {
 };
 ext.activate({
   subscriptions: { push: (...items) => subscriptions.push(...items) },
-  globalStorageUri: { fsPath: path.join(ROOT, '.tmp-smoke', 'User', 'globalStorage', 'anchor.anchor-explain') },
+  globalStorageUri: { fsPath: path.join(ROOT, '.tmp-smoke', 'User', 'globalStorage', 'Fish-zjuer.anchor-explain') },
   secrets: { get: () => Promise.resolve('sk'), store: () => Promise.resolve(), delete: () => Promise.resolve() },
   // D83：**空的** Memento。必须真的给这一个（而不是让它缺着）——缺着的话
   // `lastRunOf()` 的 try/catch 会把 TypeError 一起吞掉，于是"面板上那两颗按钮是灰的"
@@ -488,7 +488,7 @@ const peerWarnedBefore = messages.length;
 receiveFromPanel?.({ type: 'start:run', id: 'selectRegion' });
 await waitFor(() => messages.length > peerWarnedBefore);
 check(
-  messages.length === peerWarnedBefore + 1 && (messages.at(-1) ?? '').includes('anchor.anchor-pdf'),
+  messages.length === peerWarnedBefore + 1 && (messages.at(-1) ?? '').includes('Fish-zjuer.anchor-pdf'),
   '线2 缺失时点了它：明确说没装，而不是抛一个 VS Code 的"命令未找到"',
   messages.at(-1) ?? '(无)',
 );

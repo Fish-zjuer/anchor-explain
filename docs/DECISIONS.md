@@ -2224,6 +2224,48 @@ Apache-2.0 §4 本来就授予**拿到的人**复制与再分发的权利；把 
 
 ---
 
+## D86 publisher 换成作者本人 + 安装包里的 README 换成用户版
+
+**起因**（用户原话）：「把作者改成我的 github 名称：Fish-zjuer」「你的插件界面，漏的信息有点太多了」
+—— 后者指的是扩展详情页渲染出来的 README：**源码入口表、`src/...` 路径、pnpm 命令、切片编号全带出去了**。
+不带源码 ≠ 不带"源码的说明书"；这份 README 等于把仓库的地图交了出去。
+
+**决策**：
+
+1. **publisher `anchor` → `Fish-zjuer`**（两个包都改）。扩展 ID 随之变为
+   `Fish-zjuer.anchor-explain` / `Fish-zjuer.anchor-pdf`。**命令与设置命名空间
+   `anchorExplain.*` / `anchorPdf.*` 不变** —— 用户设置不受影响。
+2. **安装包里的 README 换成用户版**（`README.dist.md`，每个包一份，打包时
+   `vsce package --readme-path` 指过去；`README.dist.md` 本身进 `.vscodeignore` 不随包重复出现）。
+   仓库里的 `README.md` 仍是开发文档，一行不动。
+3. 顺带把 `THIRD_PARTY_NOTICES.md` 里唯一一处源码路径改成了"产物末尾的 `/*!` 注释"
+   —— 这份文件随包分发，不该指着自己的源码文件说话。
+
+**为什么 publisher 一改就牵连三处源码**：两条线互查对方装没装用的是**硬编码的扩展 ID**
+（`commands.ts` 的 `PDF_EXTENSION_ID`、`pdf-viewer-provider.ts` 的 `PEER_EXTENSION_ID`），
+对端提示语里也印着旧 ID。ID 是跨扩展协议的一部分 —— 这正是 D68 说的
+"两处各写一遍会分家"的又一形态：改 ID 不改对端查法，功能会静默变成"永远提示未安装"。
+所以这次连测试与三份冒烟里的 ID 一起改（`startModel.test.ts` 断言提示里带新 ID，
+`smoke-pdf-extension.mjs` 断言 publisher === 'Fish-zjuer'）。
+
+**换 ID 的实际代价（写给将来）**：
+
+- **SecretStorage 按扩展 ID 隔离** —— 换 ID 后要在新扩展里**重新存一次 API Key**；
+- `anchorExplain.*` 设置是全局的，不受影响；
+- 旧 ID 的目录联接（`~/.vscode/extensions/anchor.*-0.0.0`）不会被 `pnpm unlink:ext` 认出
+  （它按当前 manifest 算目录名），要手动 `cmd /c rmdir` 删掉联接（只删联接，不碰源码）；
+- 步骤都写在 `docs/DISTRIBUTION.md` §3。
+
+**为什么不改命令命名空间**：`anchorExplain.*` 出现在键位、设置、文档与用户肌肉记忆里，
+改它一次的代价是所有用户的所有配置作废，换来的只是"名字更统一" —— 不值。
+
+**验证**：`pnpm check` 全绿（ID 改动后冒烟与新断言全过）；`pnpm package:vsix` 全绿，
+详情页 readme 来自 `README.dist.md`。
+
+**状态**：生效。
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。
