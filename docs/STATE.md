@@ -357,7 +357,7 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   `github.com/Fish-zjuer/anchor-explain`。D85 定的"只有我能分发"随之作废（源码公开后
   这条在事实上不成立）。落地：根新增 `LICENSE` + `NOTICE`，线1 的 `LICENSE.txt`
   从专有 EULA 换成 Apache-2.0 原文（它随 `.vsix` 分发），两线 `package.json` 补 `repository`；
-  开源前清掉 README 里 4 处本机路径（`C:\Users\29927`），并扫过全库与全部历史提交 ——
+  开源前清掉 README 里 4 处本机路径（`C:\Users\<本机用户名>`），并扫过全库与全部历史提交 ——
   **没有真密钥、没有 `.env` 进过库**，所以历史无需重写。`docs/` 的过程记录全部保留公开。
 - **D88（对外文档）**「开源后文档全是中文」：新增 `README.en.md`（英文版，与中文 README 对齐）
   与 `CONTRIBUTING.md`（起环境 / `pnpm check` 这道门 / 冒烟读产物不读源码 / 容易踩坏的三条规则）。
