@@ -118,7 +118,13 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
       },
       {
         role: 'user',
-        content: buildUserPrompt(anchor, { candidates: deps.candidateFiles, crossFile }),
+        // `focus`（D79）跟着锚点走：用户写的那句话要进 prompt，否则它只是个被存起来没人读的字段
+        // （`buildUserPrompt` 早就支持 `focus`，但一直没人传 —— 见 prompts/index.ts 那段注释）。
+        content: buildUserPrompt(anchor, {
+          candidates: deps.candidateFiles,
+          crossFile,
+          focus: anchor.focus,
+        }),
       },
     ];
 

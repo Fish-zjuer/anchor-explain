@@ -127,8 +127,10 @@ test('耦合锁：package.json 的 contributes.keybindings 与 WALKTHROUGH_CHORD
 test('耦合锁：状态栏用的默认键位与 §4.1 冻结值一致', () => {
   // §4.1 的 `默认键` 列：ctrl+shift+a / alt+] / alt+[ / escape / ctrl+alt+w / ctrl+shift+space
   // ＋ S8 的 showStart（开始界面）与 selectRegion（线2 的框选，写在线2 的 package.json 里）
+  // ＋ D80 的 addSegment（往多段队列里加一段）
   assert.deepEqual(defaultChords(false), {
     capture: 'ctrl+shift+a',
+    addSegment: 'ctrl+shift+q',
     showStart: 'ctrl+alt+a',
     next: 'alt+]',
     prev: 'alt+[',

@@ -95,7 +95,20 @@ export type SidebarToHost =
   | { type: 'ui:prev' }
   | { type: 'ui:goto'; index: number }
   | { type: 'ui:stop' }
-  | { type: 'ui:revealStep'; index: number };
+  | { type: 'ui:revealStep'; index: number }
+  /**
+   * 【D83 新增】讲完之后那两颗按钮。**为什么非加不可**：`done` 之后「下一步」按不动了，
+   * 而面板上就此**没有任何出口** —— 用户的原话是「讲解结束时，需要能重新讲」。
+   * 在那之前唯一的办法是回编辑器重新选一段再按快捷键，而那时他正看着面板、
+   * 手边没有"重来一次"的任何按钮（D61/D72 是同一条规矩：讲完不许变成死路）。
+   *
+   * 两条刻意分成两个消息、**不合成一个带参数的消息**：它们的代价差一个数量级 ——
+   * `ui:replay` 是本地重放（不碰网络、不花钱），`ui:reExplain` 要再问一次模型。
+   * 合成一个的话，面板就得回传"要哪一种"这个参数，而 webview 是外部输入，
+   * 能指定行为的面板就多一个能指错的地方（与 §5.5「只回传动作 id」同一条立场）。
+   */
+  | { type: 'ui:replay' }
+  | { type: 'ui:reExplain' };
 
 // ─────────────────────────────────────────────────────────────
 // §5.2 ext-B 内部：宿主 ↔ 注入脚本（S5/S6 落地）
@@ -198,6 +211,8 @@ export function parseSidebarMessage(raw: unknown): SidebarToHost | null {
     case 'ui:next':
     case 'ui:prev':
     case 'ui:stop':
+    case 'ui:replay':
+    case 'ui:reExplain':
       return { type: raw.type };
     case 'ui:goto':
     case 'ui:revealStep': {

@@ -47,13 +47,17 @@ export interface CodeAdapter {
   readonly type: 'code';
   readonly capabilities: AdapterCapabilities;
   /**
-   * 产出锚点。`scope` 缺省是 `'selection'`。
+   * 产出锚点。`scope` 缺省是 `'selection'`；`focus` 是用户写的那句话（D79）。
    *
    * 为什么这里可以带参数、而 §3 的 `SourceAdapter.capture()` 没有参数：
    * 可选参数在 TS 里仍然可赋值给零参签名，`CodeAdapter` 照样满足 `SourceAdapter`。
    * 于是"范围从哪来"这件事不必污染冻结的接口，也不必让适配器去读 UI。
+   *
+   * `focus` 与 `scope` 是**同一类输入**（都由确认 UI 拍板、都不是适配器猜的），
+   * 所以走同一个入口，而不是让命令层拿到 `Anchor` 之后再往里塞 ——
+   * 那样"锚点由适配器产出"这条就会有例外，将来第二个适配器要再补一遍。
    */
-  capture(scope?: CaptureScope): Promise<Anchor>;
+  capture(scope?: CaptureScope, focus?: string): Promise<Anchor>;
   /**
    * 取件（§3 的第四个方法）。**只被编排层调用，且调用前已经过 §3.2 校验** ——
    * 所以这里不再重复判越界，只负责"把那一行区间读出来"。
@@ -90,7 +94,7 @@ export function createCodeAdapter(deps: CodeAdapterDeps): CodeAdapter {
     // 两个数同源（都来自 validateContextRequest 的常量），不会再出现"提示词说 400、闸门按 60 拒"（D71）
     capabilities: { contextTypes: ['file'], maxSpan: MAX_FETCH_LINES_CEILING },
 
-    async capture(scope: CaptureScope = 'selection'): Promise<Anchor> {
+    async capture(scope: CaptureScope = 'selection', focus?: string): Promise<Anchor> {
       const picked = await take(scope);
       const location: CodeLocation = {
         filePath: picked.filePath,
@@ -102,6 +106,13 @@ export function createCodeAdapter(deps: CodeAdapterDeps): CodeAdapter {
       // 让讲解照常走 —— 没有指纹只损失 staleness 检查，不该把整次讲解打断。
       const hash = await deps.editor.documentTextHash(picked.filePath);
 
+      /**
+       * 空串与「没写」是同一件事（D79）：用户在输入框里按回车跳过，拿到的是 `''`。
+       * 保留一个 `focus: ''` 会让下游每一处读它时都要判一次空 —— 不如在这里就归一成
+       * "没有这个字段"。这与 `extractedText` 的处理同一条立场：**能退化的信息不要留空壳**。
+       */
+      const wanted = typeof focus === 'string' && focus.trim() !== '' ? focus.trim() : undefined;
+
       return {
         sourceType: 'code',
         sourceId: hash ?? picked.filePath,
@@ -110,6 +121,7 @@ export function createCodeAdapter(deps: CodeAdapterDeps): CodeAdapter {
         sourceName: basenameOf(picked.filePath),
         location,
         extractedText: picked.text,
+        ...(wanted !== undefined ? { focus: wanted } : {}),
       };
     },
 

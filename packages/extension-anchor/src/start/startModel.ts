@@ -19,18 +19,23 @@ import type { WalkthroughState } from '../protocol.ts';
 
 export type StartActionId =
   | 'capture'
+  | 'addSegment'
+  | 'explainSegments'
+  | 'clearSegments'
   | 'configure'
   | 'openSettings'
   | 'setApiKey'
   | 'showState'
   | 'openPdf'
   | 'selectRegion'
+  | 'replayLast'
+  | 'reExplain'
   | 'goto';
 
-export type StartGroupId = 'start' | 'line2' | 'session';
+export type StartGroupId = 'start' | 'segments' | 'line2' | 'session';
 
 /** 前置条件。缺了就不给点，并且**说清缺什么** —— 灰按钮不说理由是最气人的一种 UI。 */
-export type StartRequirement = 'provider' | 'peer' | 'session';
+export type StartRequirement = 'provider' | 'peer' | 'session' | 'queue' | 'lastRun';
 
 export interface StartActionSpec {
   readonly id: StartActionId;
@@ -46,12 +51,13 @@ export interface StartActionSpec {
 
 export const START_GROUP_TITLES: Record<StartGroupId, string> = {
   start: '开始',
+  segments: '多段选择（队列）',
   line2: '线2（PDF）',
   session: '这次讲解',
 };
 
 /** 组在面板上的固定顺序。`start` 在最上面 —— 门厅第一眼要看到的是"从哪儿开始"。 */
-const GROUP_ORDER: readonly StartGroupId[] = ['start', 'line2', 'session'];
+const GROUP_ORDER: readonly StartGroupId[] = ['start', 'segments', 'line2', 'session'];
 
 /**
  * 面板上的全部动作。
@@ -105,6 +111,39 @@ export const START_ACTIONS: readonly StartActionSpec[] = [
     detail: '要改别的项（取件轮数、温度、多个 provider）时用这个',
     command: 'anchorExplain.openSettings',
   },
+  /**
+   * D80：多段选择。**这三颗按钮就是"左侧实时增减"的全部入口**。
+   *
+   * 为什么做成"三个动作 + 一个状态行"，而不是在面板里画一棵可编辑的清单：
+   * 开始面板的成员两张表就够。而"移除第 3 段"这类操作需要一个**可变参数**
+   * （移哪个），webview 只回传动作 id（§5.5 的安全约定：面板不许指定命令参数）。
+   * 所以移除走 `addSegment`/`clearSegments` 之外的第三条路 —— 见 `anchorExplain.goto`
+   * 那种"需要开一个选择 UI"的既有做法，队列的移除同理用 QuickPick 完成。
+   */
+  {
+    id: 'addSegment',
+    group: 'segments',
+    title: '把选中的一段加入队列',
+    detail: '先在编辑器里选中一段，再按下面这个键 —— 一次一段，可以反复加。换文件时会问你要不要清空',
+    command: 'anchorExplain.addSegment',
+    chordId: 'addSegment',
+  },
+  {
+    id: 'explainSegments',
+    group: 'segments',
+    title: '讲队列里的全部段',
+    detail: '合成一份讲解：多段属于同一个功能时，能讲出数据怎么在其中流动',
+    command: 'anchorExplain.explainSegments',
+    requires: 'queue',
+  },
+  {
+    id: 'clearSegments',
+    group: 'segments',
+    title: '清空队列',
+    detail: '把攒下来的几段一次丢掉',
+    command: 'anchorExplain.clearSegments',
+    requires: 'queue',
+  },
   {
     id: 'openPdf',
     group: 'line2',
@@ -130,6 +169,33 @@ export const START_ACTIONS: readonly StartActionSpec[] = [
     command: 'anchorExplain.goto',
     chordId: 'goto',
     requires: 'session',
+  },
+  /**
+   * D83：讲完之后的两个出口。用户的原话是「讲解结束时，需要能重新讲，
+   * 并且应该能保存/重放之前的内容」。
+   *
+   * @anchor 为什么这两条**也**要出现在开始面板（面板上明明已经有了）：它们要在
+   *         **讲解根本不存在**的时候可达 —— 用户关掉讲解面板、重开 VS Code 之后
+   *         想再看一遍上次那份，此时屏幕上没有任何"结束"的痕迹，只有这个门厅。
+   *         两颗按钮**分开**是刻意的，代价差一个数量级（见 `session/lastRun.ts`）：
+   *         重放不花钱、结果逐字相同；重新讲要再问一次模型、会得到另一种讲法。
+   *         把选择权留给用户，我们不替他决定要不要再花一次钱。
+   */
+  {
+    id: 'replayLast',
+    group: 'session',
+    title: '重放上次讲解',
+    detail: '不再问模型：把上次那份讲解从第 1 步重新走一遍，结果与上次一模一样',
+    command: 'anchorExplain.replayLast',
+    requires: 'lastRun',
+  },
+  {
+    id: 'reExplain',
+    group: 'session',
+    title: '重新讲一遍',
+    detail: '用同一个锚点再问一次模型 —— 想要另一种讲法时用这个（会再花一次钱）',
+    command: 'anchorExplain.reExplain',
+    requires: 'lastRun',
   },
 ];
 
@@ -179,6 +245,30 @@ export interface StartModelInput {
   /** `captureSummary(...)` 的结果；`null` = 还没捕获过 */
   readonly captureSummary: string | null;
   /**
+   * 多段选择队列（D80）。**没有第五张表**：队列的行就在 `commands.ts` 手里，
+   * 这里只收"该显示什么"（`null` = 队列是空的，那一组按钮整体灰掉）。
+   */
+  readonly queueSummary: string | null;
+  /**
+   * 队列里有几段（D81）。`0` = 空。
+   *
+   * @anchor 为什么明明有 `queueSummary` 还要一个数字：那句话是给"读"的
+   *         （"2 段（main.c 第 21-25 + 40-48 行）"，一长串），而用户点完「加入队列」
+   *         最想确认的是**数字变了没有**。分组标题就写在他刚点的那颗按钮正上方，
+   *         比任何别处的提示都近 —— 滚都不用滚。
+   */
+  readonly queueCount: number;
+  /**
+   * 存下过至少一份讲解（D83）。`false` = 「重放上次讲解」「重新讲一遍」两颗按钮灰掉。
+   *
+   * @anchor 传布尔而不是把 `LastRun` 本身递进来（明明那样信息更全）：面板要显示的是
+   *         **"能不能重放"**这一件事，`LastRun` 里的 steps 有几十 KB ——
+   *         让一个纯函数（每拍都可能被调一次，见 `refreshStartOn`）去拿着它，
+   *         等于把一个"渲染不用"的大对象挂进了每拍的热路径。要显示"存的是哪一段"
+   *         由 `显示状态` 那条命令负责，它本来就在做这件事。
+   */
+  readonly hasLastRun: boolean;
+  /**
    * 正在进行的阶段（D64），例如"正在请求模型…"。有值就压过会话那一行 ——
    * **模型在背后跑的时候，屏幕上必须有东西在动**，否则用户会以为没反应而再点一次。
    */
@@ -197,6 +287,10 @@ const REQUIREMENT_REASON: Record<StartRequirement, string> = {
   provider: '还没有配 anchorExplain.providers —— 先用「配置模型端点」填一下（三个输入框）',
   peer: '没有安装线2（anchor.anchor-pdf）',
   session: '现在没有进行中的讲解',
+  queue: '队列是空的 —— 先选中一段，按「把选中的一段加入队列」',
+  // D83：还没有任何存档时的理由。同样要**指出下一步按哪颗按钮**（D61）——
+  // 用户看的正是"这两颗灰按钮"，而解药就在同一个面板的第一组里。
+  lastRun: '还没有讲过任何一段 —— 先用「讲解选中的代码」讲一次，之后就能重放或重新讲',
 };
 
 /**
@@ -210,6 +304,8 @@ export function buildStartModel(input: StartModelInput): StartModel {
     provider: input.providerReady,
     peer: input.peerInstalled,
     session: input.session !== null,
+    queue: input.queueSummary !== null,
+    lastRun: input.hasLastRun,
   };
 
   const sections: StartSection[] = [];
@@ -226,7 +322,15 @@ export function buildStartModel(input: StartModelInput): StartModel {
         enabled: missing === undefined,
       };
     });
-    if (actions.length > 0) sections.push({ id: group, title: START_GROUP_TITLES[group], actions });
+    if (actions.length > 0) {
+      // 队列那一组的标题带上数量（D81）：用户点完「加入队列」抬头就能看见"已有 2 段"，
+      // 不必滚到面板最下面去找那一行状态。
+      const title =
+        group === 'segments' && input.queueCount > 0
+          ? `${START_GROUP_TITLES[group]} · 已有 ${input.queueCount} 段`
+          : START_GROUP_TITLES[group];
+      sections.push({ id: group, title, actions });
+    }
   }
 
   const session = input.session;
@@ -245,6 +349,12 @@ export function buildStartModel(input: StartModelInput): StartModel {
       label: '上次捕获',
       value: input.captureSummary ?? '还没有捕获过',
       tone: 'muted',
+    },
+    {
+      label: '多段队列',
+      // 队列空的那一句要**指出下一步**（D61）：只写"空"等于让用户猜下一步去哪。
+      value: input.queueSummary ?? '空 —— 选中一段，再按「把选中的一段加入队列」',
+      tone: input.queueSummary === null ? 'muted' : 'ok',
     },
     {
       label: '讲解',

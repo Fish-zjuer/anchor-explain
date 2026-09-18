@@ -20,6 +20,10 @@ export interface SidebarHandlers {
   onGoto(index: number): void;
   onStop(): void;
   onRevealStep(index: number): void;
+  /** D83：把上次那份讲解从第 1 步再走一遍（不碰网络） */
+  onReplay(): void;
+  /** D83：拿同一个锚点再问一次模型（贵，但会得到另一种讲法） */
+  onReExplain(): void;
 }
 
 /** 重放缓冲上限：侧边栏的消息量很小，50 条足够覆盖一次会话 */
@@ -60,6 +64,12 @@ export class SidebarPanel {
           break;
         case 'ui:stop':
           this.#handlers.onStop();
+          break;
+        case 'ui:replay':
+          this.#handlers.onReplay();
+          break;
+        case 'ui:reExplain':
+          this.#handlers.onReExplain();
           break;
       }
     });

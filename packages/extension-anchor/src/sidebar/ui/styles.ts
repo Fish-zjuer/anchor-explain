@@ -224,7 +224,8 @@ body {
   border-top: 1px solid var(--vscode-panel-border);
 }
 
-.toolbar button {
+.toolbar button,
+.rerun button {
   font: inherit;
   font-size: 0.9em;
   color: var(--vscode-button-secondaryForeground);
@@ -235,8 +236,11 @@ body {
   cursor: pointer;
 }
 
-.toolbar button:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
-.toolbar button:disabled { opacity: 0.45; cursor: default; }
+.toolbar button:hover:not(:disabled),
+.rerun button:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+
+.toolbar button:disabled,
+.rerun button:disabled { opacity: 0.45; cursor: default; }
 
 .trace { margin-top: 12px; font-size: 0.82em; padding-bottom: var(--anchor-gap); }
 
@@ -260,6 +264,25 @@ body {
   margin-top: var(--anchor-gap);
   color: var(--vscode-descriptionForeground);
   font-style: italic;
+}
+
+/**
+ * D83：讲完之后那两颗按钮（重放上次讲解 / 重新讲一遍）。
+ *
+ * 与上面那段 .ended 说明是**一对**：说明说"还能做什么"，这一行是"能做"。
+ * 放在工具条**上方**而不是塞进工具条：工具条那三颗是"这一遍讲解的推进"，
+ * 而这两颗是"再开一遍" —— 混在一行里，用户会以为「上一步」与「重放」是同类操作。
+ * 按钮的配色与尺寸直接复用工具条那一套（见上面合并后的选择器），不各写一份。
+ *
+ * 注意：本文件整个是**内联进 webview 的模板字符串**，注释里一个反引号都不许有
+ * （写一个就把字符串截断，面板一片空白 —— 与 clientScript 同一条坑，D70）。
+ */
+.rerun {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  padding-bottom: var(--anchor-gap);
 }
 
 .empty { color: var(--vscode-descriptionForeground); }

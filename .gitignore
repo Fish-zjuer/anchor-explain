@@ -19,6 +19,16 @@ out/
 # 侧边栏排版预览的产物（scripts/preview-sidebar.mjs 生成，随时可重建）
 .tmp-preview/
 
+# 冒烟脚本在进程内打出来的临时产物（scripts/smoke-file-switch.mjs 等，随时可重建）
+.tmp-smoke/
+.tmp-repro/
+
+# 排查时把命令输出落盘再看的散装临时文件（Windows 上 PowerShell 的 stdout 不回显，
+# 只能先写文件再读 —— 见 docs/STATE.md 的"这台机器上的操作注意"）。
+# 一律 `.tmp-` 开头，方便一眼认出是垃圾；**别拿它存任何要看的东西**。
+.tmp-*.txt
+.tmp-*.json
+
 # 操作系统
 .DS_Store
 Thumbs.db

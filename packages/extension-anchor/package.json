@@ -28,6 +28,8 @@
     "onCommand:anchorExplain.configure",
     "onCommand:anchorExplain.showState",
     "onCommand:anchorExplain.setApiKey",
+    "onCommand:anchorExplain.replayLast",
+    "onCommand:anchorExplain.reExplain",
     "onView:anchorExplain.start"
   ],
   "contributes": {
@@ -106,6 +108,36 @@
         "category": "Anchor"
       },
       {
+        "command": "anchorExplain.addSegment",
+        "title": "把选中的一段加入多段队列",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.explainSegments",
+        "title": "讲解多段队列里的全部段",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.removeSegment",
+        "title": "从多段队列里移除一段",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.clearSegments",
+        "title": "清空多段队列",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.replayLast",
+        "title": "重放上次讲解（不再问模型）",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.reExplain",
+        "title": "重新讲一遍（再问一次模型）",
+        "category": "Anchor"
+      },
+      {
         "command": "anchorExplain.next",
         "title": "下一步",
         "category": "Anchor"
@@ -161,6 +193,12 @@
         "command": "anchorExplain.capture",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "anchorExplain.addSegment",
+        "key": "ctrl+shift+q",
+        "mac": "cmd+shift+q",
         "when": "editorTextFocus"
       },
       {

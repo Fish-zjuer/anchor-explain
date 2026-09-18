@@ -7,4 +7,8 @@ packages:
 # 注：esbuild 的平台二进制其实走 optional dependency（@esbuild/win32-x64），
 # 不靠 postinstall；这里放行只是为了消掉每次 install 都刷的 ERR_PNPM_IGNORED_BUILDS。
 allowBuilds:
+  # vsce（打包 .vsix 用）依赖的原生签名助手。只是 `vsce package`（不签名）其实用不到它，
+  # 但 pnpm 11 只要发现"有未批准的构建脚本"就让 install 以 1 退出 —— 于是 `pnpm exec` 全线报错。
+  # 放行（true）而不是忽略，是为了让 vsce 模块本身加载时不缺原生件。
+  '@vscode/vsce-sign': true
   esbuild: true

@@ -61,6 +61,14 @@ let peerInstalled = false;
 
 const vscodeStub = {
   StatusBarAlignment: { Left: 1, Right: 2 },
+  // 状态栏的 tooltip 是 MarkdownString（D81 起队列那一项也用它）。
+  // 桩里缺它的话，`item.tooltip = new vscode.MarkdownString(...)` 那一行会抛 —— 而在
+  // `isolated()` 里抛出只留一行日志，屏幕上看就是"状态栏没出来"，又是一个"点了没反应"。
+  MarkdownString: class MarkdownString {
+    constructor(value = '') {
+      this.value = value;
+    }
+  },
   ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
   // S8：`Anchor: 配置模型端点` 用 `ConfigurationTarget.Global` 写用户设置。
   // 漏了它的话 `update()` 会抛 TypeError，而那正好又是一次"点了没反应" —— 桩必须齐。
@@ -92,6 +100,13 @@ const vscodeStub = {
     showErrorMessage(msg) {
       messages.push(msg);
       return Promise.resolve(undefined);
+    },
+    // D78：宿主靠"可见编辑器变了"分辨"预览替换"与"用户主动关标签"。
+    // 和上面两条一样，它必须在 **activate 期间**就存在 —— 缺了它 activate 直接抛，
+    // 整份扩展根本没装上（这正是这条桩第一次漏掉它时的现象：`extension.cjs` 第 104192 行抛
+    // `onDidChangeVisibleTextEditors is not a function`，而所有断言都还没开始跑）。
+    onDidChangeVisibleTextEditors() {
+      return { dispose() {} };
     },
     // S8：活动栏那个固定按钮里的视图。VS Code 只在用户点开时才调 resolveWebviewView，
     // 所以这里也**先记下来**，由下面的断言自己去调 —— 那正是"最外层边界打桩，
@@ -216,6 +231,10 @@ ext.activate({
   subscriptions: { push: (...items) => subscriptions.push(...items) },
   globalStorageUri: { fsPath: path.join(ROOT, '.tmp-smoke', 'User', 'globalStorage', 'anchor.anchor-explain') },
   secrets: { get: () => Promise.resolve('sk'), store: () => Promise.resolve(), delete: () => Promise.resolve() },
+  // D83：**空的** Memento。必须真的给这一个（而不是让它缺着）——缺着的话
+  // `lastRunOf()` 的 try/catch 会把 TypeError 一起吞掉，于是"面板上那两颗按钮是灰的"
+  // 这条断言会在**桩不全**的情况下通过，测的就不是产品行为了。
+  workspaceState: { get: () => undefined, update: () => Promise.resolve() },
 });
 check(subscriptions.length > 0, 'activate 往 subscriptions 里注册了东西', `${subscriptions.length} 项`);
 
@@ -231,7 +250,11 @@ check(orphanBindings.length === 0, 'keybindings 指向的都是已声明的命�
 // ---- showState 命令本身 ----------------------------------------------------
 const handler = registered.get(SHOW_STATE);
 check(typeof handler === 'function', `注册了命令 ${SHOW_STATE}`);
-check(statusBarItems.length === 1, 'activate 建了状态栏项（讲解期间的常驻入口）');
+// D81：状态栏现在是**两项** —— 讲解那一项（讲的时候才显示）与队列那一项（队列不空才显示）。
+// 它们分开是有意的：生命周期不同（讲解结束要收掉，队列不空得一直挂着）。
+check(statusBarItems.length === 2, 'activate 建了两个状态栏项（讲解进度 + 多段队列计数）');
+check(statusBarItems[1]?.shown === false, '队列那一个**开局是隐藏的**（空队列不该在状态栏占一格）');
+check(statusBarItems[1]?.command === 'anchorExplain.showStart', '点队列计数打开开始面板（那儿才有三颗按钮）');
 
 // 情景 A：没有打开的编辑器
 peerInstalled = false;
@@ -344,12 +367,49 @@ receiveFromPanel?.({ type: 'start:ready' });
 await waitFor(() => posted.length > 0);
 const startModel = posted.at(-1)?.model;
 check(posted.at(-1)?.type === 'start:model' && startModel !== undefined, '握手后宿主推了一份开始面板模型');
-check(startModel?.status?.length === 4, '模型里有四条状态（模型 / 线2 / 上次捕获 / 讲解）');
+check(
+  startModel?.status?.length === 5,
+  '模型里有五条状态（模型 / 线2 / 上次捕获 / 多段队列 / 讲解）',
+  startModel?.status?.map((item) => item.label).join(' / ') ?? '(无)',
+);
+// 队列空着时那两颗按钮是灰的，而**状态行要说清下一步去哪**（D61）——
+// 面板上多出来的一整组按钮如果只会变灰、不会指路，用户照样卡住。
+const queueRow = startModel?.status?.find((item) => item.label === '多段队列');
+check(queueRow?.tone === 'muted', '队列是空的时候那一行是静音色（不是假装没事）');
+check(
+  (queueRow?.value ?? '').includes('加入队列'),
+  '空队列那一行**指出下一步**（否则用户不知道那组灰按钮该怎么点亮）',
+  queueRow?.value ?? '(无这行)',
+);
+check(
+  startModel?.sections?.some((section) => section.actions.some((a) => a.id === 'addSegment' && a.enabled)),
+  '「加入队列」永远可点（队列里有东西是另外两颗的事，不该拖它一起灰）',
+);
 check(
   startModel?.sections?.some((section) => section.actions.some((a) => a.id === 'capture' && a.chord === 'Ctrl+Shift+A')),
   '面板显示的键位是"用户实际绑的那个"（冒烟里读不到 keybindings.json，走的是回退默认那条真实分支）',
 );
 check(startModel?.openChord === 'Ctrl+Alt+A', '面板顶部知道怎么再打开自己');
+
+// D83：**刚激活时还没有任何存档**，那两颗按钮必须是灰的，而且说清先去按哪一颗。
+// 这里锁的是**接线**（`makeStartModel` 从 `workspaceState` 读出 `hasLastRun`）——
+// `buildStartModel` 本身有单测，但"状态真的被传到面板上了"这件事只有端到端能证明：
+// 少传一个字段时，面板会**永远**显示"还没有讲过任何一段"，而单测全绿。
+const replayAction = (id) =>
+  startModel?.sections?.flatMap((section) => section.actions).find((a) => a.id === id);
+for (const id of ['replayLast', 'reExplain']) {
+  const action = replayAction(id);
+  check(
+    action !== undefined && action.enabled === false,
+    `D83：没有存档时面板上的「${id}」是灰的（激活时 workspaceState 本来就是空的）`,
+    JSON.stringify(action ?? null),
+  );
+  check(
+    (action?.note ?? '').includes('讲解选中的代码'),
+    `D83：「${id}」灰掉的理由要指出下一步按那颗按钮`,
+    action?.note ?? '(无)',
+  );
+}
 
 // 门厅不许是死路（D61），而且**能一步做完的别让人去别处做**（D62）：面板说"你还缺
 // anchorExplain.providers"，那就得有一条**真的能配**的路，而且不受任何前置条件限制

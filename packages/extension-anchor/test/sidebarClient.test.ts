@@ -150,6 +150,24 @@ function findByText(node: FakeNode, text: string): FakeNode | undefined {
   return undefined;
 }
 
+/**
+ * 按 `data-act` 找一个元素（D83 起用它）。
+ *
+ * @anchor 为什么不复用 `findByText`：那一层的"按钮是哪个"靠**文案**认，
+ *         而文案恰恰是最容易改的东西 —— 改一个字，按文字找的断言就红了，
+ *         于是有人会把断言改成新的文案，而 `data-act` 与协议消息的对应关系
+ *         仍然没人看着。`data-act` 是**行为**的标识（客户端拿它派发消息），
+ *         用它认元素，断言才不会随着文案漂移。
+ */
+function findByAttr(node: FakeNode, key: string, value: string): FakeNode | undefined {
+  if (node.attrs[key] === value) return node;
+  for (const child of node.children) {
+    const hit = findByAttr(child, key, value);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 const ANCHOR = 'C:\\repo\\Core\\Src\\main.c';
 
 function sessionUpdate(over: Record<string, unknown> = {}): unknown {
@@ -354,9 +372,31 @@ test('D72：讲完之后「上一步」与「退出」仍然可点，「下一�
   );
   assert.match(
     client.root.text,
-    /可以按「上一步」回看，或按「退出」收掉高亮/,
+    /按「上一步」可以回看，按「退出」收掉高亮/,
     '那句话要说清现在还能做什么，而不是只说"结束了"',
   );
+
+  /**
+   * D83：讲完之后**还必须有"再来一遍"的出口**。
+   *
+   * 用户的原话是「讲解结束时，需要能重新讲，并且应该能保存/重放之前的内容」——
+   * 在那之前这一块只有一句"结束了"加一个禁掉的「下一步」，等于告诉他"这条线到头了"。
+   * 两颗按钮**分开**是规格的一部分（一颗不花钱、一颗要再问一次模型），
+   * 所以这里连 `data-act` 与 title 一起钉住：改了名字而忘了改宿主那一侧，点击就会静默失效。
+   */
+  const replay = findByAttr(client.root, 'data-act', 'replay');
+  const again = findByAttr(client.root, 'data-act', 'reExplain');
+  assert.equal(replay?.textContent, '重放上次讲解');
+  assert.equal(again?.textContent, '重新讲一遍');
+  assert.match(replay?.title ?? '', /不再问模型/, '「重放」必须说清它不花钱');
+  assert.match(again?.title ?? '', /再问一次模型/, '「重新讲」必须说清它会再花一次钱');
+});
+
+test('D83：面板上那两颗按钮的 act 名与协议消息是**成对**的（改名只改一边会静默失效）', () => {
+  // 客户端脚本是字符串常量、不参与类型检查（见文件头那三条纪律），
+  // 所以"act 名 ↔ 消息类型"这层对应关系没有编译器帮我们看着 —— 这条锁就是那一层。
+  assert.match(SIDEBAR_CLIENT_SCRIPT, /act === "replay"[\s\S]{0,80}ui:replay/);
+  assert.match(SIDEBAR_CLIENT_SCRIPT, /act === "reExplain"[\s\S]{0,80}ui:reExplain/);
 });
 
 test('D72：按住不放（键盘自动重复）不许变成连发', () => {

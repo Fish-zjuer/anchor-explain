@@ -49,7 +49,17 @@ interface Anchor {
   capturedImage?: string;    // base64，第二层才用
   extractedText?: string;    // 第一层优先
   neighborHint?: string;     // 如 "第 23 页附近"
+  focus?: string;            // D79：用户写的"这段想重点讲什么"（可选）
+  segments?: CodeLocation[]; // D80：多段锚点 —— **用户实际选中的那几段**
 }
+
+> **D80：多段时 `location` 只是「并集的外框」，不是用户选了什么。**
+> 它必须保持单个 `CodeLocation` 的形状（decoration、§3.3 校验、`locationLabel`、D78 的锚点文件判据
+> 都按一个位置写的）。段之间那些没被选中的行**确实在框里**，所以"哪些是用户选的"由 `segments`
+> 说出来。模型据此不会去讲那些空隙 —— 给模型的原文同样不能含糊：每一段都标了号，
+> 并写明"段与段之间的行没有被选中"（见 `core/src/segments.ts` 的 `composeText`）。
+>
+> **D79：`focus` 是用户额外写的那句话**，不是从代码里算出来的。
 
 interface ContextRequest {
   type: 'page_range' | 'dom_subtree' | 'file';
@@ -401,6 +411,12 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `anchorExplain.goto` | 跳到指定步 | `ctrl+alt+w` | `anchorExplain.walkthroughActive` |
 | `anchorExplain.playPause` | 播放 / 暂停 | `ctrl+shift+space` | `anchorExplain.walkthroughActive` |
 | `anchorExplain.explainAnchor` | 接受外部 Anchor 并起讲解（跨扩展入口） | — | — |
+| `anchorExplain.addSegment` | 把当前选区**加进多段队列**（一次一段，可反复加；**D80 新增**） | `ctrl+shift+q` / `cmd+shift+q` | `editorTextFocus` |
+| `anchorExplain.explainSegments` | 把队列里的全部段**合成一份**讲解（**D80 新增**） | — | — |
+| `anchorExplain.removeSegment` | 从队列里挑一段移除（QuickPick；**D80 新增**） | — | — |
+| `anchorExplain.clearSegments` | 清空队列（**D80 新增**） | — | — |
+| `anchorExplain.replayLast` | **重放**上次那份讲解（从第 1 步再走一遍，**不碰网络**；**D83 新增**） | — | — |
+| `anchorExplain.reExplain` | 拿同一个锚点**再问一次模型**（**D83 新增**） | — | — |
 | `anchorExplain.showStart` | 打开开始界面（把活动栏的「开始」视图聚焦出来，**S8 新增**） | `ctrl+alt+a` / `cmd+alt+a` | `!inputFocus` |
 | `anchorExplain.showState` | 显示当前状态（F2 的骨架验证命令） | — | — |
 | `anchorExplain.openSettings` | 打开设置并筛到 `anchorExplain`（**D61**：开始面板里那条"去配端点"的路） | — | — |
@@ -423,7 +439,12 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 两侧的值都写在 `contributes.keybindings` 的 `key` / `mac` 里，并由
 `test/keybindingResolve.test.ts` 的耦合锁与 `WALKTHROUGH_CHORDS` 逐字比对。
 
-**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 12 个 ext-A 命令；
+**多段队列那四条命令（D80）**：它们都不参与下面的"先问范围" —— 每段就是用户在编辑器里选出来的，
+范围这一问已经答过了。`addSegment` 给默认键是因为攒队列是**要连按好几次**的路
+（选中 → 按 → 再选 → 再按）。同一段重复加入不去重（用户按了两次就是按了两次），
+队列加完**当场按行号排**（`compareSegments`）—— 否则「第 1 段」在清单里与在模型眼里不是同一段。
+
+**命令回调与上表的对应**：`commands.ts` 的 `registerCommands` 注册全部 18 个 ext-A 命令；
 `scripts/smoke-extension.mjs` 有一条锁断言「`package.json` 声明的命令 == 实际注册的命令」。
 
 **`showStart` 的 `when: !inputFocus`（S8）**：与 `stop` 同一个立场（D11）——"打开开始界面"
@@ -455,6 +476,59 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 `extractedText` 是全文。下游（校验 / 会话 / 渲染 / 侧边栏）完全看不出这两种范围的区别 ——
 这正是 §3.1 里 `capture(scope?)` 用一个可选参数就够了的理由。
 
+### §4.1.2 「这段想重点讲什么」（D79 新增，非规范原文）
+
+确认范围之后、取件之前再问一句（`commands.ts` 的 `askFocus`）。它是**可选项**：
+
+| 用户的动作 | 结果 |
+|---|---|
+| 按 Esc | `undefined` → 跳过，**老行为一字不改**（prompt 里那一节整个不出现） |
+| 回车但没打字 | `''` → 与 Esc 等价（许多人以为这两者不同，所以对下游必须合成一件事） |
+| 写了一句 | 去首尾空白后写进 `Anchor.focus`，排在原文**之前**进 user prompt，并说明它优先 |
+
+放在取件**之前**是有意的：这句话会影响模型要不要去读别处（"只关心边界判断" → 它很可能去读宏定义），
+取完件再问就晚了。**它同时出现在 `captureSummary()` 里**（「显示状态」与开始面板共用同一句）——
+用户写完之后，屏幕上必须有东西能让他复核那句话生效没。
+
+**§4.1.3 多段队列（D80 新增，非规范原文）**
+
+一次讲解只支持**同一个文件内**的多段（`sameFileAsFirst`）：锚点文件那一整套语义
+（D82 的收尾判据、"这次讲解到头了"的判据）都按一个锚点文件写的，不为它破例；
+用户在别的文件里选新一段时给「清空 / 取消」二选一 —— 现在就说清，比攒了四五段之后
+在最后一步报错损失小得多。
+
+**队列为空时那一组要说清楚**（D80）：「讲队列 / 清空队列」两颗按钮的理由、以及状态行那一句，
+都必须**指出下一步去哪** —— 灰按钮不说理由是最气人的一种 UI（D61）。
+
+**为什么 `captureSummary()` 也要把那几段列出来**：多段的 `location` 只是并集的外框，
+只显示"第 21-48 行"等于告诉用户"讲了这 28 行"，而他明明只选了其中两块 ——
+那一句是他唯一能复核"我选的那几段有没有全进去"的地方。
+
+**§4.1.4 「上次讲解」的存档（D83 新增，非规范原文）**
+
+一份讲解成功之后写进 `context.workspaceState`（**跨 VS Code 重启活着**），键名
+`anchorExplain.lastRun`（**不要改这个键**：改了等于让所有人已有的存档静默失效，
+而失效的表现是「重放上次讲解」说"还没有讲过任何一段" —— 我们会以为是别的地方坏了）。形状：
+
+| 字段 | 说明 |
+|---|---|
+| `version` | 形状版本，现在是 `1`。**对不上就丢掉**，不尽力兼容 |
+| `savedAt` | `Date.now()`。只为"这是什么时候讲的"这句话，不参与任何判据 |
+| `anchor` | 原锚点（过 §5.1 的 `isAnchorLike`） |
+| `result` | 那份 `ExplanationResult` **本身** —— 重放要的是内容，只存锚点等于还得再问一次模型 |
+
+两条能力的差异是**规格的一部分**，不是实现细节（它们的代价差一个数量级）：
+
+| 命令 | 做什么 | 模型调用 | 结果 |
+|---|---|---|---|
+| `replayLast` | 把存档原样从第 1 步再走一遍 | **0 次** | 与上次逐字相同 |
+| `reExplain` | 同一个锚点再问一次模型 | ≥1 次 | 会得到另一种讲法 |
+
+**读不出来一律当"没有存档"**（`readLastRun` 返回 `undefined`，**绝不抛**）：这份数据可能是
+**上一个版本的我们**写的，也可能被用户手改坏；硬读的话最先炸的是渲染层，
+而那里离"存档是旧的"这个真因很远。坏掉**一个子高亮**只丢那一个（配色是装饰性字段，与 §3.3 同一条）；
+**一个 step 都不剩**才整份作废（会话状态机也要求 `steps ≥ 1`）。
+
 ### §4.2 context key（冻结）
 
 | key | 类型 | 置位时机 |
@@ -473,6 +547,30 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 两个 key 的分工不重叠：`walkthroughActive` 管"要不要吃推进键"（`next`/`prev`/`goto`/`playPause`），
 `sessionOpen` 管"还有没有东西需要收尾"（`stop`）。合成一个 key 会让 `done` 之后的界面变成死局
 （详见 §4.1 里 `stop` 那一行）。
+
+**"编辑器关闭"到底指哪一个文件（D82 补正，覆盖 D78 的说法）**：不是"锚点文件被关"，
+而是 **"这次讲解已经没有落脚点了"** —— 锚点文件、**以及当前这一拍要讲的那个文件**
+（`location` 与每个子高亮的 `location`）**全都不可见**时才收工（`stop()`）。
+
+为什么必须这么写：播放器用**预览标签**打开跨文件的目标（D69/D77），而预览标签会被下一个预览
+**顶掉**，且**不会被换回来**（播放器只开当前这一拍的焦点文件）。所以"讲进第二个文件"这件事本身
+就会关掉锚点文件的标签，随后去问"锚点文件还在吗"必然得到"不在" ——
+于是讲解刚跨过文件边界就被判成"用户收工了"，面板底下出现"讲解已结束"（用户原话）。
+反过来，预览轮换**必然**把新文件留在屏幕上，所以"这一拍的文件可见"对轮换免疫。
+副作用往对的方向：用户在当前讲 `main.h` 时关掉 `main.c` 不再收工 —— 契约的原话本就是
+"**正在讲的那个文件**被关掉"。
+
+**判据「什么时候允许开火」（D84 补正，判据本身不动）**：上面那条判据**不读屏幕某一瞬间的样子就下结论**。
+预览轮换是"先关旧的、再开新的"两件异步的事，中间有一帧**两个文件都不可见** —— 那一帧与"用户把文件都关了"
+长得一样，而它是**播放器自己造成的**。所以：
+
+1. 播放器把"正在换文件"暴露成 `switching`（`get switching(): boolean`），并给出"落定"信号
+   `onDidSettle(listener)`；宿主在看到 `switching` 时**推迟**判定（并且**不消费**立案标记，等落定后由
+   `onDidSettle` 补判）。
+2. "关过文件"这个立案标记**只在被关掉的文件与本次讲解有关时**才立 —— `sessionFiles()` = 锚点文件
+   + 各步 `location` + 各子高亮 `location`。用户随手关一个无关标签，不再为后续任意一次可见性变化"上膛"。
+3. 判定只剩一处：`commands.ts` 的 `evaluateSessionEnd()` 是唯一决定收工的地方，
+   `onDidChangeVisibleTextEditors` 与播放器的 `onDidSettle` 都只是它的触发源。
 
 ### §4.3 `emphasis` → 配色（`已冻结（可调）`）
 
@@ -631,8 +729,21 @@ type HostToSidebar =
 type SidebarToHost =
   | { type: 'ui:ready' }
   | { type: 'ui:next' } | { type: 'ui:prev' } | { type: 'ui:goto'; index: number }
-  | { type: 'ui:stop' } | { type: 'ui:revealStep'; index: number };
+  | { type: 'ui:stop' } | { type: 'ui:revealStep'; index: number }
+  | { type: 'ui:replay' } | { type: 'ui:reExplain' };   // ← D83 追加：讲完之后那两颗按钮
 ```
+
+**`ui:replay` / `ui:reExplain` 是 D83 追加的**（同样是**追加**，不动已有消息）。
+`done` 之后「下一步」按不动了，而面板上就此**没有任何出口** —— 用户的原话是
+「讲解结束时，需要能重新讲，并且应该能保存/重放之前的内容」。
+
+两条**刻意分成两个消息**，不合成一个带参数的消息：它们的代价差一个数量级 ——
+`ui:replay` 是本地重放（不碰网络、不花钱），`ui:reExplain` 要再问一次模型。
+合成一个的话面板就得回传"要哪一种"，而 webview 是外部输入；**能指定行为的面板就多一个能指错的地方**
+（与 §5.5「只回传动作 id」同一条立场）。所以两条都是**无参**消息：
+要重放哪一份、要重新问谁，全由宿主按存档决定（见 §4.1.4）。
+反过来，客户端那边的一层对应关系（`data-act` ↔ 消息类型）没有编译器看着，
+由 `test/sidebarClient.test.ts` 的一条文本锁钉住。
 
 **`tooltrace:reset` 是 D68 追加的**，与 `ui:ready` 同一种性质（都是**追加**，不动已有消息）：
 `tooltrace:append` 是"追加"，而 webview 的 trace 数组**活得比一轮讲解长**（同一个面板接着讲第二次是常态），
@@ -717,7 +828,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 | 面板 → 宿主 | `{ type: 'start:run', id }` | **只回传动作 id，不回传命令 ID** |
 | 宿主 → 面板 | `{ type: 'start:model', model }` | 整份快照，见 `start/startModel.ts` 的 `StartModel` |
 
-**三条不许改回去的约定**：
+**四条不许改回去的约定**：
 1. **`start:run` 只带 id**。webview 是不可信输入；若它能指定"执行哪个命令"，它就能执行任意命令。
    宿主用 `findStartAction(id)` 查 `START_ACTIONS`，查不到就丢 —— **能执行什么由宿主决定**。
    `parseStartMessage` 因此**只查形状、不查成员资格**（守卫管"能不能读"，业务管"能不能做"）。
@@ -725,6 +836,21 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
    后一份天然覆盖前一份。视图没被打开过时 `refresh()` 是**空操作**，下次 `ready` 现算一份。
 3. **面板里的业务判断为零**。`start/startModel.ts` 把"状态 → 该显示什么"算完（含"灰掉时说什么"），
    客户端脚本只渲染与派发。灰掉是**提示**，宿主执行前还会**再判一次**（两层，不是重复）。
+
+4. **面板的一组 + 一行 = 一个状态**（D80）：多段队列在面板上是一个分组（加入 / 讲全部 / 清空）
+   加一条状态行。**"移除第 3 段"这类带参数的操作不在面板上做** —— 它需要的那个参数
+   （移哪一段）正好是 `start:run` 刻意不带的东西（见第 1 条），所以走 QuickPick
+   （`anchorExplain.removeSegment`），对用户一样是一次选择，规矩不必为它破例。
+   队列每变一次（`addSegment` / `removeSegmentAt`）宿主就重推一份模型 ——
+   "左侧实时增减"看得见，靠的就是这一推。
+
+5. **代价不同的两件事必须是两颗按钮**（D83）。「这次讲解」那一组里同时有
+   「重放上次讲解」（不花钱）与「重新讲一遍」（要再问一次模型）——
+   **合成一颗就等于替用户决定要不要再花一次钱**，而"重新讲"这三个字两件事都指得上。
+   两者的前置条件是同一个 `hasLastRun`（存档存在吗，见 §4.1.4）：缺的时候两颗一起灰，
+   `note` 要说清"先去按「讲解选中的代码」" —— 解药就在同一个面板的第一组里（D61）。
+   传 `hasLastRun` 布尔而不是把 `LastRun` 本身递给面板：面板要的是"能不能重放"这一件事，
+   而那份存档有几十 KB，`buildStartModel` 是**每拍都会被调**的纯函数。
 
 **为什么键位表要分两张（S8）**：面板上「框选 PDF 区域」显示的是**线2 的键**
 （`ctrl+alt+s`，声明在线2 的 `package.json` 里，且只在 `activeCustomEditorId == 'anchorPdf.view'` 时生效）。
@@ -927,12 +1053,11 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/prompts/index.ts` | **S3 落地，S8 加风格、S9a 加跨文件（D67 修：契约按 `crossFile` 换口径、候选清单真的进 prompt）**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:56 `buildSystemPrompt`:81 `describeAnchor`:191 `buildUserPrompt`:214 `buildRepairPrompt`:262 |
 | `packages/extension-anchor/src/config.ts` | **S3 落地，S8 加 `style`、S9a 加 `fetchScope`、S9a 修加 `maxFetchLines`（D71）**。§6 配置的**纯映射**（可单测），vscode 读取在 `vscode/configSource.ts` | `ProviderSettings`:18 `AnchorConfig`:27 `DEFAULT_MAX_FETCH_ROUNDS`:50 `apiKeySecretName`:56 `resolveProvider`:82 `clampRounds`:107 `clampFetchLines`:118 `resolveConfig`:144 `describeConfig`:175 |
 | `packages/extension-anchor/src/vscode/configSource.ts` | **S3 落地**。设置 + `SecretStorage` 的读取侧，以及存 key 的服务端 | `readAnchorConfig`:21 `storeApiKey`:60 `configuredProviderIds`:88 |
-| `packages/extension-anchor/src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **S8 的开始面板装配与 `showStart`** + **S9a 的 `fetchPolicyFor` 与第二道闸门**。**S3 起没有任何替身** | `registerCommands`:120 `askWhatToExplain`:754 `capture`:779（S8 新增的 `makeStartModel` / `runStartAction` / `showStart` 在文件后段） |
+| `packages/extension-anchor/src/commands.ts` | §4.1 十个命令 + 四层装配 + 捕获确认（§4.1.1）+ 取件日志落 OutputChannel + **S8 的开始面板装配与 `showStart`** + **S9a 的 `fetchPolicyFor` 与第二道闸门**。**S3 起没有任何替身**。D78：`onDidCloseTextDocument` 只记 `pendingAnchorClose`（不当场 `stop()`），由配对的 `onDidChangeVisibleTextEditors` 看锚点文件是否仍可见来定夺 —— 预览标签替换与用户主动关标签在 close 回调里长得一样。**D84：收工判定收拢为唯一一处 `evaluateSessionEnd()`，只在 `sessionFiles()`（锚点 + 各步 / 各子高亮 `location`）里的文件被关时才立案，且 `player.switching` 期间推迟不判** | `registerCommands`:120 `askWhatToExplain`:754 `capture`:779（S8 新增的 `makeStartModel` / `runStartAction` / `showStart` 在文件后段） |
 | `packages/extension-anchor/src/protocol.ts` | §5 全部消息协议 + 三处边界守卫 + **S8 起状态词表（`STATE_WORD`）也在这里**（贴着 `WalkthroughState` 放，状态栏与开始面板共说一句话） | `WalkthroughState`:20 `STATE_WORD`:30 `HostToSidebar`:53 `SidebarToHost`:92 `HostToSelect`:104 `SelectToHost`:109 `HostToStart`:133 `StartToHost`:143 `isAnchorLike`:165 `parseSidebarMessage`:194 `parseStartMessage`:220 |
 | `packages/extension-anchor/src/orchestrator/validateExplanation.ts` | §3.3 输出校验闸门（**AI 输出不可信的唯一入口**）。S9a 起 `filePath` 允许落在**取过件的文件**里（`allowedPaths`），并在比对前把相对路径解析成绝对路径（D67） | `ValidationIssue`:52 `ExplanationOutline`:71 `ExplanationValidation`:78 `coerceEmphasis`:95 `parseMaybeJson`:105 `validateExplanation`:350 `describeIssues`:389 || `packages/extension-anchor/src/playback/WalkthroughSession.ts` | 会话状态机（游标是「拍」，vscode-free） | `WalkthroughSnapshot`:34 `SnapshotListener`:54 `PLAY_INTERVAL_MS`:60 `beatsPerStep`:67 `totalBeats`:71 `locateBeat`:78 `firstBeatOfStep`:93 `WalkthroughSession`:100 |
 | `packages/extension-anchor/src/playback/decorationPlan.ts` | 「这一拍该画哪些框」的纯决策 | `DecorationSpec`:25 `EMPHASES`:32 `FALLBACK_EMPHASIS`:34 `planForBeat`:40 `primaryLocationOf`:60 `focusFileOf`:83 `specsInFile`:95 |
-| `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档**。S9a 修（D69）：**一拍只画焦点文件**（`focusFileOf`/`specsInFile`），打开目标文件用 `ViewColumn.One` + 预览标签；D70：同一文件不重复打开、渲染不并发堆积（只留最后一拍） | `CodeWalkthroughPlayer`:83 |
-| `packages/extension-anchor/src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 | `SidebarHandlers`:17 `SidebarPanel`:28 |
+| `packages/extension-anchor/src/playback/CodeWalkthroughPlayer.ts` | decoration 渲染 + `revealRange(InCenter)`；**只读不写文档**。S9a 修（D69）：**一拍只画焦点文件**（`focusFileOf`/`specsInFile`），打开目标文件用 `ViewColumn.One` + 预览标签；D70：同一文件不重复打开、渲染不并发堆积（只留最后一拍）；D77：目标文件已打开但**不在前台**时 `#focus` 把它切上来（复用 document，不重建标签）—— 否则框画在背景标签上、`revealRange` 静默失效；**D84：暴露 `switching`（正在开/关文件）与 `onDidSettle`（屏幕落定），宿主据此在"我们自己换文件"的窗口期里推迟收工判定** | `CodeWalkthroughPlayer`:83 || `packages/extension-anchor/src/sidebar/SidebarPanel.ts` | 侧边栏宿主侧：建面板 / 发消息 / 收消息 / 重放 | `SidebarHandlers`:17 `SidebarPanel`:28 |
 | `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（读用户实际绑定，并**交给侧边栏复用**）+ `probe()` 自检。**S8 起状态词来自 `protocol.ts`**，这里只剩图标表 | `StatusBarHandle`:24 `createStatusBar`:61 |
 | `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表（**S8 起两张：线1 的 `WALKTHROUGH_CHORDS` + 线2 的 `LINE2_CHORDS`，各有各的镜像锁**）+ JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:19 `WalkthroughChordSpec`:21 `WALKTHROUGH_CHORDS`:36 `LINE2_CHORDS`:105 `ResolvedChord`:119 `ResolvedChords`:120 `KeyBindingEntry`:122 `defaultChords`:129 `keybindingsPathFrom`:142 `stripJsonc`:159 `parseKeybindings`:218 `resolveChords`:234 `formatChord`:301 |
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |

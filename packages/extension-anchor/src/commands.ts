@@ -14,15 +14,20 @@
 import * as vscode from 'vscode';
 import {
   AnchorError,
+  basenameOf,
+  compareSegments,
   createContextRequestLogger,
   describeError,
   dirnameOf,
   isAnchorError,
   isCodeLocation,
   isPDFLocation,
+  describeSegments,
   locationLabel,
+  mergeSegments,
   samePath,
 } from '@anchor/core';
+import type { AnchorSegment } from '@anchor/core';
 import type {
   Anchor,
   CodeLocation,
@@ -56,12 +61,14 @@ import { createOpenAICompatibleProvider } from './orchestrator/providers/openAIC
 import { describeIssues, validateExplanation } from './orchestrator/validateExplanation.ts';
 import { describeFetched } from './orchestrator/validateContextRequest.ts';
 import { isAnchorLike } from './protocol.ts';
+import { LAST_RUN_KEY, readLastRun, toStoredRun } from './session/lastRun.ts';
+import type { LastRun } from './session/lastRun.ts';
 import { CodeWalkthroughPlayer } from './playback/CodeWalkthroughPlayer.ts';
 import { WalkthroughSession } from './playback/WalkthroughSession.ts';
 import type { WalkthroughSnapshot } from './playback/WalkthroughSession.ts';
 import { SidebarPanel } from './sidebar/SidebarPanel.ts';
 import type { SidebarHandlers } from './sidebar/SidebarPanel.ts';
-import { createStatusBar } from './sidebar/statusBar.ts';
+import { createQueueStatusBar, createStatusBar } from './sidebar/statusBar.ts';
 import { StartViewProvider } from './start/StartViewProvider.ts';
 import { buildStartModel, findStartAction } from './start/startModel.ts';
 import type { StartModel } from './start/startModel.ts';
@@ -132,6 +139,28 @@ function fetchPolicyFor(scope: 'related' | 'same-dir' | 'off', anchorFile: strin
   return { scope, roots, maxLines };
 }
 
+/**
+ * 一段原文的第一行，截到 60 字符 —— 给"队列里第 N 段是哪一行"这类清单当附注。
+ *
+ * @anchor 为什么要有这一行附注：只有行号时，用户看到的是"第 1 段：第 21-25 行"，
+ *         而他脑子里记的是**内容**（"那个初始化那段"）。带上一行原文，他不用回去翻代码
+ *         就知道哪一段是哪一段 —— 而"选错了要移除哪一段"正是最容易选错的一步。
+ */
+function firstLineOf(text: string): string {
+  return (text.split(/\r?\n/)[0] ?? '').trim().slice(0, 60);
+}
+
+/**
+ * 存档时间的人话（D83）。**不走 `toLocaleString`**：那会随系统区域变，
+ * 于是同一份存档在不同机器上印出不同形状的字符串 —— 而这句话是要被断言、被复述的。
+ */
+function stampOf(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '时间未知';
+  const d = new Date(ms);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function registerCommands(context: vscode.ExtensionContext): void {
   const fsPort: FileSystemPort = createFileSystemPort();
 
@@ -164,6 +193,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   const status = createStatusBar(context);
+  // 队列的常驻计数（D81）。与 `status` 分开：讲解结束后那一项要收掉，队列不空就得一直挂着。
+  const queueBar = createQueueStatusBar();
 
   /**
    * 取件日志的落点（§7 要求每个 `ContextRequest` 都记录，含被拒的）。
@@ -245,6 +276,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   let session: WalkthroughSession | undefined;
   /** 当前会话的锚点文件（D69）。`session:update` 带着它，面板据此决定要不要标文件名。 */
   let sessionAnchorPath: string | null = null;
+  /**
+   * 锚点文件刚被关掉、结果**还没定**（D78）。见 `onDidCloseTextDocument` 那段：
+   * 预览替换与用户主动关标签在回调里长得一模一样，要等下一次"可见编辑器变了"才能分辨。
+   */
+  let pendingAnchorClose = false;
   let unsubscribe: (() => void) | undefined;
   /** 每次 explain() 领一个号：慢的那次回来时若号已过期，就丢弃它的结果（见 explain） */
   let generation = 0;
@@ -284,9 +320,92 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    */
   let lastCapture: { anchor: Anchor; scope: CaptureScope } | undefined;
 
+  /**
+   * **多段选择队列**（D80）。
+   *
+   * @anchor 用户要的是"一次只能选一段 → 一段段往队列里加 → 左侧能实时增减"。
+   *         所以队列存的是**每一次选择当时**的完整身信息（文件 + 行区间 + 当时的原文），
+   *         而不是只存行号：**用户不会一直保持选中状态** ——
+   *         加完一段他就要去别的地方选下一段，那时选区已经变了。
+   *         只在最后"讲这些"的那一刻才 `mergeSegments` 合成一个锚点。
+   *
+   *         这是它和拉一片连续选区最大的区别：**选择 → 加入 → 再选择**是三轮操作，
+   *         中间隔着任意长的时间；每一步都要能单独失败、单独撤销。
+   */
+  let segmentQueue: AnchorSegment[] = [];
+
+  /**
+   * **上次讲解**的那一份存档（D83）。
+   *
+   * @anchor 用户的原话：「讲解结束时，需要能重新讲，并且应该能保存/重放之前的内容」。
+   *         在这之前，一份讲解是**一次性**的：`done` / `idle` 之后它就只活在 webview 的 DOM 里，
+   *         面板一关、VS Code 一退，几十秒的等待连同花掉的 token 一起没了 ——
+   *         想再看一遍只能重新问一次模型。
+   *
+   *         **懒加载 + try/catch**：`workspaceState` 只有真正要用它时才读，
+   *         这样激活阶段一个 `vscode` 取值都不多（S1 起的老规矩），
+   *         也让 `smoke-extension.mjs` 那种"只验激活"的桩不必覆盖 Memento。
+   */
+  let lastRun: LastRun | undefined;
+  let lastRunLoaded = false;
+
+  /**
+   * 上一次真正**问了模型并成功**的那一份（D83）。读不出来就是 `undefined` —— 绝不抛：
+   * 调用方是命令与面板，一个坏存档不该让整条链路炸掉。
+   *
+   * 存档可能来自**上一个版本的我们**（它跨 VS Code 重启活着），所以形状校验交给
+   * `readLastRun`，这里只负责"读一次、记住"。
+   */
+  function lastRunOf(): LastRun | undefined {
+    if (!lastRunLoaded) {
+      lastRunLoaded = true;
+      try {
+        lastRun = readLastRun(context.workspaceState.get(LAST_RUN_KEY));
+      } catch (err) {
+        lastRun = undefined;
+        note(`上次讲解存档读不出来：${describeError(err)}`);
+      }
+    }
+    return lastRun;
+  }
+
+  /**
+   * 把一份**已经过了 §3.3 闸门**的讲解记下来（D83）。
+   *
+   * @anchor 只在 `runExplain` 成功那一刻调用，别的地方一律不写：这份数据的意义是
+   *         "我能不花钱再放一遍刚才那一份"，所以它必须是**用户真正看过的那一份**，
+   *         而不是某个中间态。写失败也只是少一个功能，绝不许影响讲解本身
+   *         （工作区只读、Memento 满了都可能失败），因此整段包在 try 里。
+   */
+  function rememberRun(result: ExplanationResult, anchor: Anchor): void {
+    const run: LastRun = { result, anchor, savedAt: Date.now() };
+    lastRun = run;
+    lastRunLoaded = true;
+    try {
+      void context.workspaceState.update(LAST_RUN_KEY, toStoredRun(run));
+    } catch (err) {
+      note(`上次讲解没能存下来（${describeError(err)}）—— 这一次仍然能重放，只是重启之后会丢`);
+    }
+    refreshStart();
+  }
+
   // 播放器与侧边栏都延迟构造：激活阶段不做任何 vscode 取值/建面板，启动开销为零，
   // 也让 scripts/smoke-extension.mjs 的桩不必覆盖一堆用不到的 API。
-  const playerOf = (): CodeWalkthroughPlayer => (player ??= new CodeWalkthroughPlayer());
+  /**
+   * 播放器"屏幕落定"的退订（D84）。
+   *
+   * @anchor 收工判定必须在**我们自己换完文件之后**再判一次：VS Code 的一次预览轮换里，
+   *         "旧标签关了"与"新文件可见了"是两个先后到达的信号，中间那一帧我们这边什么文件
+   *         都还不可见。判定若落在那一帧上就会误收工 —— 详见 `evaluateSessionEnd`。
+   */
+  let settleSub: (() => void) | undefined;
+  const playerOf = (): CodeWalkthroughPlayer => {
+    if (!player) {
+      player = new CodeWalkthroughPlayer();
+      settleSub = player.onDidSettle(() => evaluateSessionEnd());
+    }
+    return player;
+  };
 
   const handlers: SidebarHandlers = {
     onNext: () => next(),
@@ -299,6 +418,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       const step = session?.snapshot.result.steps[index];
       if (step) void revealStep(step);
     },
+    // D83：讲完之后面板上那两颗按钮。**两条路各走各的**：
+    // 重放是本地的事（不碰网络），重新讲要走完整条链路（会再花一次钱）——
+    // 所以在面板上也是两颗按钮，我们不替用户选。
+    onReplay: () => replayLast(),
+    onReExplain: () => void reExplainLast(),
   };
 
   /**
@@ -440,6 +564,16 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     unsubscribe = undefined;
     session?.dispose();
     session = undefined;
+    /**
+     * 锚点文件必须**随会话一起消失**（D78）。
+     *
+     * @anchor 它和 `session` 是一对：`session` 死了，"哪个文件被关掉算结束"这个问题就不再有主。
+     *         不清掉的话，下一次会话（比如 PDF 锚点，那时 `sessionAnchorPath` 本该是 null）
+     *         会继承上一个会话的文件名 —— 于是关掉**上一轮**选过的那个 .c 文件，
+     *         就能把**这一轮**毫不相干的 PDF 讲解一并杀掉。这正是我们要修的那类误杀的翻版。
+     */
+    sessionAnchorPath = null;
+    pendingAnchorClose = false;
     setActive(false);
     setContextKey('anchorExplain.sessionOpen', false);
     status.hide();
@@ -450,6 +584,120 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       sidebar?.post({ type: 'session:end' });
     });
     refreshStartOn('idle');
+  }
+
+  /**
+   * 当前这一拍**讲的是哪些文件**（D82）。判据见 `onDidChangeVisibleTextEditors` 那一段。
+   *
+   * @anchor 为什么连子高亮一起收：一步的框可能同时落在两处（`location` 在 A 文件、
+   *         某个子高亮在 B 文件），而播放器只把**焦点文件**打开（D69）——
+   *         所以"这一拍还有落脚点"这件事必须按"涉及的文件里有任意一个还可见"来判，
+   *         只判 `step.location` 会在那种跨文件的一拍上判错。
+   */
+  function currentStepFiles(): string[] {
+    const step = session?.snapshot.step;
+    if (!step) return [];
+    const paths: string[] = [];
+    if (isCodeLocation(step.location)) paths.push(step.location.filePath);
+    for (const highlight of step.highlights ?? []) {
+      if (isCodeLocation(highlight.location)) paths.push(highlight.location.filePath);
+    }
+    return paths;
+  }
+
+  /**
+   * 这次讲解**住在**哪些文件里（D84）：锚点文件 + **所有**步骤与子高亮的位置。
+   *
+   * @anchor 它与 `currentStepFiles()` 看着像，问的是两件事，所以都必须单独存在：
+   *         - `currentStepFiles()`：**"这一刻还有落脚点吗"** —— 收工判定的内容
+   *         - `sessionFiles()`：**"这个被关掉的文件，值不值得立案"** —— 收工判定的入口
+   *
+   *         入口这一层是补上一个真实的误杀：`onDidCloseTextDocument` 是**任何**文档关闭都会触发的，
+   *         而 VS Code 在正常使用中一直在关文档（预览替换、关别的组、删掉的文件…）。
+   *         旧代码把它们一律记成"待定"，于是**与本次讲解毫不相干的一次关闭**也会给收工判定上膛 ——
+   *         等下一次"可见编辑器变了"（可能是用户随手点开另一个文件）时，判定拿到的正是
+   *         "锚点与这一拍的文件都不可见"，于是讲解被一次莫名其妙的操作收掉。
+   *         用户报的「切回 main.c 又死了」就在这条路上：屏幕那一刻长什么样取决于 VS Code
+   *         发事件的时机，而不是取决于用户想干什么。
+   *
+   *         取**所有步骤**而不是当前这一步：预览轮换顶掉的恰恰通常是**上一步**的文件
+   *         （D78 踩过的那一脚），只收当前步会把真正相关的那次关闭漏掉。
+   */
+  function sessionFiles(): string[] {
+    const steps = session?.snapshot.result.steps ?? [];
+    const paths: string[] = [];
+    if (sessionAnchorPath) paths.push(sessionAnchorPath);
+    const add = (loc: WalkthroughStep['location'] | undefined): void => {
+      if (loc && isCodeLocation(loc)) paths.push(loc.filePath);
+    };
+    for (const step of steps) {
+      add(step.location);
+      for (const highlight of step.highlights ?? []) add(highlight.location);
+    }
+    return paths;
+  }
+
+  /**
+   * 收工判定 —— **本扩展里唯一一处**决定"这次讲解要不要收掉"的地方（D84）。
+   *
+   * @anchor 从 D78 到 D84，这条判据被改过三次，而三次错在同一个地方：
+   *         **它读的是"屏幕某一瞬间的样子"，而那一瞬间是不是用户造成的，它从来没问过。**
+   *         VS Code 的一次预览轮换不是一个原子动作：它先报"被顶掉的标签关了"，
+   *         之后才让新文件出现在 `visibleTextEditors` 里。夹在中间的那一帧，
+   *         我们这边一个文件都还不可见 —— 判定若落在那一帧上，就会把
+   *         "播放器正把用户带到某个文件"读成"用户把讲解的东西全关了"。
+   *         于是症状随"哪个文件、哪台机器、哪一次"而变：有的文件能切，切回来就死。
+   *
+   *         所以现在多问一句**这件事是不是我们自己造成的**（`player.switching`），
+   *         并且**推迟到屏幕落定之后再判**（`onDidSettle` 会再调一次本函数）。
+   *         这不是"更小心地猜时机"，而是换了个判据：不再看某一帧，
+   *         只看"尘埃落定之后，这次讲解还站得住吗"。
+   *
+   *         **每一次判定都写一行日志**：这条路上过去没有任何痕迹，用户只能说"又死了"，
+   *         而我们无从知道是哪一条分支、当时屏幕长什么样。日志里那句"因为…所以…"
+   *         就是下一次排查的全部线索（与 D71「失败必须可见」同一条规矩）。
+   */
+  function evaluateSessionEnd(): void {
+    if (!pendingAnchorClose) return;
+    if (!session) {
+      pendingAnchorClose = false;
+      return;
+    }
+
+    const visible = (path: string): boolean =>
+      vscode.window.visibleTextEditors.some((e) => samePath(e.document.uri.fsPath, path));
+
+    // 我们自己正在打开/切前台某个文件：这一刻的"看不见"是我们造成的，等它落定再说。
+    // 注意这里**不消费** pendingAnchorClose —— 消费了就再也不会被判了。
+    if (player?.switching === true) {
+      note('收工判定：播放器正在换文件 —— 推迟到屏幕落定之后再判');
+      return;
+    }
+
+    pendingAnchorClose = false;
+
+    // 没有锚点文件（PDF 锚点 / 老锚点）时**一律不 stop**（D78 的立场）：那种情形下我们拿不到
+    // "哪个文件的关闭意味着结束"这个信息，宁可什么都不做，也不要再制造一次误杀。
+    if (!sessionAnchorPath) {
+      note('收工判定：这次讲解没有锚点文件（PDF / 老锚点）→ 不自动收工');
+      return;
+    }
+
+    // 锚点文件又可见了（我们自己的预览轮换把它换回来了 / 用户切回来了）→ 讲解继续
+    if (visible(sessionAnchorPath)) {
+      note(`收工判定：锚点文件（${basenameOf(sessionAnchorPath)}）还在屏幕上 → 讲解继续`);
+      return;
+    }
+
+    // 【D82】锚点没了不等于到头了：这一拍要讲的那个文件还在屏幕上，讲解显然正在被看着
+    if (currentStepFiles().some(visible)) {
+      note('收工判定：这一拍讲的文件还在屏幕上 → 讲解继续');
+      return;
+    }
+
+    // 锚点没了、这一拍落脚的文件也没了 → 是真的一条路都没有了，这才收工
+    note('收工判定：锚点与这一拍的文件都不在屏幕上了 → 结束讲解');
+    stop();
   }
 
   // ───────────────────────────────────────────────────────────
@@ -472,6 +720,10 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       providerSummary: describeConfig(cfg),
       peerInstalled: peer() !== undefined,
       captureSummary: lastLine,
+      queueSummary: describeQueue(),
+      queueCount: segmentQueue.length,
+      // D83：只回答"能不能重放"（`lastRunOf` 内部只读一次存档，见那段注释）
+      hasLastRun: lastRunOf() !== undefined,
       busy: busyPhase,
       session: snapshot
         ? { index: snapshot.index, total: snapshot.total, state: snapshot.state, stale: snapshot.stale }
@@ -777,7 +1029,50 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const panel = sidebarOf();
     panel.post({ type: 'tooltrace:reset' });
     for (const entry of traceThisRun) panel.post({ type: 'tooltrace:append', entry });
+    // 先落存档再开会话（D83）：存档是"这一份讲解"的属性，与渲染成功与否无关 ——
+    // 万一 `startSession` 里的某个渲染面抛了，用户至少还能重放这一份。
+    rememberRun(result, anchor);
     startSession(result, anchor);
+  }
+
+  /**
+   * 「重放上次讲解」（D83）—— 把存下来的那份从第 1 步再走一遍。
+   *
+   * @anchor 它与「重新讲一遍」**只差一个字，代价差一个数量级**：这一条不碰网络 ——
+   *         `startSession` 拿的是存下来的 `ExplanationResult`，所以结果与刚才那一遍
+   *         **逐字相同**（高亮的位置也一模一样），也不会再花一次 token。
+   *         用户说"想再看一遍"时，想要的几乎都是这个。
+   */
+  function replayLast(): void {
+    const run = lastRunOf();
+    if (!run) {
+      void vscode.window.showWarningMessage(
+        'Anchor：还没有存下任何讲解 —— 先选中一段讲一次，之后就能重放了。',
+      );
+      return;
+    }
+    note('重放上次讲解（没有请求模型）');
+    startSession(run.result, run.anchor);
+    void vscode.window.setStatusBarMessage('Anchor：正在重放上次那份讲解 —— 从第 1 步开始', 2500);
+  }
+
+  /**
+   * 「重新讲一遍」（D83）—— 同一个锚点，**再问一次模型**。
+   *
+   * @anchor 走的是 `explain` 那条完整链路（进度、取件日志、§3.3 闸门、失败提示全都在里面），
+   *         所以它不需要另写一套；多的只是那行日志 —— 用户连点两次时，
+   *         屏幕上与日志里都要看得出**这是新的一次**，而不是重放（D68 同一条规矩）。
+   */
+  async function reExplainLast(): Promise<void> {
+    const run = lastRunOf();
+    if (!run) {
+      void vscode.window.showWarningMessage(
+        'Anchor：还没有讲过任何一段 —— 先选中一段，按「讲解选中的代码」。',
+      );
+      return;
+    }
+    note(`重新讲一遍：${locationLabel(run.anchor.location)}（会再问一次模型）`);
+    await explain(run.anchor);
   }
 
   /**
@@ -812,6 +1107,33 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     return picked?.scope;
   }
 
+  /**
+   * 「这段想重点讲什么？」—— 选完范围之后、取件之前问一句（D79）。
+   *
+   * @anchor 为什么非有不可：一个文件往往做很多事，用户可能只想快速定位某**一个**功能。
+   *         没有这一问，模型会把整段从头讲一遍，用户得听一堆他不要的东西 ——
+   *         他的原话是"一个文件可能做很多事，用户可能不想都听，只想快速定位某功能"。
+   *
+   *         为什么**可以跳过**（回车 / Esc 都返回 undefined，不是取消整次讲解）：
+   *         这句话是**可选**的补充信息，不是必填项。把它做成必答题会让"就想整段听一遍"
+   *         的常见用法凭空多一步 —— 那种情况下用户想说的就是"没什么特别想听的"。
+   *         Esc 在这里**不取消讲解**：取消的入口是上一步那个确认框（按 Esc 就整个走开了），
+   *         这里再让 Esc 有"取消"的含义，用户按错一次就丢掉刚选好的段，代价太大。
+   *
+   *         提示语与占位符都**举一个例子**（"比如：只关心边界判断"）：
+   *         用户第一次看到这个框时并不知道该写多细，一个例子比一句"请输入"有用得多。
+   */
+  async function askFocus(): Promise<string | undefined> {
+    const typed = await vscode.window.showInputBox({
+      title: 'Anchor 讲解',
+      prompt: '这段想重点讲什么？（可留空 —— 直接回车就是整段都讲）',
+      placeHolder: '比如：只关心空/满的边界判断，别讲那些常规读写',
+    });
+    // 用户按 Esc → undefined（跳过）；回车但没打字 → `''`（也跳过）。
+    // 两者在这里合成同一个结果，因为对下游而言它们是同一件事：没有额外要求。
+    return typeof typed === 'string' && typed.trim() !== '' ? typed.trim() : undefined;
+  }
+
   async function capture(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
@@ -822,9 +1144,14 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const scope = await askWhatToExplain(editor);
     if (!scope) return; // 用户取消：什么也不做，比默默讲一段他没点过头的内容好
 
+    // 选完范围再问"重点讲什么"（D79）。放在取件**之前**：这句话要进 prompt，
+    // 也影响模型要不要取件（比如"只关心边界判断"它就会去读宏定义）——
+    // 取完件再问就晚了。
+    const focus = await askFocus();
+
     let anchor: Anchor;
     try {
-      anchor = await codeAdapter.capture(scope);
+      anchor = await codeAdapter.capture(scope, focus);
     } catch (err) {
       // 确认之后、取件之前环境变了（文件被关掉）。这不是"讲解失败"，所以不走 explain 的提示。
       void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
@@ -834,6 +1161,199 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     lastCapture = { anchor, scope };
     refreshStart();
     await explain(anchor);
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // 多段选择队列（D80）
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * 把**当前选区**加进队列。一次一段，可以反复加 —— 这就是"一次一次选择"那一句。
+   *
+   * @anchor 与 `capture` 的关键区别：`capture` 是"选 → 立刻讲"，这里是"选 → 存起来"。
+   *         存完之后用户可以**继续去别处选下一段**（选区会变），最后再统一讲。
+   *         所以这里必须把当时的原文一并存下（`snapshotSelection`），
+   *         不能只记行号回头再读 —— 中间文件可能被改、文件甚至可能被关掉。
+   */
+  async function addSegment(): Promise<void> {
+    try {
+      const seg = await snapshotSelection();
+      if (!seg) {
+        void vscode.window.showWarningMessage('Anchor：先在编辑器里选中一段，再按「加入选择队列」。');
+        return;
+      }
+
+      /**
+       * 换文件时**清空**队列，而不是拒绝加入。
+       *
+       * 为什么：一次讲解只有一个锚点文件（`mergeSegments` 也会因此报错），
+       * 而用户此刻的意图几乎肯定是"我改盯另一个文件了" ——
+       * 一个空招待弄清楚，一个混着两个文件的队列则会在最后一步突然报错，
+       * 那时他已经选了四五段，损失太大。**早点说清楚比晚点报错好**。
+       */
+      if (segmentQueue.length > 0 && !samePath(segmentQueue[0]!.filePath, seg.filePath)) {
+        const keep = await vscode.window.showQuickPick(
+          [
+            { label: '清空，只讲新文件里的这段', description: '刚才那几段会被丢掉', value: 'reset' },
+            { label: '取消，回到刚才的队列', description: '这次什么都不改', value: 'cancel' },
+          ],
+          { title: 'Anchor 多段选择', placeHolder: '这段不在队列现在那个文件里' },
+        );
+        if (!keep || keep.value === 'cancel') return;
+        segmentQueue = [];
+      }
+
+      // 同一段重复加入：老实加进去，而不是悄悄去重 ——
+      // 用户按了两次就是按了两次，替他"聪明地"丢掉一次反而让他怀疑队列没生效。
+      segmentQueue.push(seg);
+
+      // 加完**当场按行号排**（D80）：用户选的顺序常常是"想到哪选到哪"，
+      // 而"第 1 段"这句话会在三处出现（队列那一行、可以点掉的那个列表、发给模型时标的号）。
+      // 若不在这里排，用户点掉"第 1 段"移除的其实是模型眼里的第 2 段 —— 不报错、不崩，
+      // 只是讲的内容与他想的不一样。排序用 core 那**唯一一个**比较器，三处才不会各排各的。
+      segmentQueue.sort(compareSegments);
+      syncQueue();
+      refreshStart();
+      // 回执要说三件事（D81）：**进了**、**现在共几段**、**接下来会发生什么**。
+      // 只写"已加入第 2 段"是不够的 —— 用户此刻真正想知道的是"我攒的这些最后会怎样"。
+      void vscode.window.setStatusBarMessage(
+        `Anchor：已加入第 ${seg.lineStart}-${seg.lineEnd} 行 —— 队列里现在有 ${segmentQueue.length} 段（讲的时候会合成一份）`,
+        4000,
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
+    }
+  }
+
+  /** 当前选区的一份**独立快照**（连原文一起）。没有选区或没有活动编辑器 → null。 */
+  async function snapshotSelection(): Promise<AnchorSegment | undefined> {
+    const picked = await editorPort.getSelection();
+    if (!picked) return undefined;
+    return {
+      filePath: picked.filePath,
+      lineStart: picked.lineStart,
+      lineEnd: picked.lineEnd,
+      text: picked.text,
+    };
+  }
+
+  /**
+   * 队列里每一段的"一行描述"。**三处共用**：状态栏提示、移除用的 QuickPick、「显示状态」。
+   *
+   * @anchor 为什么非收成一处（与 `describe.ts` 同一条理由）：这三处说的是同一件事
+   *         （"队列里第 N 段是哪一行"），各写一遍的第一个后果不是重复，而是**它们会分家** ——
+   *         用户按状态栏记着"第 2 段是 40-48"，点开移除清单却看到另一个行号，
+   *         那一刻他会怀疑整个队列是坏的（而真正错的可能只是措辞）。
+   */
+  function queueLines(): { label: string; description: string; index: number }[] {
+    return segmentQueue.map((seg, i) => ({
+      label: `第 ${i + 1} 段：第 ${seg.lineStart}-${seg.lineEnd} 行`,
+      description: firstLineOf(seg.text),
+      index: i,
+    }));
+  }
+
+  /**
+   * 队列变了就同步那个**常驻的**计数（D81）。
+   *
+   * 只在这三处调用（加 / 移除 / 清空）—— 不挂在 `refreshStart()` 上：
+   * 那个函数被设置变更、会话推进等一堆路径调用，而队列只在**这三件事**里变。
+   */
+  function syncQueue(): void {
+    queueBar.update({
+      count: segmentQueue.length,
+      lines: queueLines().map(({ label, description }) => ({ label, description })),
+      summary: describeQueue(),
+    });
+  }
+
+  /** 队列里移除一段。**不重排剩下的**，只把它拿掉 —— 索引就是用户看到的那一行的序号。 */
+  function removeSegmentAt(index: number): void {
+    if (!Number.isInteger(index) || index < 0 || index >= segmentQueue.length) return;
+    segmentQueue.splice(index, 1);
+    syncQueue();
+    refreshStart();
+  }
+
+  function clearSegments(): void {
+    segmentQueue = [];
+    syncQueue();
+    refreshStart();
+  }
+
+  /**
+   * 讲队列里的全部段 —— **合成一段讲**（这是用户选的语义：多段同属一个功能，要连起来讲）。
+   *
+   * @anchor 为什么合并而不是逐段各讲一遍：用户的场景是"一个功能分散在几处"
+   *         （比如写操作和读操作分开在两个地方），他要的是"那这个功能到底怎么跑的"，
+   *         而逐段各讲一遍会把这个功能切碎成 N 份互不相干的说明 —— 那还不如分别多选几次。
+   */
+  async function explainSegments(): Promise<void> {
+    if (segmentQueue.length === 0) {
+      void vscode.window.showWarningMessage('Anchor：选择队列是空的 —— 先选中一段，按「加入选择队列」。');
+      return;
+    }
+    const focus = await askFocus();
+    try {
+      const merged = await buildMergedAnchor(focus);
+      lastCapture = { anchor: merged, scope: 'selection' };
+      refreshStart();
+      await explain(merged);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
+    }
+  }
+
+  /**
+   * 把队列合成一个锚点。`sourceId` 现算（此刻的文件指纹）：
+   * 队列可能攒了很久，中间文件被改过 —— staleness 要能如实反映"讲的是哪一版"。
+   */
+  async function buildMergedAnchor(focus: string | undefined): Promise<Anchor> {
+    const first = segmentQueue[0]!;
+    // 取不到指纹（文件被删/无权限）就退化成路径 —— 与 `CodeAdapter.capture` 同一条立场
+    const hash = await editorPort.documentTextHash(first.filePath);
+    return mergeSegments(segmentQueue, {
+      sourceId: hash ?? first.filePath,
+      sourceName: basenameOf(first.filePath),
+      focus,
+    });
+  }
+
+  /**
+   * 队列的现状一句话。开始面板那一行显示的**就是这句** —— 于是"左侧实时增减"看得见：
+   * 每加一段、每删一段，这一句都会变（`refreshStart()` 由 `addSegment` / `removeSegmentAt` 触发）。
+   *
+   * `null` = 空队列（那一组按钮据此灰掉）。
+   */
+  function describeQueue(): string | null {
+    if (segmentQueue.length === 0) return null;
+    const name = basenameOf(segmentQueue[0]!.filePath);
+    const lines = describeSegments(segmentQueue);
+    return `${segmentQueue.length} 段（${name} 第 ${lines} 行）`;
+  }
+
+  /**
+   * 从队列里挑一段移除。**用 QuickPick 而不是给面板加带参数的按钮**：
+   * §5.5 的安全约定是"webview 只回传动作 id，不许指定命令参数"，
+   * 而"移第 3 段"必须带参数。这条规矩不必为它破例 —— 走 QuickPick 也一样是一次点击。
+   */
+  async function removeSegment(): Promise<void> {
+    if (segmentQueue.length === 0) {
+      void vscode.window.showWarningMessage('Anchor：选择队列是空的，没有可移除的段。');
+      return;
+    }
+    // 清单与状态栏用的是**同一份** `queueLines()`：用户在状态栏看到的是"第 2 段 40-48"，
+    // 点进来移除时看到的必须一字不差是同一行（否则他会怀疑自己点错了段）。
+    const picked = await vscode.window.showQuickPick(queueLines(), {
+      title: 'Anchor 多段选择',
+      placeHolder: `要移除哪一段？（共 ${segmentQueue.length} 段）`,
+    });
+    if (!picked) return;
+    removeSegmentAt(picked.index);
+    void vscode.window.setStatusBarMessage(
+      `Anchor：已移除第 ${picked.index + 1} 段 —— 队列里还有 ${segmentQueue.length} 段`,
+      3000,
+    );
   }
 
   /** 跨扩展入口（§5.1）。参数来自别的扩展，属于外部输入，必须先过形状守卫。 */
@@ -1054,7 +1574,30 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       lastCapture ? `上次捕获：${captureSummary(lastCapture.anchor, lastCapture.scope)}` : '还没有捕获过',
     );
 
+    // 多段队列（D81）：用户报过"加入了但屏幕上没有任何提示"，
+    // 所以除状态栏那个常驻计数之外，自检里也要能一眼看到队列里**到底有什么**（连每段的首行）。
+    parts.push(
+      segmentQueue.length === 0
+        ? '多段队列：空'
+        : `多段队列：${describeQueue()} ｜ ${queueLines().map((l) => `${l.label}${l.description ? ` ${l.description}` : ''}`).join('；')}`,
+    );
+
     parts.push(`模型：${describeConfig(await readAnchorConfig(context))}`);
+
+    // 上次讲解那份存档（D83）。**它是"看不见的手"最容易出问题的地方**：
+    // 用户按了「重放上次讲解」，屏幕上是另一份讲解 —— 而那一份其实可能来自几天前。
+    // 报一句"存的是哪一段、什么时候存的"，是他唯一能核对的入口。
+    //
+    // 位置必须**带上文件名**：S9a 起 location 可以落在别的文件里，
+    // 只写「第 40-48 行」等于替他把它读成锚点文件的行号（D69 踩过的同一个坑）。
+    // 文件名取 `anchor.sourceName` 而不是 `location.filePath`：后者在 `Location` 联合里
+    // 不是每个成员都有（WebLocation 就没有），而且 sourceName 本来就是给人看的那个名字。
+    const run = lastRunOf();
+    parts.push(
+      run
+        ? `上次讲解：${run.anchor.sourceName} ${locationLabel(run.anchor.location)}（存于 ${stampOf(run.savedAt)}）`
+        : '上次讲解：还没有存下任何讲解',
+    );
 
     const step = session?.snapshot;
     parts.push(
@@ -1065,6 +1608,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
     const bar = status.probe();
     parts.push(`状态栏：${bar.shown ? bar.text : '未显示'}`);
+    // 队列那一个状态栏项也报一次（D81）：用户看不到它时，要能分辨"没显示"与"被别的项挤掉"。
+    const queueProbe = queueBar.probe();
+    parts.push(`状态栏（队列）：${queueProbe.shown ? queueProbe.text : '未显示'}`);
 
     const line = parts.join(' · ');
     console.log('[anchor] showState:', line);
@@ -1094,6 +1640,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('anchorExplain.capture', capture),
     vscode.commands.registerCommand('anchorExplain.explainAnchor', explainAnchor),
+    // D80：多段选择队列
+    vscode.commands.registerCommand('anchorExplain.addSegment', addSegment),
+    vscode.commands.registerCommand('anchorExplain.explainSegments', explainSegments),
+    vscode.commands.registerCommand('anchorExplain.clearSegments', clearSegments),
+    vscode.commands.registerCommand('anchorExplain.removeSegment', removeSegment),
     vscode.commands.registerCommand('anchorExplain.next', next),
     vscode.commands.registerCommand('anchorExplain.prev', prev),
     vscode.commands.registerCommand('anchorExplain.stop', stop),
@@ -1104,6 +1655,10 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.configure', configure),
     vscode.commands.registerCommand('anchorExplain.showState', showState),
     vscode.commands.registerCommand('anchorExplain.setApiKey', setApiKey),
+    // D83：讲完之后的两个出口。**命令与面板按钮同源** —— 面板点「重放上次讲解」与
+    // 在命令面板里执行这条命令走的是同一条路（S8「面板没有可糊的地方」同一条规矩）。
+    vscode.commands.registerCommand('anchorExplain.replayLast', replayLast),
+    vscode.commands.registerCommand('anchorExplain.reExplain', reExplainLast),
 
     // 开始面板显示的四件事里，有两件不经过 emit：模型配置（改设置）与对端（装/卸线2）。
     // 不订阅它们的话，面板会一直显示打开那一刻的旧话。
@@ -1120,13 +1675,69 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.workspace.onDidCloseTextDocument((doc) => {
-      const step = session?.snapshot.step;
-      if (step && isCodeLocation(step.location) && samePath(step.location.filePath, doc.uri.fsPath)) stop();
+      /**
+       * 关掉**锚点文件**才可能是"这次讲解到头了"（D78）。
+       *
+       * @anchor 这里曾经是"关掉任何一步所在的文件就 stop()"，而那是一条**必然踩到的死路**：
+       *         播放器用**预览标签**打开跨文件的目标（D69/D77），而 VS Code 的预览标签会被
+       *         下一个预览**替换掉** —— 于是"从 main.c 讲进 main.h"这件事本身就会
+       *         **关掉 main.c 的标签**（`onDidCloseTextDocument(main.c)`）。
+       *         用户看到的是：刚讲进第二个文件，面板就变成"已结束"，
+       *         「下一步」和每一张卡片全部点不动。
+       *         （原话：「当前讲解第2段，从 main.c 进入 main.h，但是不能点击下一步，不能点击卡片」。）
+       *
+       *         **第一版修错了方向**：只把判据收窄成"锚点文件被关也停"。但预览替换关掉的
+       *         恰恰**常常就是锚点文件自己**（锚点文件通常就是用户一开始在看的那一个）——
+       *         所以收窄之后照样卡死。这也是为什么护栏必须真的复现"锚点文件被预览替换掉"
+       *         这一幕，而不是随便拿一个别的文件来试（拿错方向写的护栏会恒绿、测不出东西）。
+       *
+       *         真正的判据不是"哪个文件被关了"，而是**"关完之后还有没有得讲"**：
+       *         `onDidCloseTextDocument` 在**预览替换**和**用户主动关标签**下都会触发，
+       *         两者在回调里长得一模一样，唯一的区别是**下一刻锚点文件还在不在可见编辑器里**。
+       *         所以这里不当场决定，而是推迟到下一次 `onDidChangeVisibleTextEditors` 再看一眼：
+       *         锚点文件重新可见了（播放器把它又打开了）→ 什么都没发生，讲解继续；
+       *         锚点文件确实不在任何可见编辑器里了 → 那才是用户真的关掉了它，这时才停。
+       *
+       *         没有锚点文件时（PDF 锚点 / 老锚点）**一律不 stop**：那种情形下我们拿不到
+       *         "哪个文件的关闭意味着结束"这个信息，宁可什么都不做，也不要再制造一次误杀。
+       *
+       *         **D82 补正**：上面这套推理里有一句是不成立的 ——「锚点文件重新可见了
+       *         （播放器把它又打开了）」并不会发生：播放器**只开当前这一拍的焦点文件**，
+       *         没有任何理由把落单的锚点文件再打开一次。所以真正决定收不收工的判据
+       *         搬到了下面那个 handler 里（"这一拍还有落脚点吗"），请看那一段的长注释。
+       *
+       *         **D84 补正**：这一条还多做了一件事 —— **只给"与本次讲解有关的关闭"立案**。
+       *         它是任何文档关闭都会触发的，而"待定"这个状态只该由**我们关心的那次关闭**产生；
+       *         详见 `sessionFiles()` 与 `evaluateSessionEnd()` 的长注释。
+       */
+      if (!session) return;
+      if (!sessionFiles().some((path) => samePath(path, doc.uri.fsPath))) {
+        note(`关文件：${basenameOf(doc.uri.fsPath)} —— 与这次讲解无关，不立案`);
+        return;
+      }
+      note(`关文件：${basenameOf(doc.uri.fsPath)} —— 是这次讲解的文件，先记下（等屏幕落定再判）`);
+      pendingAnchorClose = true;
+    }),
+    /**
+     * 与上面那一条配对：**推迟一拍再看结果**（D78）。
+     *
+     * @anchor 为什么用"可见编辑器变了"当触发器，而不是 `setTimeout`：
+     *         预览替换是 VS Code 在一次编辑器切换里**连着**做的（关旧的、开新的），
+     *         `onDidChangeVisibleTextEditors` 是**语义上的**"编辑器切换有动静了"信号；
+     *         定时器等的是一个猜出来的毫秒数，慢机器上会早退、快机器上会白等。
+     *
+     *         **D84：它只是判定的入口之一，不再自己判。** 真正的判据（以及它为什么
+     *         必须在"我们自己的换文件"结束之后才能做）全在 `evaluateSessionEnd()` 里 ——
+     *         这里与播放器的"落定"回调都只是叫它一声。
+     */
+    vscode.window.onDidChangeVisibleTextEditors(() => {
+      evaluateSessionEnd();
     }),
 
     {
       dispose: () => {
         unsubscribe?.();
+        settleSub?.();
         session?.dispose();
         player?.dispose();
         status.dispose();

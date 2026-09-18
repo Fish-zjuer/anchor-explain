@@ -194,6 +194,21 @@ export function describeAnchor(anchor: Anchor): string {
 
   if (isCodeLocation(loc)) {
     lines.push(`文件路径：${loc.filePath}`, `位置：${formatLineRange(loc.lineStart, loc.lineEnd)}`);
+    /**
+     * 多段（D80）：把每一段都报出来。
+     *
+     * @anchor 为什么非说不可：`loc` 是各段的**并集外框** —— 不额外交代的话，
+     *         模型（照它读过的所有例子）会把 `第 10-80 行` 读成"选中了连续 10-80 行"，
+     *         于是它去讲中间那些**用户从未选过**的行。原话的需求是
+     *         "只想快速定位某功能"，讲一堆没选的东西正好是反面。
+     */
+    if (anchor.segments !== undefined && anchor.segments.length > 1) {
+      lines.push(
+        `**这一段是非连续的多段选择**，共 ${anchor.segments.length} 段：`,
+        anchor.segments.map((s, i) => `  第 ${i + 1} 段：第 ${s.lineStart}-${s.lineEnd} 行`).join('\n'),
+        '上面那个「第几行-第几行」只是这些段的**外框**，框内未被列举的行**没有**被选中 —— 只讲列举出来的那几段。',
+      );
+    }
     const dir = dirnameOf(loc.filePath);
     // 根目录（`/` 或 `C:`）没有信息量，不如不给 —— 给了反而像"一定要写出这个前缀"
     if (dir !== '' && dir !== '/' && !/^[A-Za-z]:$/u.test(dir)) lines.push(`所在目录：${dir}`);

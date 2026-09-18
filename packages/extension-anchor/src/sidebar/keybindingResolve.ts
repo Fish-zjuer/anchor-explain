@@ -11,12 +11,21 @@
  */
 
 /**
- * 全仓所有"我们给了默认键"的动作。线1 六个 + 开始界面 + 线2 的框选（S8）。
+ * 全仓所有"我们给了默认键"的动作。线1 七个 + 开始界面 + 线2 的框选（S8）。
  *
  * `selectRegion` 是**线2 的键位**，默认键写在线2 的 `package.json` 里，
  * 但它也是用户可能改掉的东西，所以走同一套解析 —— 面板显示的键位因此不许和线2 的声明分家。
  */
-export type ChordId = 'capture' | 'next' | 'prev' | 'stop' | 'goto' | 'playPause' | 'showStart' | 'selectRegion';
+export type ChordId =
+  | 'capture'
+  | 'addSegment'
+  | 'next'
+  | 'prev'
+  | 'stop'
+  | 'goto'
+  | 'playPause'
+  | 'showStart'
+  | 'selectRegion';
 
 export interface WalkthroughChordSpec {
   id: ChordId;
@@ -39,6 +48,17 @@ export const WALKTHROUGH_CHORDS: readonly WalkthroughChordSpec[] = [
     command: 'anchorExplain.capture',
     key: 'ctrl+shift+a',
     mac: 'cmd+shift+a',
+    when: 'editorTextFocus',
+  },
+  {
+    // D80：多段队列的「加入」。**与 capture 同款 when**（editorTextFocus）——
+    // 它就是"选中一段然后按键"这个动作，只是目的地从"立刻讲解"换成"攒进队列"。
+    // 给它一个默认键而不是只留按钮，是因为攒队列是一条**要连按好几次**的路：
+    // 选中 → 按 → 再选 → 再按，手不该回到面板上去找。
+    id: 'addSegment',
+    command: 'anchorExplain.addSegment',
+    key: 'ctrl+shift+q',
+    mac: 'cmd+shift+q',
     when: 'editorTextFocus',
   },
   {

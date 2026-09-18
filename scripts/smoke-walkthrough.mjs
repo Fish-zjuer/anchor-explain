@@ -90,6 +90,12 @@ const fetchCalls = [];
 let applyEditCalls = 0;
 let receiveFromWebview;
 let onCloseDocument;
+/** D78：`onDidChangeVisibleTextEditors` 的订阅者（宿主靠它分辨预览替换 vs 用户关标签） */
+const visibleEditorsCallbacks = [];
+/** D79：每次 `showInputBox` 收到的选项（测例据此断言提示语与占位符） */
+const inputBoxes = [];
+/** D79：输入框里用户会敲什么。默认 undefined = 按 Esc 跳过（不写重点） */
+let focusAnswer;
 
 // ── S3：模型端点也是桩 ──────────────────────────────────────────────────────
 // 从 S3 起 `capture` 走的是**真的编排循环 + 真的 OpenAI 兼容实现**，
@@ -309,6 +315,14 @@ const editor = {
 };
 let closed = false;
 let disposedThrow = false;
+/**
+ * D84：让 `showTextDocument` **挂住**，好复现"播放器正在换文件"的中间态。
+ * 真 VS Code 里那一刻同样是一个异步窗口（打开文件、切前台），只是长度不可控；
+ * 桩把它变成一个可以精确停在其中的状态，否则这条护栏测不到东西。
+ */
+let holdShow = false;
+let releaseShow = null;
+let showCalls = 0;
 
 /** D64：进度的 report 文案（链式冒烟会断言"模型在跑的时候屏幕上真有东西"） */
 const progressReports = [];
@@ -342,6 +356,11 @@ const vscodeStub = {
     },
     visibleTextEditors: [editor],
     activeTextEditor: editor,
+    /**
+     * D78：宿主靠"可见编辑器变了"来分辨"预览替换"与"用户主动关标签"。
+     * 桩把它记下来，测例手动触发它来模拟"VS Code 完成了一次编辑器切换"。
+     */
+    onDidChangeVisibleTextEditors: (cb) => (visibleEditorsCallbacks.push(cb), { dispose() {} }),
     showInformationMessage: (m) => (messages.push(['info', m]), Promise.resolve(undefined)),
     showWarningMessage: (m) => (messages.push(['warn', m]), Promise.resolve(warningAnswer)),
     showErrorMessage: (m) => (messages.push(['error', m]), Promise.resolve(undefined)),
@@ -354,14 +373,29 @@ const vscodeStub = {
       // undefined 表示用户按了 Esc，那条路径也要能跑（取消不该起会话）。
       return Promise.resolve(items.find((i) => i.label === quickPickAnswer));
     },
+    // D79：选完范围之后会问一句"这段想重点讲什么"。答什么由 `focusAnswer` 决定 ——
+    // undefined 表示按了 Esc（跳过），`''` 表示直接回车（也跳过，两条路等价）。
+    showInputBox: (options) => {
+      inputBoxes.push(options);
+      return Promise.resolve(focusAnswer);
+    },
     createOutputChannel: (name) => ({
       name,
       appendLine: (line) => outputLines.push(line),
       append: (line) => outputLines.push(line),
       dispose() {},
     }),
-    openTextDocument: () => Promise.resolve(editor.document),
-    showTextDocument: () => Promise.resolve(editor),
+    // D84：能挂起（见 `holdShow` 的说明）—— 收工判定那条护栏要停在"正在换文件"里
+    showTextDocument: () => {
+      showCalls += 1;
+      if (!holdShow) return Promise.resolve(editor);
+      return new Promise((resolve) => {
+        releaseShow = () => {
+          releaseShow = null;
+          resolve(editor);
+        };
+      });
+    },
     // S8：活动栏里的「开始」视图。这条冒烟跑的是"捕获→讲解→高亮"那条链路，
     // 面板的宿主侧行为由 `smoke-extension.mjs` 真跑（那边会拿到 provider 并驱动它）。
     // 这里只需要"注册不炸"——多写一份驱动只会变成两处都要改的重复。
@@ -467,6 +501,19 @@ const vscodeStub = {
       applyEditCalls += 1;
       return Promise.resolve(true);
     },
+    /**
+     * D84：**这里挂错了命名空间，一直没人发现** —— `openTextDocument` 是 `workspace` 上的，
+     * 而它以前被写在 `window` 下（下面 `showTextDocument` 留在 `window` 是对的）。
+     *
+     * @anchor 后果不是"报错"，而是**静默降级**：播放器那段是
+     *         `try { openTextDocument() → showTextDocument() } catch { return undefined }`，
+     *         而 `workspace.openTextDocument` 在替身里是 `undefined` —— 于是"把某一拍的文件
+     *         打开到屏幕上"这条**跨文件讲解的核心路径**在链式冒烟里从来没被走过，
+     *         每一拍都停在"打不开目标文件 → 静默退化"，而所有断言照样是绿的。
+     *         这正是 D82 那条教训的翻版：**替身比现实更绿**，测出来的绿灯是假的。
+     *         （`smoke-file-switch.mjs` 里那份桩写对了，所以那条冒烟一直是有效的。）
+     */
+    openTextDocument: () => Promise.resolve(editor.document),
     onDidChangeTextDocument: () => ({ dispose() {} }),
     // S8：开始面板显示"模型"那一行，改设置要让它立刻变（这里不需要触发，只要不炸）
     onDidChangeConfiguration: () => ({ dispose() {} }),
@@ -538,9 +585,29 @@ const beforeBytes = sha1(readFileSync(MAIN_C));
 
 const ext = require(BUNDLE);
 const subscriptions = [];
+/**
+ * `workspaceState` 的替身（D83：上次讲解的存档）。
+ *
+ * 读写都走一趟 **JSON 往返**，而不是直接存同一个对象引用：真实的 Memento 就是"序列化到磁盘"，
+ * 存引用会让"我们改了自己存进去的那个对象"这种 bug 在桩里永远看不见 ——
+ * 而那正是存档这类代码最容易出的错（重放时拿到的其实是被后续步骤改过的同一份）。
+ */
+const workspaceStateStore = new Map();
+const memoryStub = {
+  get: (key) => {
+    const raw = workspaceStateStore.get(key);
+    return raw === undefined ? undefined : JSON.parse(JSON.stringify(raw));
+  },
+  update: (key, value) => {
+    if (value === undefined) workspaceStateStore.delete(key);
+    else workspaceStateStore.set(key, JSON.parse(JSON.stringify(value)));
+    return Promise.resolve();
+  },
+};
 ext.activate({
   subscriptions: { push: (...items) => subscriptions.push(...items) },
   globalStorageUri: { fsPath: path.join(ROOT, '.tmp-smoke', 'User', 'globalStorage', 'anchor.anchor-explain') },
+  workspaceState: memoryStub,
   // S3：apiKey 默认从 SecretStorage 读（§6 的 preferSecretStorage），所以桩必须有一个
   secrets: {
     get: () => Promise.resolve(secretValue),
@@ -561,6 +628,23 @@ check(decorationTypes.length === 0, '激活阶段不建 decoration type（延迟
 await registered.get('anchorExplain.explainAnchor')?.({ sourceType: 'code', sourceId: 1 });
 check(messages.at(-1)?.[0] === 'error', '非法锚点走错误提示', messages.at(-1)?.[1] ?? '(无)');
 check(webviews.length === 0, '非法锚点没有起会话');
+
+// ---- 1b. D83：还没有任何存档时，「重放上次讲解」必须说话 ----------------------
+// 这一条只能在最开始验（那时存档还是空的）。它守的是 D61 那条老规矩：
+// 命令做不到的时候必须**给出能照做的下一步**，而不是静默什么都不做 ——
+// 后者在用户眼里与"点了没反应"是同一件事，也正是这一轮反复在修的那类毛病。
+await registered.get('anchorExplain.replayLast')?.();
+check(
+  messages.at(-1)?.[0] === 'warn' && /还没有存下任何讲解/.test(messages.at(-1)?.[1] ?? ''),
+  'D83：没有存档时「重放上次讲解」给出可照做的提示（不是静默）',
+  messages.at(-1)?.[1] ?? '(无)',
+);
+await registered.get('anchorExplain.reExplain')?.();
+check(
+  messages.at(-1)?.[0] === 'warn' && /还没有讲过任何一段/.test(messages.at(-1)?.[1] ?? ''),
+  'D83：没有存档时「重新讲一遍」同样说清先去做什么',
+  messages.at(-1)?.[1] ?? '(无)',
+);
 
 // ---- 2. 正常捕获 -----------------------------------------------------------
 // S2 起 capture 之前会先弹一次确认。默认按「讲解这段」答，让本节验的还是"选中一段"这条主路径；
@@ -856,19 +940,354 @@ check(statusItems[0]?.shown === false, '这条路径下状态栏同样被收起'
 disposedThrow = false;
 
 // ---- 8. 真·onDidCloseTextDocument：讲解期间关文件 → 自动收工 ----------------
+// D78 之后这里多了一步：关标签**不当场**收工，要等"可见编辑器变了"再看一眼
+// （因为预览替换与用户关标签在 close 回调里长得一模一样）。
+// 本节验的是**用户真的关掉**那条路：关完它不在可见编辑器里了 → 收工。
 await registered.get('anchorExplain.capture')?.();
 check(webviews[0].webview.posted.at(-1)?.type === 'session:update', '为关文件路径起了新会话');
 closed = true;
+// 用户真的关标签：关完之后那个文件不在可见编辑器里（桩的 visibleTextEditors 里没有第二个文件）
+vscodeStub.window.visibleTextEditors = [];
 let closeThrew = false;
 try {
   onCloseDocument?.({ uri: { fsPath: MAIN_C } });
+  visibleEditorsCallbacks.forEach((cb) => cb());
 } catch {
   closeThrew = true;
 }
 check(!closeThrew, 'onDidCloseTextDocument 回调本身不抛');
 check(webviews[0].webview.posted.at(-1)?.type === 'session:end', '关掉正在讲的文件会主动结束会话（§4.2）');
 check(statusItems[0]?.shown === false, '关文件后状态栏已收起');
+vscodeStub.window.visibleTextEditors = [editor];
 closed = false;
+
+// ---- 8b. D78 → D82：预览标签被替换掉，不许结束会话 --------------------------
+// 这条是"从 main.c 讲进 main.h 就卡死"那个真凶的护栏。**必须真的复现那个场景**，
+// 否则它就是一条恒真的假护栏（第一版就写成了那样，而且当时确实没红）。
+//
+// 真凶的机理：
+//   播放器用**预览标签**打开跨文件目标（D77），而 VS Code 的预览标签会被**下一个预览替换掉**。
+//   于是"从 main.c 讲进 main.h"这件事本身就会触发 `onDidCloseTextDocument(main.c)` ——
+//   **被关掉的正是锚点文件自己**（锚点通常就是用户一开始在看的那一个）。
+//
+// 三个都被踩过的错误判据：
+//   ✗ 旧判据"关掉**当前这一步**所在的文件就 stop()"——预览替换关的是**上一步**的文件，
+//     而现在当前步已经在新文件里了，于是它误判成"用户不要这段了"。
+//   ✗ 收窄判据"关掉**锚点**文件就 stop()"——预览替换关的**就是锚点文件**，照样误杀。
+//   ✗ D78 那版"推迟一拍，看**锚点文件**还在不在可见编辑器里"——**它假设锚点文件会回来，
+//     而播放器只开当前这一拍的焦点文件，没有任何理由把落单的锚点再打开一次**。
+//     所以这条护栏当时在替身里是绿的（② 那条把锚点又塞回了可见列表），在真 VS Code 里却是红的。
+//     用户报的原话：「我发现，跳转文件讲解，下面也显示讲解已结束」——就是这一条。
+//
+// 三条判据错在同一个地方：**把"某个文件被关"当成了"用户要结束"**。
+//
+// 正确判据（D82，本用例锁的就是它）：问**"这次讲解还有没有落脚点"** ——
+//   当前这一拍要讲的那个文件还在屏幕上，讲解就没有到头（它正在被看着）。
+//   预览轮换**必然**把新文件留在屏幕上，所以这条判据对轮换免疫（不再依赖"锚点会回来"）。
+//
+// 下面三段是**三向**的：只写"永远不停"或"永远停"都能过，所以必须两头都钉住。
+//
+// 复现用的是 S9a 那条跨文件链路：锚点 = main.c，替身返回的步骤落在 `ring_buffer.h` 里
+// （取件时读过的文件，所以合法）。这样"跨文件"这件事是真的发生了的。
+fetchMode = 'related-ref';
+quickPickAnswer = '讲解这段';
+await registered.get('anchorExplain.capture')?.();
+// D84：等渲染落定 —— 收工判定现在**不肯在"我们正换文件"的中间态里下判断**，
+// 所以"用户关了文件"这一类断言必须建立在一个已经落定的屏幕上，否则测的是另一个时刻。
+await flush();
+
+const d78Update = webviews[0].webview.posted.at(-1);
+check(d78Update?.type === 'session:update', 'D78：起了跨文件会话（锚点 = main.c，步骤落在 ring_buffer.h）');
+check(
+  d78Update?.result?.steps?.[0]?.location?.filePath?.endsWith('ring_buffer.h') === true,
+  'D78：替身返回的步骤确实落在锚点文件之外（否则这条护栏复现不出真凶）',
+  String(d78Update?.result?.steps?.[0]?.location?.filePath ?? '(无)'),
+);
+
+/** 当前这一拍要讲的那个文件（D82 的判据读的就是它）。从宿主的快照里取，别写死 —— */
+const stepFilePath = String(d78Update?.result?.steps?.[0]?.location?.filePath ?? '');
+/** 一个"看得见 ring_buffer.h"的编辑器替身：D82 之后宿主会去看**它**在不在可见列表里 */
+const stepFileEditor = {
+  document: { uri: { fsPath: stepFilePath }, lineCount: 40, isClosed: false },
+  setDecorations() {},
+  revealRange() {},
+};
+
+// ① 预览替换：锚点文件（main.c）的标签被顶掉 → `onDidCloseTextDocument(main.c)`。
+//    宿主这时**不许**当场决定，只是把它记成"待定"。
+const endCount8b = webviews[0].webview.posted.filter((m) => m.type === 'session:end').length;
+const endCountAfterClose = () => webviews[0].webview.posted.filter((m) => m.type === 'session:end').length;
+onCloseDocument?.({ uri: { fsPath: MAIN_C } });
+check(
+  endCountAfterClose() === endCount8b,
+  'D78：关标签那一刻**不**当场结束会话（预览替换与用户关标签此时还分不出来）',
+  `session:end 次数 ${endCount8b} → ${endCountAfterClose()}`,
+);
+
+// ② 切换结束：锚点文件又可见了（在我们自己文件里换步的样子）→ 讲解继续。
+vscodeStub.window.visibleTextEditors = [editor];
+visibleEditorsCallbacks.forEach((cb) => cb());
+check(
+  endCountAfterClose() === endCount8b,
+  'D78：**锚点文件仍然可见 → 会话继续**（在我们自己的文件里换步就是这种样子）',
+  `session:end 次数 ${endCount8b} → ${endCountAfterClose()}`,
+);
+
+// ③ **D82 真凶**：锚点文件不见了（预览替换把它顶掉了、而且不会回来），
+//    但**当前这一拍讲的文件还在屏幕上** → 讲解必须继续。
+//    这一段就是"跳转文件讲解，下面也显示讲解已结束"那个 bug 的复现。
+vscodeStub.window.visibleTextEditors = [stepFileEditor];
+onCloseDocument?.({ uri: { fsPath: MAIN_C } });
+visibleEditorsCallbacks.forEach((cb) => cb());
+check(
+  endCountAfterClose() === endCount8b,
+  'D82：**锚点被预览顶掉且不再回来，但这一拍的文件还在 → 会话继续**（这正是"讲进第二个文件就说已结束"的真凶）',
+  `session:end 次数 ${endCount8b} → ${endCountAfterClose()}`,
+);
+check(
+  executed.filter((c) => c.id === 'setContext').at(-1)?.args?.[1] !== false,
+  'D82：会话仍然活着（walkthroughActive 没有被落成 false）',
+  JSON.stringify(executed.filter((c) => c.id === 'setContext').slice(-2).map((c) => c.args)),
+);
+
+// ④ 反面：连**这一拍的文件**也没了（锚点没了、落脚点也没了）→ 必须停。
+//    没有这一条的话，把 ③ 写成"永远不停"也能过 —— 那等于把真行为删掉了。
+vscodeStub.window.visibleTextEditors = [];
+onCloseDocument?.({ uri: { fsPath: MAIN_C } });
+visibleEditorsCallbacks.forEach((cb) => cb());
+check(
+  endCountAfterClose() === endCount8b + 1,
+  'D82：**锚点与这一拍的文件都没了 → 结束会话** —— 新判据没把"该停就停"删掉',
+  `session:end 次数 ${endCount8b} → ${endCountAfterClose()}`,
+);
+
+// ---- 8b-2. D84：判定读到的**那一帧**，是不是用户造成的？ ---------------------
+// 用户报的原话：「还是有问题，现在是有些文件可以切，但是切回 main.c（我第一次上传的文件），又死了。」
+//
+// 8b 那条判据（"这次讲解还有没有落脚点"）本身是对的，但它有一个前提**从来没人问过**：
+// 判定读到的那一帧，是不是用户造成的？VS Code 的一次预览轮换**不是原子动作** ——
+// 它先报"被顶掉的标签关了"，之后才让新文件出现在 `visibleTextEditors` 里。
+// 夹在中间的那一帧，我们这边**一个文件都还不可见**，而判定会把它读成
+// "用户把讲解的东西全关了" → 收工。于是症状随"哪个文件、哪一次"而变：
+// 有的文件能切（事件恰好按友好顺序到达），切回锚点文件就死。
+//
+// 入口上还有第二条同类错误：`onDidCloseTextDocument` 是**任何**文档关闭都会触发的，
+// 旧代码一律立案 —— 于是"与本次讲解无关的一次关闭"也能给判定上膛，
+// 等下一次可见变化（可能只是用户随手点开另一个文件）时才引爆。
+//
+// 所以这一节锁三件事：⑤ 换文件中间态不许判 ⑥ 无关关闭不许立案 ⑦ 用户报的那一幕（切回锚点）本身。
+fetchMode = 'related-ref';
+quickPickAnswer = '讲解这段';
+await registered.get('anchorExplain.capture')?.();
+await flush();
+// 这一轮的基线：它之前发过几次 session:end（面板的 posted 是跨会话累积的）
+const endBase = webviews[0].webview.posted.filter((m) => m.type === 'session:end').length;
+const endNow = () => webviews[0].webview.posted.filter((m) => m.type === 'session:end').length;
+check(webviews[0].webview.posted.at(-1)?.type === 'session:update', 'D84：起了新会话（锚点 = main.c，步骤落在 ring_buffer.h）');
+
+// ── ⑤ 换文件的**中间态**：播放器正把某一拍的文件打开，这一刻"什么都看不见"不算数 ──
+// 桩里让 `showTextDocument` 挂住，我们就停在"播放器正在换文件"那一瞬间（真 VS Code 里
+// 那是一个长度不可控的异步窗口 —— 这正是这个 bug 时有时无的原因）。
+vscodeStub.window.visibleTextEditors = [];
+vscodeStub.window.activeTextEditor = undefined;
+holdShow = true;
+const showBefore = showCalls;
+registered.get('anchorExplain.next')?.();
+await flush();
+await flush();
+check(
+  releaseShow !== null && showCalls > showBefore,
+  '⑤ 前置：播放器确实停在"正在打开文件"那一刻（否则这条护栏测不到东西）',
+  `showTextDocument ${showBefore} → ${showCalls}，挂住的 ${releaseShow !== null ? '有' : '无'}`,
+);
+
+// 就在这一瞬间，VS Code 把被顶掉的那个标签报成"关闭"，而可见列表此刻是空的 ——
+// 旧判据在这里就会 stop()（"锚点没了、这一拍的文件也没了"），而它其实只是**我们**在换文件。
+const notesBefore5 = outputLines.length;
+onCloseDocument?.({ uri: { fsPath: stepFilePath } });
+visibleEditorsCallbacks.forEach((cb) => cb());
+check(
+  endNow() === endBase,
+  'D84：**换文件的中间态里不下判断** —— 我们自己在打开文件造成的"看不见"，不许读成"用户关了讲解"',
+  `session:end 次数 ${endBase} → ${endNow()}（旧代码在这里会 +1）`,
+);
+// 这一条是"证据锁"：判定必须**真的走了"推迟到落定"那条路**，
+// 而不是碰巧因为别的原因没停（只断言"没停"的话，把判定整条删掉也能过）。
+check(
+  outputLines.slice(notesBefore5).some((l) => l.includes('播放器正在换文件')),
+  'D84：判定走的确实是"我们自己在换文件 → 推迟"那条分支（日志里留了痕迹）',
+  outputLines.slice(notesBefore5).join(' | ') || '(输出通道没有新行)',
+);
+
+// 屏幕落定：播放器换完了 —— 它打开的那个文件此刻就在屏幕上（这才是真实的落定样子；
+// 上面那一帧的空列表只是轮换的**中间态**）。
+vscodeStub.window.visibleTextEditors = [editor];
+vscodeStub.window.activeTextEditor = editor;
+releaseShow?.();
+holdShow = false;
+await flush();
+await flush();
+check(
+  endNow() === endBase,
+  'D84：落定之后照旧继续（这一拍的文件在屏幕上）',
+  `session:end 次数 ${endBase} → ${endNow()}`,
+);
+vscodeStub.window.activeTextEditor = editor;
+
+// ── ⑥ 与本次讲解无关的一次关闭：不许给判定上膛 ────────────────────────────
+// 「立案的入口」必须是"这次讲解住的那个文件被关了"。任何文档关闭都立案的话，
+// 一次无关的关闭会在**很久之后**的一次可见变化上引爆，而那时屏幕长什么样谁也说不清。
+const unrelatedEditor = {
+  document: { uri: { fsPath: path.join(FIXTURES, 'README.md') }, lineCount: 10, isClosed: false },
+  setDecorations() {},
+  revealRange() {},
+};
+onCloseDocument?.({ uri: { fsPath: path.join(FIXTURES, 'README.md') } });
+vscodeStub.window.visibleTextEditors = [unrelatedEditor];
+visibleEditorsCallbacks.forEach((cb) => cb());
+check(
+  endNow() === endBase,
+  'D84：**与讲解无关的文件被关 → 不立案**（随后的可见变化不该把讲解收掉）',
+  `session:end 次数 ${endBase} → ${endNow()}（旧代码在这里会 +1）`,
+);
+
+// ── ⑦ 用户报的那一幕：切回锚点文件（两种事件顺序都不许收工） ──────────────
+// ⑦a：被顶掉的那个（这一拍的文件）先报关闭，之后 main.c 才可见 —— 最常见的顺序
+vscodeStub.window.visibleTextEditors = [editor];
+onCloseDocument?.({ uri: { fsPath: stepFilePath } });
+visibleEditorsCallbacks.forEach((cb) => cb());
+check(
+  endNow() === endBase,
+  'D84：**切回锚点文件 → 讲解继续**（锚点还在屏幕上，这正是用户报的那一幕）',
+  `session:end 次数 ${endBase} → ${endNow()}`,
+);
+// ⑦b：反序 —— 先冒出可见变化、之后才报关闭（旗标晚到），紧接着用户又切回锚点文件
+vscodeStub.window.visibleTextEditors = [editor];
+visibleEditorsCallbacks.forEach((cb) => cb());
+onCloseDocument?.({ uri: { fsPath: stepFilePath } });
+vscodeStub.window.visibleTextEditors = [editor];
+visibleEditorsCallbacks.forEach((cb) => cb());
+check(
+  endNow() === endBase,
+  'D84：关闭与可见变化**反序**到达时也不收工（晚到的旗标不许在别处引爆）',
+  `session:end 次数 ${endBase} → ${endNow()}`,
+);
+// ⑦ 的反面：这才是"该停就停"——锚点文件被用户真的关掉、这一拍的文件也不在屏幕上
+vscodeStub.window.visibleTextEditors = [];
+onCloseDocument?.({ uri: { fsPath: MAIN_C } });
+visibleEditorsCallbacks.forEach((cb) => cb());
+check(
+  endNow() === endBase + 1,
+  'D84：**锚点与这一拍的文件真的都不在了 → 仍然会结束会话**（改判据没把真行为删掉）',
+  `session:end 次数 ${endBase} → ${endNow()}`,
+);
+
+vscodeStub.window.visibleTextEditors = [editor];
+vscodeStub.window.visibleTextEditors = [editor];
+fetchMode = 'with-fetch';
+
+// ---- 8c. D78：stop() 必须清掉锚点，否则下一轮会继承上一轮的文件名 ------------
+// 这是 8b 那个收窄判据的**配套义务**：判据读的是模块级的 `sessionAnchorPath`，
+// 它不清，下一轮会话（比如 PDF 锚点，那时本该是 null）就会拿着上一轮的 .c 文件名，
+// 于是"关掉上一轮选过的那个文件"能把"这一轮毫不相干的讲解"一并杀掉 —— 误杀换个姿势回来。
+await registered.get('anchorExplain.capture')?.();
+registered.get('anchorExplain.stop')?.();
+let stopAfterThrew = false;
+try {
+  await registered.get('anchorExplain.showState')?.();
+} catch {
+  stopAfterThrew = true;
+}
+check(!stopAfterThrew, 'D78：stop() 之后状态查询仍然可用（收尾没把状态机打坏）');
+
+// 数一数**此刻**发过几次 session:end。收尾完成之后再关那个旧锚点文件，
+// 这个数必须一次都不多 —— 多一次就说明判据还活着（锚点没随会话清空）。
+const endCountBefore = webviews[0].webview.posted.filter((m) => m.type === 'session:end').length;
+let staleKillThrew = false;
+try {
+  // stop() 之后再关掉刚才那个锚点文件：会话已经没了，什么都不该发生
+  onCloseDocument?.({ uri: { fsPath: MAIN_C } });
+} catch {
+  staleKillThrew = true;
+}
+check(!staleKillThrew, 'D78：会话结束后再关旧锚点文件不抛（没有残留的判据在活动）');
+const postedAfterStopClose = webviews[0].webview.posted.filter((m) => m.type === 'session:end').length;
+check(
+  postedAfterStopClose === endCountBefore,
+  'D78：stop() 之后关旧锚点文件不会**再**发一次 session:end（锚点已随会话清空）',
+  `${endCountBefore} → ${postedAfterStopClose}`,
+);
+
+closed = false;
+
+// ---- 8d. D83：讲完之后能重放（"保存"那一半必须真的落进 Memento） --------------
+// 用户报的原话：「讲解结束时，需要能重新讲，并且应该能保存/重放之前的内容」。
+//
+// 这一节要锁两件事，缺一不可：
+//   ① 存档**真的落进 Memento**（跨 VS Code 重启活着）。只留在内存里的话，用户重启之后
+//      按「重放上次讲解」会被告知"还没有讲过任何一段"，而我们会以为是别的地方坏了。
+//   ② 「重放」**不碰网络**：它是本地把同一份结果再走一遍。这一点必须用**模型调用次数**
+//      证明，而不是看面板上有没有出现文字 —— 后者在"其实是又问了模型一遍"时同样成立。
+const storedRun = workspaceStateStore.get('anchorExplain.lastRun');
+check(
+  storedRun?.version === 1 && typeof storedRun?.result?.summary === 'string',
+  'D83：讲解成功之后存档进了 workspaceState（重启之后还重放得出来）',
+  JSON.stringify(storedRun ? Object.keys(storedRun) : null),
+);
+check(
+  Array.isArray(storedRun?.result?.steps) && storedRun.result.steps.length > 0,
+  'D83：存档里带着**那份讲解本身**（只存锚点的话，重放时还是得再问一次模型）',
+  `${storedRun?.result?.steps?.length ?? '(无)'} 个 step`,
+);
+
+// 「显示状态」要能复核存档里的是哪一段 —— 它是用户唯一能核对这件事的地方。
+// 位置必须**带文件名**（S9a 起 location 可以落在别的文件里，只写行号会读成锚点文件的行号）
+await registered.get('anchorExplain.showState')?.();
+check(
+  /上次讲解：main\.c 第 40-48 行（存于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}）/.test(messages.at(-1)?.[1] ?? ''),
+  'D83：「显示状态」报得出存档是哪一段（带文件名与存档时间）',
+  messages.at(-1)?.[1] ?? '(无)',
+);
+
+// ① 重放：面板上那颗「重放上次讲解」走的就是这条消息（客户端脚本 → §5.3 → 宿主）
+const updatesBeforeReplay = webviews[0].webview.posted.filter((m) => m.type === 'session:update').length;
+fetchCalls.length = 0;
+receiveFromWebview?.({ type: 'ui:replay' });
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+const afterReplay = webviews[0].webview.posted.filter((m) => m.type === 'session:update');
+check(
+  afterReplay.length === updatesBeforeReplay + 1,
+  'D83：按下「重放」真的把讲解重新推给了面板（不是点了没反应）',
+  `${updatesBeforeReplay} → ${afterReplay.length}`,
+);
+check(
+  afterReplay.at(-1)?.index === 0 && afterReplay.at(-1)?.state === 'running',
+  'D83：重放是**从第 1 步重新开始**（而不是停在"已讲完"那一拍上）',
+  `index=${afterReplay.at(-1)?.index} state=${afterReplay.at(-1)?.state}`,
+);
+check(
+  afterReplay.at(-1)?.result?.summary === storedRun?.result?.summary,
+  'D83：重放出来的是**存下来的那一份**（逐字相同 —— 那才是"重放"）',
+  String(afterReplay.at(-1)?.result?.summary ?? '(无)').slice(0, 40),
+);
+check(
+  fetchCalls.length === 0,
+  'D83：重放**一次模型调用都没有**（这是它和「重新讲一遍」唯一的区别，也是它不花钱的凭据）',
+  `${fetchCalls.length} 次模型调用`,
+);
+
+// ② 反面：另一颗按钮**必须**真的再问一次模型 —— 两颗按钮代价不同，这就是区别的凭据。
+//    没有这一条的话，把「重新讲一遍」也实现成重放（静默不花钱）同样能过。
+fetchCalls.length = 0;
+receiveFromWebview?.({ type: 'ui:reExplain' });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  fetchCalls.length > 0,
+  'D83：「重新讲一遍」真的再问了一次模型（与「重放」不是同一条路）',
+  `${fetchCalls.length} 次模型调用`,
+);
+fetchMode = 'with-fetch';
 
 // ---- 9. S2：真选区接线 + 确认 UI 的四条分支 --------------------------------
 // 这一节的本事在于**能区分真选区与替身**：替身写死 40-48 行，所以这里把桩的选区改成
@@ -937,6 +1356,199 @@ vscodeStub.window.activeTextEditor = editor;
 quickPickAnswer = '讲解这段';
 selectionStartLine = 39;
 selectionEndLine = 47;
+
+// ---- 9b. D79：选完范围之后问「重点讲什么」，那句话要真的进 prompt ----------------
+//
+// 为什么非有这一问：一个文件往往做很多事，用户可能只想快速定位某**一个**功能。
+// 原话是"一个文件可能做很多事，用户可能不想都听，只想快速定位某功能"。
+//
+// 这一节锁的是**整条链路**：输入框 → Anchor.focus → orchestrator → buildUserPrompt → 发给模型的请求体。
+// 只测到"Anchor 上有 focus"是不够的 —— 那个字段早在 D79 之前就写在 `buildUserPrompt` 的签名上、
+// 却从来没人传进去（一段死代码），单元测试照样全绿。**真正断掉的是最后一跳**，
+// 所以这里断言的是模型收到的那条 user message 里有没有那句话。
+fetchMode = 'with-fetch';
+quickPickAnswer = '讲解这段';
+selectionStartLine = 39;
+selectionEndLine = 47;
+inputBoxes.length = 0;
+fetchCalls.length = 0;
+
+// ① 跳过（按 Esc）→ 老行为：prompt 里不该出现「用户想追的那条线」那一节
+focusAnswer = undefined;
+await registered.get('anchorExplain.capture')?.();
+
+const focusBox = inputBoxes.at(-1);
+check(Boolean(focusBox), 'D79：选完范围之后会问一句「重点讲什么」', `${inputBoxes.length} 次输入框`);
+check(
+  typeof focusBox?.prompt === 'string' && focusBox.prompt.includes('留空'),
+  'D79：提示语说清了可以跳过（否则用户以为这是必答题）',
+  focusBox?.prompt ?? '(无)',
+);
+check(
+  typeof focusBox?.placeHolder === 'string' && focusBox.placeHolder.includes('只关心'),
+  'D79：占位符带了一个例子（第一次用的人不知道该写多细）',
+  focusBox?.placeHolder ?? '(无)',
+);
+
+const userMsgWithoutFocus = JSON.stringify(fetchCalls[0]?.body?.messages ?? []);
+check(
+  !userMsgWithoutFocus.includes('用户想追的那条线'),
+  'D79：**跳过时 prompt 里没有那一节**（老行为一字不能改）',
+  userMsgWithoutFocus.slice(0, 120),
+);
+
+// ② 写了 → 那句话必须出现在发给模型的 user message 里
+focusAnswer = '  只关心空/满的边界判断，别讲那些常规读写  ';
+fetchCalls.length = 0;
+await registered.get('anchorExplain.capture')?.();
+
+const userMsgWithFocus = JSON.stringify(fetchCalls[0]?.body?.messages ?? []);
+check(
+  userMsgWithFocus.includes('用户想追的那条线'),
+  'D79：**写的那句话真的进了发给模型的 prompt** —— 整条链路的最后一跳',
+  userMsgWithFocus.slice(0, 200),
+);
+check(
+  userMsgWithFocus.includes('只关心空/满的边界判断'),
+  'D79：内容原样进去（不是被截短或改写）',
+  userMsgWithFocus.slice(0, 200),
+);
+// 头尾空格要被清掉：用户从左转到右选中粘贴时常常带空格，
+// 而 prompt 里一个前导空格会让这一节看起来像排版坏了
+check(
+  !userMsgWithFocus.includes('  只关心空'),
+  'D79：进 prompt 之前把首尾空白清掉了',
+  userMsgWithFocus.slice(0, 200),
+);
+
+// ③ Esc 不能顺手取消讲解：跳过后讲解照常起来（否则按错一次就丢掉刚选好的段）
+check(
+  webviews[0].webview.posted.at(-1)?.type === 'session:update',
+  'D79：跳过之后讲解照常起来了（Esc 只是不给重点，不是取消）',
+  webviews[0].webview.posted.at(-1)?.type ?? '(无)',
+);
+
+// ④ 「显示状态」要把这句话带上 —— 它是用户唯一能复核"我写的那句生效没"的地方
+await registered.get('anchorExplain.showState')?.();
+check(
+  (messages.at(-1)?.[1] ?? '').includes('只关心空/满的边界判断'),
+  'D79：「显示状态」里能看到刚刚写的那句话（用户据此确认它生效了）',
+  messages.at(-1)?.[1] ?? '(无)',
+);
+
+// ⑤ 回车但不打字 = '' —— 与 Esc 等价，prompt 里也不该有那一节
+focusAnswer = '';
+fetchCalls.length = 0;
+await registered.get('anchorExplain.capture')?.();
+const userMsgEmptyFocus = JSON.stringify(fetchCalls[0]?.body?.messages ?? []);
+check(
+  !userMsgEmptyFocus.includes('用户想追的那条线'),
+  'D79：回车但不打字时 prompt 里也没有那一节（空串不许留成空壳字段）',
+  userMsgEmptyFocus.slice(0, 120),
+);
+focusAnswer = undefined;
+
+// ---- 9c. D80：多段选择队列 —— 一次选一段，合成**一份**讲解 -----------------
+//
+// 用户要的原话是"现在只能上传连续的一段，没法分开上传多端……可以设计一个队列，一次一次选择"。
+// 这一节锁的同样是**最后一跳**（与 9b 同一个立场）：
+// 段多罗列对了没用，**发给模型的那一条 user message 里有没有那两段、有没有标号**才算数。
+// 少了标号，模型面对一坨连续文本会把它读成"这是一段完整代码"，
+// 于是去讲那些用户根本没选过的行 —— 那正是"多段"这个功能最该防的错。
+selectionEmpty = false;
+fetchMode = 'with-fetch';
+await registered.get('anchorExplain.clearSegments')?.();
+
+// ① 先选 rb_pop（第 40-48 行）
+selectionStartLine = 39;
+selectionEndLine = 47;
+const addBefore = statusBarMessages.length;
+await registered.get('anchorExplain.addSegment')?.();
+check(
+  statusBarMessages.length === addBefore + 1 &&
+    /已加入第 40-48 行/.test(statusBarMessages.at(-1) ?? '') &&
+    /队列里现在有 1 段/.test(statusBarMessages.at(-1) ?? ''),
+  'D80：加完第一段**有回执**，且回执说清"进了 + 现在共几段"（D81：只写"已加入"不够 —— 用户想知道攒的这些最后会怎样）',
+  statusBarMessages.at(-1) ?? '(无)',
+);
+// D81：**常驻**的那一格。用户报的是"按钮有反应但没有任何提示"，而临时消息 3 秒就没了、
+// 面板上那一行状态又在最下面（要滚动）—— 所以状态栏必须一直挂着计数。
+check(
+  statusItems[1]?.shown === true && /队列 1 段/.test(statusItems[1]?.text ?? ''),
+  'D81：状态栏出现**常驻的队列计数**（"持续可见"那一半要求）',
+  `${statusItems[1]?.shown} / ${statusItems[1]?.text}`,
+);
+
+// ② 用户再去别处选一段（rb_init 第 21-25 行）—— 队列存在的全部意义就是接得住这第二次
+selectionStartLine = 20;
+selectionEndLine = 24;
+await registered.get('anchorExplain.addSegment')?.();
+check(
+  /已加入第 21-25 行/.test(statusBarMessages.at(-1) ?? '') && /队列里现在有 2 段/.test(statusBarMessages.at(-1) ?? ''),
+  'D80：可以一次一次接着加（换到别处的第二段不会被当成"又点了第一次"）',
+  statusBarMessages.at(-1) ?? '(无)',
+);
+check(
+  /队列 2 段/.test(statusItems[1]?.text ?? ''),
+  'D81：计数跟着变（这不是一条"加过就忘"的提示，而是当前状态）',
+  statusItems[1]?.text ?? '(无)',
+);
+
+// ③ 讲：发给模型的必须是**合成后的一份**，而且每一段都标了号
+focusAnswer = '这两个函数怎么一起决定队列能不能继续写';
+fetchCalls.length = 0;
+await registered.get('anchorExplain.explainSegments')?.();
+
+const payload = JSON.stringify(fetchCalls[0]?.body?.messages ?? []);
+check(
+  payload.includes('第 1 段（第 21-25 行）') && payload.includes('第 2 段（第 40-48 行）'),
+  'D80：**两段都进了 prompt，且各自标了号**（段按行号从上到下排，与文件的阅读顺序一致）',
+  payload.slice(0, 200),
+);
+check(
+  payload.includes('不必讲它们'),
+  'D80：明确写了"段与段之间的行没被选中"（不写的话模型会把空隙当代码讲）',
+  payload.slice(0, 200),
+);
+check(
+  payload.includes(sourceLines[20]) && payload.includes(sourceLines[39]),
+  'D80：两段的**原文**都真的进去了（不是只带了行号）',
+  payload.slice(0, 200),
+);
+check(payload.includes('用户想追的那条线'), 'D80：多段也能接着用 D79 的「重点讲什么」');
+
+// ④ 「显示状态」要同时说清**外框**与**那几段**：外框是并集，里面夹着没被选中的行，
+//    只显示外框等于告诉用户"讲了第 21-48 行"，而他明明只选了其中两块。
+await registered.get('anchorExplain.showState')?.();
+check(
+  /第 21-48 行/.test(messages.at(-1)?.[1] ?? '') && /2 段（21-25 \+ 40-48）/.test(messages.at(-1)?.[1] ?? ''),
+  'D80：「显示状态」里能复核选的那几段（这是屏幕上唯一看得到它的地方）',
+  messages.at(-1)?.[1] ?? '(无)',
+);
+
+// ⑤ 移除一段（"左侧实时增减"的减）
+//    先看一眼清单：**第 1 段必须是文件里最靠上的那段**（21-25），而不是用户先加的那段（40-48）。
+//    否则"第 1 段"这句话在三个地方指三段不同的东西（清单里一段、模型拿到的另一段），
+//    用户点掉"第 1 段"实际删掉的是他以为的第 2 段 —— 不报错、不崩，只是讲错了地方。
+quickPickAnswer = undefined;
+await registered.get('anchorExplain.removeSegment')?.();
+const removeList = quickPicks.at(-1) ?? [];
+check(
+  removeList[0]?.label === '第 1 段：第 21-25 行' && removeList[1]?.label === '第 2 段：第 40-48 行',
+  'D80：待移除的清单按**行号**排 —— "第 1 段"在三处必须是同一段',
+  removeList.map((item) => item.label).join(' / ') || '(无)',
+);
+
+quickPickAnswer = '第 1 段：第 21-25 行';
+await registered.get('anchorExplain.removeSegment')?.();
+check(
+  /队列里还有 1 段/.test(statusBarMessages.at(-1) ?? ''),
+  'D80：移除之后队列实时变短，并且**说出来**（否则用户不知道点中了没有）',
+  statusBarMessages.at(-1) ?? '(无)',
+);
+quickPickAnswer = '讲解这段';
+await registered.get('anchorExplain.clearSegments')?.();
+focusAnswer = undefined;
 
 // ---- 10. S3：真编排循环（只有 fetch 这一跳是桩） ---------------------------
 // 这一节的价值在于：从 `capture` 命令到"模型返回的那份 JSON"，中间跑的是

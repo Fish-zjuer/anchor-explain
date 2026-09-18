@@ -146,6 +146,76 @@ export function createStatusBar(context: vscode.ExtensionContext): StatusBarHand
   };
 }
 
+/**
+ * 多段队列的常驻指示（D81）。
+ *
+ * @anchor 用户报的原话：「加入队列，虽然下面的按钮有反应，但是没有文本什么的提示，感觉不妥，
+ *         要么持续性图形显示加入了多少，要么每加一次给一个成功提示。」
+ *
+ *         这条反馈的要点不是"缺一句提示"，而是**提示出现在了他没看的地方**：
+ *         面板上那颗按钮在屏幕上方，而队列那一行状态在面板**最下面**（要滚动才看得到）；
+ *         临时状态栏消息 3 秒就没了，正在找"加入的到底进没进去"的人多半已经错过。
+ *
+ *         所以这里给一个**一直挂着**的计数：只要队列不空就在视野里，点一下还能打开面板
+ *         （讲全部段 / 移除某一段 / 清空都在那儿）。与讲解那个状态栏项分开成两项而不是拼在一起：
+ *         它们的**生命周期不同** —— 讲解结束那一项要收掉，队列不空就得一直显示。
+ */
+export interface QueueStatusBarHandle {
+  update(queue: QueueView): void;
+  dispose(): void;
+  /** 自检用（与 `StatusBarHandle.probe` 同一条理由：分辨"没显示"与"被挤掉"） */
+  probe(): { shown: boolean; text: string };
+}
+
+export interface QueueView {
+  readonly count: number;
+  /** 队列里每一段的一行描述（与移除用的 QuickPick 同一份数据） */
+  readonly lines: readonly { readonly label: string; readonly description: string }[];
+  /** 这一句是给 tooltip 用的总结；空队列不显示这一项，可以传 null */
+  readonly summary: string | null;
+}
+
+export function createQueueStatusBar(): QueueStatusBarHandle {
+  // 优先级比讲解那一项（100）低一格 —— 讲解期间"讲到哪儿了"更该靠左、更该抢眼。
+  const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  // 点它去**开始面板**，而不是直接弹一个选择框：用户此刻想知道的是"队列里到底有什么"，
+  // 面板上有那一行（还有三颗按钮）；而"移除"只是其中一条路，不该被当成唯一入口。
+  item.command = 'anchorExplain.showStart';
+  let visible = false;
+
+  return {
+    update(queue) {
+      if (queue.count <= 0) {
+        item.hide();
+        visible = false;
+        return;
+      }
+
+      item.text = `$(list-ordered) 队列 ${queue.count} 段`;
+      item.tooltip = new vscode.MarkdownString(
+        [
+          `**Anchor 多段队列**：${queue.summary ?? `${queue.count} 段`}`,
+          '',
+          ...queue.lines.map((line) => `- ${line.label}${line.description ? ` — ${line.description}` : ''}`),
+          '',
+          '讲的时候这几段会**合成一份**讲解。点击此提示打开开始面板，可以讲全部段 / 移除某一段 / 清空。',
+        ].join('\n'),
+      );
+      item.show();
+      visible = true;
+    },
+
+    dispose() {
+      item.dispose();
+      visible = false;
+    },
+
+    probe() {
+      return { shown: visible, text: item.text };
+    },
+  };
+}
+
 /** 读用户绑定。文件不存在 / JSONC 坏掉 / 路径推导失败 → 返回 null 让调用方留默认。 */
 async function readUserChords(
   globalStorageFsPath: string,

@@ -47,6 +47,36 @@ export interface Anchor {
   capturedImage?: string;    // base64，第二层才用
   extractedText?: string;    // 第一层优先
   neighborHint?: string;     // 如 "第 23 页附近"
+  /**
+   * 【新增，非规范原文】用户想追的那条线（D79）。
+   *
+   * @anchor 为什么放在 `Anchor` 上，而不是给 `ExplainProvider` 加第二个参数：
+   *         `ExplainProvider` 的签名是"两侧完全一致"的接缝（见 ports.ts 那段），
+   *         加参数要同时改替身、orchestrator、命令层与**所有既有测试的调用点**。
+   *         而"用户想讲哪条线"与 `neighborHint` / `extractedText` 是**同一类东西**：
+   *         都是"这一份锚点自带的、影响讲解怎么写的附加信息"，都随锚点一起流动。
+   *         放这里之后，`ExplainProvider` 一行不动。
+   *
+   *         语义：用户自己写的一句话，说明"这段代码里我只关心什么"。
+   *         一个文件往往做很多事，用户可能只想快速定位某一个功能 ——
+   *         没有它，模型会把整段从头讲一遍，用户得听一堆他不要的东西。
+   *         **可选**：不写就是老行为（整段讲），所有读它的地方都必须能退化。
+   */
+  focus?: string;
+  /**
+   * 【新增，非规范原文】多段选择时，**每一段**的行区间（D80）。
+   *
+   * @anchor 为什么 `location` 之外还要它：`location` 是各段的**并集外框**，
+   *         合并之后模型已经看不出"中间那 20 行其实没被选中"，于是会去讲它们。
+   *         这一段列表是唯一能说清"用户选的就是这几块"的东西。
+   *
+   *         顺序**按行号升序**（由 `mergeSegments` 保证）——
+   *         模型从上往下读，读者也从上往下读，两边一致才对得上。
+   *
+   *         **可选**：老锚点（只有一段）没有它 —— 那时 `location` 本身就是那一段，
+   *         两者等价，不值得再造一个长度为 1 的数组。
+   */
+  segments?: CodeLocation[];
 }
 
 export interface ContextRequest {

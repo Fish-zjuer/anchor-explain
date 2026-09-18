@@ -213,6 +213,37 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   }
 
   /**
+   * 讲完之后那两颗按钮（D83）。**与上面那段 ended 说明是一对**：说明说"还能做什么"，这里是"能做"。
+   *
+   * 用户的原话是「讲解结束时，需要能重新讲，并且应该能保存/重放之前的内容」。
+   * 在那之前，讲完（done）之后面板上**一个出口都没有**：只能回编辑器重新选一段再按快捷键 ——
+   * 而他正看着面板，手边没有"重来一次"的任何按钮（与 D61/D72「讲完不许是死路」同一条规矩）。
+   *
+   * 两颗按钮**刻意分开**，因为代价差一个数量级：
+   *   - 重放：本地把存档再走一遍，不碰网络、不花钱，结果一模一样
+   *   - 重新讲：拿同一个锚点再问一次模型，会得到另一种讲法，也会再花一次钱
+   * 合成一颗的话，我们就在替用户做一个他未必想做的选择（再花一次钱）。
+   *
+   * 这里**不许出现反引号**（它是外层模板字符串的结束符，写一个就把文件切断了）——
+   * 上面这段注释里的花名一律不加引号，就是这个原因。
+   */
+  function buildRerun() {
+    var row = mk("div", "rerun");
+
+    var replay = mk("button", null, "重放上次讲解");
+    replay.setAttribute("data-act", "replay");
+    replay.title = "不再问模型：把这份讲解从第 1 步重新走一遍，结果一模一样";
+    row.appendChild(replay);
+
+    var again = mk("button", null, "重新讲一遍");
+    again.setAttribute("data-act", "reExplain");
+    again.title = "用同一个锚点再问一次模型 —— 会得到另一种讲法，也会再花一次钱";
+    row.appendChild(again);
+
+    return row;
+  }
+
+  /**
    * 「读了哪个文件的哪几行」—— 用户要看的就是这一句（截图问题 3.4）。
    * 路径只取文件名：面板窄，而"哪个文件"靠文件名就够了（完整路径在输出面板「Anchor」里）。
    */
@@ -275,10 +306,20 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     }
     root.appendChild(list);
 
-    if (snapshot.ended) {
+    // 讲完（done）与已结束（ended）都给这一块（D83）：
+    // done 时「下一步」已经按不动了，若只在 ended 时给出口，"讲完了但还没按退出"这个
+    // 最常见的时刻恰恰是没有出口的那一个 —— 而它正是用户说"需要能重新讲"时所处的状态。
+    if (done || snapshot.ended) {
       root.appendChild(
-        mk("p", "ended", "讲解已结束 —— 可以按「上一步」回看，或按「退出」收掉高亮；重新选中一段再发起即可。"),
+        mk(
+          "p",
+          "ended",
+          snapshot.ended
+            ? "讲解已结束 —— 按「上一步」可以回看，按「退出」收掉高亮。想再看一遍不用重新选："
+            : "已经讲完了 —— 按「上一步」可以回看。想再看一遍不用重新选：",
+        ),
       );
+      root.appendChild(buildRerun());
     }
     root.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
     root.appendChild(buildTrace());
@@ -301,6 +342,8 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     if (act === "next") vscode.postMessage({ type: "ui:next" });
     else if (act === "prev") vscode.postMessage({ type: "ui:prev" });
     else if (act === "stop") vscode.postMessage({ type: "ui:stop" });
+    else if (act === "replay") vscode.postMessage({ type: "ui:replay" });
+    else if (act === "reExplain") vscode.postMessage({ type: "ui:reExplain" });
     else if (act === "reveal") vscode.postMessage({ type: "ui:revealStep", index: index });
     else if (act === "goto") vscode.postMessage({ type: "ui:goto", index: index });
   });

@@ -52,5 +52,16 @@ export { intersectRects, rectArea } from './rect.ts';
 export type { AnchorErrorCode } from './errors.ts';
 export { AnchorError, isAnchorError, describeError } from './errors.ts';
 
+// 多段锚点（D80）：把一次一次选出来的几段合成一个去讲
+export type { AnchorSegment } from './segments.ts';
+export {
+  EmptyQueueError,
+  sameFileAsFirst,
+  compareSegments,
+  mergeSegments,
+  segmentsOf,
+  describeSegments,
+} from './segments.ts';
+
 export type { ContextRequestLogEntry, ContextRequestLogger } from './logging.ts';
 export { createContextRequestLogger, CONTEXT_LOG_LIMIT } from './logging.ts';

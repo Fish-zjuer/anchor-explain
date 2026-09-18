@@ -21,11 +21,13 @@
     "preview:sidebar": "node scripts/preview-sidebar.mjs --serve",
     "smoke": "node scripts/smoke-extension.mjs",
     "smoke:chain": "node scripts/smoke-walkthrough.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke && pnpm smoke:chain && pnpm smoke:pdf",
+    "smoke:fileswitch": "node scripts/smoke-file-switch.mjs",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke && pnpm smoke:chain && pnpm smoke:fileswitch && pnpm smoke:pdf",
     "smoke:pdf": "node scripts/smoke-pdf-extension.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.25.0",
     "typescript": "^5.9.2"
   }

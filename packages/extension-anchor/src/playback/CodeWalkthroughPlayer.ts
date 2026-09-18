@@ -96,6 +96,13 @@ export class CodeWalkthroughPlayer {
   /** 正在渲染的那一拍。用来**合并**堆积的请求，而不是并发跑（见 `render`） */
   #rendering = false;
   #pending: WalkthroughSnapshot | undefined;
+  /**
+   * 我们**自己**正在"打开/切前台某个文件"这件事里面（D84）。计数而不是布尔：
+   * 嵌套调用（`#renderOnce` 里调 `#ensureEditor`）退出时不该把外层的状态一起清掉。
+   */
+  #switching = 0;
+  /** 屏幕**落定**的订阅者（D84）。宿主靠它知道"现在可以看一眼收工判定了"。 */
+  readonly #settlers = new Set<() => void>();
 
   constructor() {
     const emphasis = emphasisStyles();
@@ -127,7 +134,16 @@ export class CodeWalkthroughPlayer {
       this.#rendering = false;
       const next = this.#pending;
       this.#pending = undefined;
+      /**
+       * 顺序是刻意的（D84）：**先让下一拍起飞，再宣布落定**。
+       *
+       * @anchor 反过来的话（先宣布、再起飞）会有一个空档：宿主收到"落定"时，
+       *         下一拍的换文件还没开始 —— 于是它会在"屏幕上正空着"的那一刻做收工判定，
+       *         而那正是我们要避免的那一帧。提前起飞则不同：下一拍在
+       *         `#ensureEditor` 里同步把 `switching` 置回 true，宿主一看就知道"还在换，别判"。
+       */
       if (next) void this.render(next);
+      this.#markSettled();
     }
   }
 
@@ -177,12 +193,55 @@ export class CodeWalkthroughPlayer {
 
   /** `ui:revealStep`：只把视图滚过去，**不改变当前拍**（对照 S6 里"点一条滚 PDF 到该页"）。 */
   async revealStep(step: WalkthroughSnapshot['step']): Promise<void> {
-    const loc = primaryLocationOf(step);
-    if (!loc) return;
-    const editor = await this.#ensureEditor(loc.filePath);
-    if (!editor) return;
-    const range = toRange(loc, editor.document.lineCount);
-    if (range) await this.#reveal(editor, range);
+    try {
+      const loc = primaryLocationOf(step);
+      if (!loc) return;
+      const editor = await this.#ensureEditor(loc.filePath);
+      if (!editor) return;
+      const range = toRange(loc, editor.document.lineCount);
+      if (range) await this.#reveal(editor, range);
+    } finally {
+      // 侧边栏上点一条位置标签同样是"我们自己在换文件"（D84）—— 走完之后屏幕才落定
+      this.#markSettled();
+    }
+  }
+
+  /**
+   * 我们**自己**正在把某个文件打开或切到前台（D84）。
+   *
+   * @anchor 宿主用它回答一个只有这里才知道的问题：**"刚才那一刻的看不见，是不是我们造成的？"**
+   *         VS Code 的一次预览轮换不是原子的 —— 它先报"被顶掉的那个标签关了"，
+   *         之后才让新文件出现在 `visibleTextEditors` 里。中间那一帧，我们这边
+   *         **一个文件都还不可见**。宿主的收工判定（"这次讲解还有落脚点吗"）若落在那一帧上，
+   *         就会把"我们正把用户带到某个文件"读成"用户把讲解的东西全关了" —— 于是收工。
+   *
+   *         所以这件事不能靠"等一个猜出来的毫秒数"来躲（那是 D78 走过的错路），
+   *         只能问**做这件事的人**：播放器知道自己在换，也知道什么时候换完。
+   */
+  get switching(): boolean {
+    return this.#switching > 0;
+  }
+
+  /** 屏幕落定（一次打开/切换/绘制走完了）时回调一次。返回退订函数。 */
+  onDidSettle(listener: () => void): () => void {
+    this.#settlers.add(listener);
+    return () => {
+      this.#settlers.delete(listener);
+    };
+  }
+
+  /**
+   * 宣布"屏幕落定了"。**逐个兜异常**：订阅者是宿主，它那边出问题不该
+   * 把播放器自己的渲染流程带下去（与 `emit` 里三个渲染面各自隔离同一条规矩）。
+   */
+  #markSettled(): void {
+    for (const listener of [...this.#settlers]) {
+      try {
+        listener();
+      } catch (err) {
+        console.error('[anchor] 落定回调失败：', err);
+      }
+    }
   }
 
   /**
@@ -210,10 +269,25 @@ export class CodeWalkthroughPlayer {
     this.clear();
     this.#editors.clear();
     this.#pending = undefined;
+    this.#settlers.clear();
     for (const key of ALL_KEYS) this.#types[key].dispose();
   }
 
+  /**
+   * 「确保这个文件在屏幕上看得到」的入口 —— 只负责告诉外界**我们正在做这件事**（D84）。
+   * 真正的两条路在 `#ensureEditorIn` 里；分成两层是为了让"正在换"这个状态在
+   * **任何一条路**（已打开→切前台 / 没打开→开一个预览标签）上都成立，包括中途抛错。
+   */
   async #ensureEditor(filePath: string): Promise<vscode.TextEditor | undefined> {
+    this.#switching += 1;
+    try {
+      return await this.#ensureEditorIn(filePath);
+    } finally {
+      this.#switching -= 1;
+    }
+  }
+
+  async #ensureEditorIn(filePath: string): Promise<vscode.TextEditor | undefined> {
     const want = normPath(filePath);
 
     // 本会话已经为它开过、它还活着、而且它已经是活动编辑器 → 什么都不用做。
@@ -222,9 +296,25 @@ export class CodeWalkthroughPlayer {
     const known = this.#editors.get(want);
     if (known && !known.document.isClosed && vscode.window.activeTextEditor === known) return known;
 
+    /**
+     * 目标文件已经在**可见编辑器**里，但它不是活动编辑器 —— 必须把它**切到前台**。
+     *
+     * @anchor 这里是"讲解中途切换文件就卡死"的那一处（D77）。原先这条分支直接
+     *         `return visible`，而调用方接下来要做两件只在活动编辑器上才有效的事：
+     *         `setDecorations` 画在用户没看的标签上（屏幕上看不见），
+     *         `revealRange` 对非活动编辑器**什么都不做**（不会滚、也不会切过去）。
+     *         于是用户一旦手动切走（或讲解期间自己点开了别的文件），
+     *         后续每一拍都"画在别的标签上"——屏幕上不再有任何变化，
+     *         看着就是讲解卡死了，而状态机其实一直在正常推进。
+     *
+     * 为什么不能只调 `showTextDocument(doc)`：那会**重建预览标签**，
+     * 正是 D70 要消除的抖动。`visibleTextEditors` 里那一个已经是我们想要的编辑器对象，
+     * 直接把它设为活动编辑器即可（同一份 document，标签不重建）。
+     */
     const visible = vscode.window.visibleTextEditors.find((e) => normPath(e.document.uri.fsPath) === want);
     if (visible) {
       this.#editors.set(want, visible);
+      await this.#focus(visible);
       return visible;
     }
 
@@ -243,6 +333,38 @@ export class CodeWalkthroughPlayer {
       return editor;
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * 把一个**已经打开**的编辑器切到前台（成为 `activeTextEditor`），必要时切它所在的编辑器组。
+   *
+   * @anchor 两条路是**分层的**，不是重复：
+   *   1. `showTextDocument`（带 `preserveFocus`）是官方手段，但它对"已经在别的组里可见"
+   *      的文件会**换组显示**，可能重建标签 —— 我们只在必须时才用它。
+   *   2. 目标是**当前组**里的另一个标签时（最常见：用户手动点开了另一个文件），
+   *      用 `workbench.action.openEditorAtIndex` 之外的官方 API 没有直接办法，
+   *      所以退一步用 `showTextDocument` 但**复用已有 document 对象** —— 同一个 document
+   *      不会被重新解析，标签也不会被替换成新的（只是被激活）。
+   *
+   * 失败一律吞掉：切前台失败不该让这一拍的高亮整个消失（框仍然会画在那个编辑器上，
+   * 用户切回来就看得到），更不该把异常带进会话。
+   */
+  async #focus(editor: vscode.TextEditor): Promise<void> {
+    // 已经是活动编辑器就不用做任何事（调用方其实已经判过一次，这里是二次保险）
+    if (vscode.window.activeTextEditor === editor) return;
+    try {
+      await vscode.window.showTextDocument(editor.document, {
+        // 面板/侧边栏保有键盘焦点：用户读完还能直接按 Alt+] 继续，不必点回编辑器
+        preserveFocus: true,
+        // 不新建：让 VS Code 复用这份 document 已经打开的编辑器（若不支持该选项，
+        // 它也只是退化成"按默认策略打开同一份文档"，行为仍正确）
+        preview: true,
+        viewColumn: vscode.ViewColumn.One,
+      });
+    } catch {
+      // 切不过去（编辑器正在关闭、或该组被锁）时降级为"只画框、不抢前台"，
+      // 与 `#renderOnce` 里"打不开目标文件就静默退化"同一种立场
     }
   }
 
