@@ -1,6 +1,8 @@
 # D85 分发：怎么打 `.vsix`、怎么装、怎么给出去
 
-> 一句话：**打两个 `.vsix`，双击就装**。这个仓库不上架 Marketplace（线2 的上游要求先开 Discussion，
+> 一句话：**打两个 `.vsix`，在 VS Code 里"从 VSIX 安装"或用 `code --install-extension` 装上**
+> （别指望双击 —— Visual Studio 会抢这个关联，见 §3 实测的坑）。
+> 这个仓库不上架 Marketplace（线2 的上游要求先开 Discussion，
 > 而且专有许可也不适合 Marketplace），所以分发形态就是"私下给安装包"。
 
 ## 1. 打包（在你这台机器上）
@@ -50,17 +52,35 @@ release/anchor-pdf-0.1.0.vsix       线2：PDF 视图（4.62 MB）
 
 ## 3. 安装（拿到包的人怎么装）
 
-三种等价方式，任选其一：
+**推荐顺序（实测过，双击那条路真会翻车）：**
 
-1. **双击 `.vsix`** —— Windows 会用 VS Code 打开并直接装（最像"安装程序"的一种）。
+1. VS Code 里：扩展面板右上角 `…` → **从 VSIX 安装…** → 选文件。
 2. 命令行：`code --install-extension anchor-explain-0.1.0.vsix`（线2 同理）。
-3. VS Code 里：扩展面板右上角 `…` → **从 VSIX 安装…** → 选文件。
 
 装完**重启 VS Code**（或「开发人员: 重新加载窗口」）。两个包是**独立安装**的：
 只要代码讲解就只装线1；要讲 PDF 就两个都装。
 
-**注意**：如果你的 VS Code 是从商店版/Insiders 之外装的（比如 VSCodium 或便携版），
-第 1 种双击可能不认识 `.vsix`，用第 3 种兜底。
+### 实测踩到的坑（2026-09-18，用户自己装的时候撞上）
+
+**双击 `.vsix` 不一定能装** —— 电脑上装过 **Visual Studio**（2017/2019/2022）的话，
+`.vsix` 的文件关联会被 **Visual Studio 自带的 VSIXInstaller** 抢走。双击弹出来的是
+"Microsoft VSIX Installer"，日志里能认出 Id/Name/Version，最后却报
+`NoApplicableSKUsException: 一个或多个扩展适用于 Visual Studio Code，请尝试在 Visual Studio Code 中安装`。
+**这不是包坏了**（manifest 被正确读出就是证据），是用错了安装器。所以：
+
+- 安装说明（`release/安装说明.txt`）把"双击"从方法 1 撤掉了，只推荐上面两种；
+- 想恢复双击：右键 → 打开方式 → 其他应用 → 选中 VS Code 的 `Code.exe` → 始终使用。
+
+### 给自己的机器装（开发机）要小心**同一扩展的两份副本**
+
+`pnpm link:ext`（D60）会在 `~/.vscode/extensions/` 下建**指向本仓库的目录联接**，
+扩展 ID 与 `.vsix` 完全相同。两者并存 = 同一个 ID 装两份，VS Code 的行为不可靠。
+所以在开发机上二选一：
+
+- **继续开发**：什么都不用做 —— 联接版就是最新代码（`pnpm build` + 重载窗口即生效），
+  `.vsix` 只拿来发给别人；
+- **想测打包出来的产物**：先 `pnpm unlink:ext`，再 `code --install-extension …`；
+  测完想回到开发态：`code --uninstall-extension anchor.anchor-explain`（线2 同理）→ `pnpm link:ext`。
 
 ## 4. 首次使用要配一次模型端点（每个装它的人自己配）
 
