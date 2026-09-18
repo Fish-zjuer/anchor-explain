@@ -2,10 +2,10 @@
   "name": "anchor-explain",
   "displayName": "Anchor Explain",
   "description": "把选中的一段内容变成带地址的锚点：AI 讲解并逐步高亮流转。核心命题——截图 = 带地址的锚点，不是像素包。",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "publisher": "anchor",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE.txt",
   "type": "module",
   "engines": {
     "vscode": "^1.90.0"

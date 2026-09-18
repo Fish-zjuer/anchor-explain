@@ -558,9 +558,15 @@ check(settingsWrites.length === 0, '点「我自己改」时一行设置都不�
 check(SETTINGS.providers?.baseUrl === 'https://flat.test/v1', '……原来的内容也没被碰');
 
 // .vscodeignore：图标与演练的 markdown 必须打进 .vsix，否则装了扩展也是个没有图标的按钮
+// （先剥掉注释行：`.vscodeignore` 的注释是给人看的说明，不是规则；早先用裸 includes，
+//  连注释里提到 "assets/" 都会被误判成"排除了它" —— 那是断言比被测对象还粗。）
 const extIgnoreText = readFileSync(join(PKG_DIR, '.vscodeignore'), 'utf8');
+const extIgnoreRules = extIgnoreText
+  .split(/\r?\n/)
+  .filter((line) => !line.trim().startsWith('#'))
+  .join('\n');
 check(
-  !extIgnoreText.includes('assets/') && !extIgnoreText.includes('media/'),
+  !extIgnoreRules.includes('assets/') && !extIgnoreRules.includes('media/'),
   '.vscodeignore 没把 assets/ 或 media/ 排除（打 .vsix 时它们要跟着走）',
 );
 
@@ -587,7 +593,7 @@ check(bundleText.includes('讲解助手'), 'prompt 进了产物（它是产品�
 check(bundleText.includes('anchorExplain.apiKey.'), 'SecretStorage 的键名约定进了产物（读写两侧同源）');
 
 // ---- S7 打包了第三方代码：署名必须一起进产物 ------------------------------
-// 产物里现在有 pdfjs-dist（**Apache-2.0**，比本包的 MIT 更严）。
+// 产物里现在有 pdfjs-dist（**Apache-2.0**，D85 起本包自身是专有许可，这条署名照样不能少）。
 // esbuild 的 legalComments 会把 `/*!` 开头的注释保留下来 —— 那是产物里唯一还留着的署名。
 // 这一条守的是"打包了别人的代码却不带署名"，而它恰恰是最难在事后发现的一类问题。
 check(
@@ -596,10 +602,14 @@ check(
 );
 const notices = join(ROOT, 'packages', 'extension-anchor', 'THIRD_PARTY_NOTICES.md');
 check(existsSync(notices), 'THIRD_PARTY_NOTICES.md 在（打包第三方代码的声明）');
-const extIgnore = readFileSync(join(ROOT, 'packages', 'extension-anchor', '.vscodeignore'), 'utf8');
+// 同上：剥注释行再判断，否则"注释里解释了为什么要带上它"也会被判成"把它排除了"
+const extIgnoreNoComments = readFileSync(join(ROOT, 'packages', 'extension-anchor', '.vscodeignore'), 'utf8')
+  .split(/\r?\n/)
+  .filter((line) => !line.trim().startsWith('#'))
+  .join('\n');
 // 不用正则：这个断言要的就是"这个文件名有没有出现在排除表里"，includes 足够且不会写错转义
 check(
-  !extIgnore.includes('THIRD_PARTY_NOTICES.md'),
+  !extIgnoreNoComments.includes('THIRD_PARTY_NOTICES.md'),
   'THIRD_PARTY_NOTICES.md 没被 .vscodeignore 排除（打 .vsix 时要带上它）',
 );
 

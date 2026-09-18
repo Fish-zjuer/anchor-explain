@@ -7,7 +7,9 @@
 约 2 秒后自己消失 —— 那是唯一的例外，而且只在你点的时候出现。
 
 这是 [`mathematic-inc/vscode-pdf`](https://github.com/mathematic-inc/vscode-pdf)（Apache-2.0）的 fork。
-**改了什么、删了什么、为什么，逐条在 [`MODIFICATIONS.md`](MODIFICATIONS.md)** —— 那份文件是这个包的必读。
+**改了什么、删了什么、为什么，逐条在 `MODIFICATIONS.md`** —— 那份文件是这个包的必读。
+（写成代码块而不是链接：这份 README 会随 `.vsix` 一起分发，相对链接在 Extensions 视图里是坏的，
+而 vsce 对"没有 repository 却带相对链接"直接报错 —— 我们没有 repository 也不想要一个假的。）
 
 - 扩展 ID：`anchor.anchor-pdf`（线1 的 `PEER_EXTENSION_ID` 就是它）
 - 入口：`src/extension.ts` → 产物 `dist/extension.cjs`
@@ -118,4 +120,5 @@ pnpm unlink:ext         # 撤掉
   S5 的框选走**注入式 overlay**（`media/anchor-select.js`），不往 pdf.js 里塞代码。
 - **不常驻、不自动的框**（D76 收窄后的约束 1）：播放/推进时 PDF 上一个框都不出现；
   只有"用户点了某一步"会滚到那一页并闪一下那一块，约 2 秒后自动消失。
-- 本包许可 **Apache-2.0**（不是仓库根的 MIT），见 `LICENSE` 与 `MODIFICATIONS.md` §三。
+- 本包许可 **Apache-2.0**（仓库根那套自身代码自 D85 起是**专有**许可，两者刻意不同），
+  见 `LICENSE` 与 `MODIFICATIONS.md` §三。**这也意味着本包不能被要求"禁止再分发"。**

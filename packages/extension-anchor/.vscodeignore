@@ -1,10 +1,30 @@
 # vsce 打包时排除的内容。我们把所有依赖都 bundle 进 dist/extension.cjs，
 # 所以 node_modules 可以整个排除（pnpm 的符号链接还会让 vsce 报错）。
+#
+# 分发纪律（D85）：这个包要交到别人手里，**源码一律不进包**。
+#   留在包里的只有：dist/（已 bundle 的产物）、assets/（图标）、media/（演练文档）、
+#   package.json、README.md、LICENSE.txt、THIRD_PARTY_NOTICES.md。
+# 下面的排除表由 `scripts/package-vsix.mjs` 再核一遍（它直接读 .vsix 的目录项，
+# 命中禁项就构建失败）—— 排除表写错时，构建会红，而不是"悄悄多带了源码"。
 .vscode/**
+.github/**
 src/**
 test/**
-tsconfig.json
 node_modules/**
+**/node_modules/**
 **/*.map
 **/*.ts
+**/*.tsbuildinfo
+tsconfig.json
+docs/**
+patches/**
+tools/**
+pdfjs_version.txt
+.env
+.env.*
+**/.env
+**/.env.*
+*.vsix
+.gitattributes
+pnpm-lock.yaml
 !dist/**

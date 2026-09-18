@@ -119,7 +119,7 @@
 | `repository` | 指向上游仓库 | 删除 | 写在那里会让"这是谁的仓库"变成误导 |
 | `icon` | `icon.png`（上游图标） | 删除 | 上游品牌资产，不随 fork 分发 |
 | `description` | 上游的 | 我们自己的 | — |
-| `version` | `0.2.5` | `0.0.0` | 本仓库的约定（`private: true`，不发布 Marketplace） |
+| `version` | `0.2.5` | `0.1.0` | 本仓库的约定（`private: true`，不发布 Marketplace）。**与上游版本号刻意不同源**：上游是 `0.2.5` 而我们从 `0.1.0` 起，免得被误认成"同一个东西的旧版"（D85 起要出 `.vsix` 分发了，这条才变得要紧） |
 | `engines.vscode` | `^1.134.0` | `^1.90.0` | 与线1 一致。上游用的是更新的 API，但**实际用到的都是 1.90 就有的**（`registerCustomEditorProvider` / `asWebviewUri` / `openWith`），类型面因此钉在 `@types/vscode@1.90.0` |
 | `main` | `./dist/extension.js` | `./dist/extension.cjs` | 本仓库的打包约定（CommonJS + `.cjs` 后缀，见 `CONTRACTS` §9.4） |
 | `scripts` | tsup / oxlint / vsce / hk… | `typecheck` + `test`（单测 + 上游的 pdf.js 守卫） | 打包统一由根 `esbuild.mjs` 负责（见下） |

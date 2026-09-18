@@ -1,12 +1,25 @@
 # 上游的排除表基本照抄，只去掉我们这套 monorepo 里不存在的条目。
 # 关键：**assets/ 绝不能排除** —— pdf.js 的 web/build 就是页面的全部运行时。
+#
+# 分发纪律（D85）：源码不进包。本包**必须**保留的还有 LICENSE（Apache-2.0 原文）
+# 与 MODIFICATIONS.md（apache-2.0 §4(b) 要求的改动声明）—— 它们不是"源码"，不许排除。
 .vscode/**
 .github/**
-node_modules/**
 src/**
+test/**
+tools/**
+patches/**
+node_modules/**
+**/node_modules/**
 **/tsconfig.json
 **/*.map
 **/*.ts
-patches/**
+**/*.tsbuildinfo
+.env
+.env.*
+**/.env
+**/.env.*
+*.vsix
+.gitattributes
+pnpm-lock.yaml
 pdfjs_version.txt
-tools/**

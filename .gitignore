@@ -8,6 +8,7 @@ out/
 
 # 打包产物
 *.vsix
+release/
 
 # VS Code 集成测试下载的编辑器
 .vscode-test/

@@ -2173,6 +2173,57 @@ D82 把判据从"锚点文件还在吗"换成"**这次讲解还有没有落脚�
 
 ---
 
+## D85 分发形态：`.vsix` 本地安装 + 线1 专有许可 / 线2 Apache-2.0
+
+**起因**（用户原话）：「把这个插件变成可分发的形式，注意不要带我的key等信息……最好是类似一个安装程序，然后分发权在我手里，别人不能二次分发。不带源码。」
+
+**决策**：
+
+1. 分发形态 = **`.vsix`**（VS Code 的安装包，双击即装），**不上架 Marketplace**。操作手册见 `docs/DISTRIBUTION.md`。
+2. **包里不带源码**：两份 `.vscodeignore` 收紧，且打包脚本会把产物读回来核"禁带"清单。
+3. **包里不带任何 key**：key 的正道是 `SecretStorage`（每台机器装完后由使用者自己存），打包脚本再把每个 entry 解压出来扫一遍密钥特征。
+4. 许可分层：线1 改**专有**（`LICENSE.txt`，禁止再分发）；线2 **必须**留在 Apache-2.0。
+
+**为什么线2 做不到"别人不能二次分发"**：它是 `mathematic-inc/vscode-pdf` 的 fork（Apache-2.0），
+Apache-2.0 §4 本来就授予**拿到的人**复制与再分发的权利；把 Apache-2.0 的衍生物改成
+"All rights reserved" 等于违反上游许可。把 Apache-2.0 组件**打进**专有产品是允许的
+（线1 打包了 `pdfjs-dist` 就是这么做的），但前提是保留它的许可与署名。
+所以"只有我能分发"能做到的程度是：**线1 可以；线2 只能靠"不发它"来做到**。
+
+**为什么许可条款不等于技术锁**：LICENSE 约束的是愿意守约的人和争议时的意思表示，
+不阻止任何人复制一个文件。真正降低被转发的手段是**私下给、不放到公开下载页**。
+这不是缺陷陈述，是必须写清楚的现实 —— 把"许可"说成"防分发"就是又一次"假话"（D73 同类）。
+
+**落地**：
+
+- 两份 `.vscodeignore` 收紧。**线2 此前漏了 `test/**`** —— 测试代码差一步进包，这次一并堵上。
+- 线1 新增 `LICENSE.txt`（专有 EULA，内含"第三方组件不受本协议约束"一节），
+  `license: "SEE LICENSE IN LICENSE.txt"`；两线版本 `0.0.0` → **`0.1.0`**（分发出去的包得有像样的版本号）。
+- 新增 `scripts/package-vsix.mjs`：调 vsce 打包 → **读回 `.vsix`** 核结构 / 必带 / 禁带 → 解压扫密钥。
+  四道门任一红则退出码 1。判据读**产物本身**而不是排除表 —— 排除表写错的症状是"包里悄悄多了源码"，
+  那种事事后最难发现（同 D82 的"不读中间态、读事实"）。
+- `pnpm package:vsix`（/ `line1` / `line2`）；`pnpm-workspace.yaml` 放行 `@vscode/vsce-sign`；
+  `@vscode/vsce` 进根 `devDependencies`。
+
+**vsce 的两个改名**：`README.md` → `readme.md`、`LICENSE` → `LICENSE.txt`。
+**必带清单必须按包里的名字写**，不是按盘上的名字写 —— 这是这次实跑出来的，不是猜的。
+
+**vsce 的一个真报错**：README 里有相对链接而 `package.json` 没有 `repository` → 打包失败。
+处理：把那条链接改成代码块，**不塞假 repository**（D53 删 `repository` 的理由不变：
+写在那里会让"这是谁的仓库"变成误导）。
+
+**pnpm 11 的一个新坑**：`@vscode/vsce-sign` 有构建脚本，pnpm 11 只要发现"有未批准的构建脚本"
+就让 `pnpm install` 以 1 退出 —— 于是 `pnpm exec` 全线报错。放行它（`allowBuilds`）即可。
+`pnpm-workspace.yaml` 里那行占位 `set this to true or false` 就是 pnpm 自己插的，
+这次才算真正填掉。
+
+**验证**：`pnpm package:vsix` 全绿 —— 线1 12 个 entry / 3.09 MB，线2 415 个 entry / 4.62 MB；
+禁带零命中、密钥扫描零命中、必带与 manifest（Id/Version/Publisher）全对。
+
+**状态**：生效。
+
+---
+
 ## D39 的更正：`engines.vscode` 应当是**范围**，`@types/vscode` 才是精确值
 
 原 D39 写的是"`engines.vscode` 与 `@types/vscode` 必须写成同一个具体版本（不带 `^`）"。

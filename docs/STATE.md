@@ -340,6 +340,12 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   `evaluateSessionEnd()`。红→绿实测：注释掉两条分支后链式冒烟 6 条 FAIL（`session:end 10 → 11`），
   恢复即绿。顺带修掉一个"假的绿"：冒烟桩把 `openTextDocument` 放在 `window` 下，而真实 API 在
   `workspace` 上 —— 跨文件那条路一直没被跑到过（与约束 111 / 112 同一类陷阱）。
+- **D85（新能力）**「把这个插件变成可分发的形式」：`.vsix` 本地安装包（**双击即装**），
+  `pnpm package:vsix` 一条命令出两个包，产物落 `release/`。包里**没有源码、没有任何 key** ——
+  打包脚本把 `.vsix` 读回来核"禁带"清单（src/test/map/lockfile/env），再把每个 entry 解压出来扫密钥特征。
+  许可分层是**约束**不是选择：线1 改专有（`packages/extension-anchor/LICENSE.txt`，禁止再分发），
+  线2 是 Apache-2.0 的 fork、**只能**留在 Apache-2.0 —— "别人不能二次分发"对线2 做不到，除非不分发它。
+  操作手册在 `docs/DISTRIBUTION.md`（怎么打、怎么装、怎么给、许可边界、常见报错）。
 
 `pnpm check` 全绿：**318 测**（core 48 / ext-A 244 / pdf 26）、四个冒烟 **48 + 111 + 11 + 52**。
 （冒烟条数改按**干净重定向**的输出数；先前几节是数在换行被合并过的日志上，偏低。）

@@ -23,7 +23,10 @@
     "smoke:chain": "node scripts/smoke-walkthrough.mjs",
     "smoke:fileswitch": "node scripts/smoke-file-switch.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm smoke && pnpm smoke:chain && pnpm smoke:fileswitch && pnpm smoke:pdf",
-    "smoke:pdf": "node scripts/smoke-pdf-extension.mjs"
+    "smoke:pdf": "node scripts/smoke-pdf-extension.mjs",
+    "package:vsix": "pnpm build && node scripts/package-vsix.mjs",
+    "package:vsix:line1": "pnpm build && node scripts/package-vsix.mjs line1",
+    "package:vsix:line2": "pnpm build && node scripts/package-vsix.mjs line2"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
