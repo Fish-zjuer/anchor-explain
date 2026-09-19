@@ -46,6 +46,8 @@ import { createPdfDocumentCache } from './adapters/pdf/pdfDocumentCache.ts';
 import { createPdfJsSource } from './adapters/pdf/pdfjsSource.ts';
 import { primaryLocationOf } from './playback/decorationPlan.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
+import { coerceLanguage, describeLanguage } from './prompts/index.ts';
+import type { ExplainLanguage } from './prompts/index.ts';
 import {
   DEFAULT_ACTIVE_PROVIDER,
   checkBaseUrl,
@@ -395,7 +397,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    *         （工作区只读、Memento 满了都可能失败），因此整段包在 try 里。
    */
   function rememberRun(result: ExplanationResult, anchor: Anchor): void {
-    const run: LastRun = { result, anchor, savedAt: Date.now() };
+    // 语言跟着这一份存档走（D97）：英文讲解导出的历史文件不该顶着中文标题
+    const run: LastRun = { result, anchor, savedAt: Date.now(), language: languageOf() };
     lastRun = run;
     lastRunLoaded = true;
     try {
@@ -516,6 +519,39 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   // ───────────────────────────────────────────────────────────
+  // 讲解语言（D97）—— 影响讲解内容链（prompt/示范/面板文案/导出），默认中文
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * 当前的讲解语言。**同步读**：建面板与记存档的时刻拿不到 async 的完整配置，
+   * 而这一个字段的读取便宜且无副作用（与 `readAnchorConfig` 的完整解析是两回事）。
+   */
+  function languageOf(): ExplainLanguage {
+    return coerceLanguage(vscode.workspace.getConfiguration('anchorExplain').get('language'));
+  }
+
+  /** 「切换讲解语言」—— 一键：中文 ↔ English。设置落 Global（与 style 同一落点），下一次讲解生效。 */
+  async function toggleLanguage(): Promise<void> {
+    const next: ExplainLanguage = languageOf() === 'en' ? 'zh' : 'en';
+    const settings = vscode.workspace.getConfiguration('anchorExplain');
+    try {
+      await settings.update('language', next, vscode.ConfigurationTarget.Global);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Anchor：讲解语言没能写进设置（${describeError(err)}）。`);
+      return;
+    }
+    // 写完立刻回读（D63 的纪律）：update 静默失败（settings.json 有语法错）时，
+    // 用户看到的不能是一句"已切换"的假话
+    if (languageOf() !== next) {
+      void vscode.window.showErrorMessage('Anchor：讲解语言没能写进设置 —— 请检查 settings.json 是否有语法错误。');
+      return;
+    }
+    void vscode.window.showInformationMessage(
+      `Anchor：讲解语言已切换为 ${describeLanguage(next)} —— 下一次讲解生效。`,
+    );
+  }
+
+  // ───────────────────────────────────────────────────────────
   // 讲解面板的字号（D89）—— 独立于 VS Code 的 Ctrl+= / Ctrl+-
   // ───────────────────────────────────────────────────────────
 
@@ -633,7 +669,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     if (!sidebar || sidebar.disposed) {
       // 把用户实际键位一并交给面板：webview 里的按键到不了工作台，得它自己派发（D47）。
       // 字号系数同理内联（D89）：建面板那一刻的系数就是初值，之后的变更走消息。
-      sidebar = SidebarPanel.create(handlers, status.chords(), fontScaleOf());
+      // 语言同理内联（D97）：面板文案（按钮/徽章/取件日志）跟着讲解语言走。
+      sidebar = SidebarPanel.create(handlers, status.chords(), fontScaleOf(), languageOf());
     }
     return sidebar;
   }
@@ -1050,6 +1087,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       maxFetchRounds: cfg.maxFetchRounds,
       temperature: cfg.temperature,
       style: cfg.style,
+      language: cfg.language,
       fetchPolicy: isCodeLocation(anchor.location)
         ? fetchPolicyFor(cfg.fetchScope, anchor.location.filePath, cfg.maxFetchLines)
         : undefined,
@@ -1833,6 +1871,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.fontReset', () => changeFontScale('reset')),
     vscode.commands.registerCommand('anchorExplain.exportLast', () => void exportLast()),
     vscode.commands.registerCommand('anchorExplain.openHistoryFolder', () => void openHistoryFolder()),
+    // D97：讲解语言一键切换（中文 ↔ English）
+    vscode.commands.registerCommand('anchorExplain.toggleLanguage', () => toggleLanguage()),
 
     // 开始面板显示的四件事里，有两件不经过 emit：模型配置（改设置）与对端（装/卸线2）。
     // 不订阅它们的话，面板会一直显示打开那一刻的旧话。

@@ -22,7 +22,12 @@ function inlineChords(chords: ResolvedChords): string {
   return `var ANCHOR_CHORDS = ${json};`;
 }
 
-export function renderSidebarHtml(cspSource: string, chords: ResolvedChords, fontScale: number): string {
+export function renderSidebarHtml(
+  cspSource: string,
+  chords: ResolvedChords,
+  fontScale: number,
+  language: 'zh' | 'en' = 'zh',
+): string {
   const nonce = randomBytes(16).toString('base64');
 
   const csp = [
@@ -32,18 +37,19 @@ export function renderSidebarHtml(cspSource: string, chords: ResolvedChords, fon
   ].join('; ');
 
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${language === 'en' ? 'en' : 'zh-CN'}">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Anchor 讲解</title>
+<title>${language === 'en' ? 'Anchor Explanation' : 'Anchor 讲解'}</title>
 <style nonce="${nonce}">${SIDEBAR_STYLES}</style>
 </head>
 <body>
 <div id="root"></div>
 <script nonce="${nonce}">${inlineChords(chords)}
 var ANCHOR_FONT_SCALE = ${JSON.stringify(fontScale)};
+var ANCHOR_LANGUAGE = ${JSON.stringify(language)};
 ${SIDEBAR_CLIENT_SCRIPT}</script>
 </body>
 </html>`;

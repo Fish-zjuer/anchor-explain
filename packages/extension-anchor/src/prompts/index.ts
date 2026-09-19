@@ -26,6 +26,13 @@ import type { Anchor } from '@anchor/core';
 import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
 import { EXPLANATION_JSON_SHAPE, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
 import { CONCISE_EXEMPLAR, DETAILED_EXEMPLAR, STANDARD_EXEMPLAR } from './exemplars.ts';
+import {
+  buildRepairPromptEn,
+  buildSystemPromptEn,
+  buildUserPromptEn,
+  describeAnchorEn,
+  explainOutputContractEn,
+} from './en.ts';
 
 /**
  * 讲解风格（D93 起三档全部示范驱动，D94 起按用户模板进同一个 prompt 结构）：
@@ -54,6 +61,29 @@ export function describeStyle(style: ExplainStyle): string {
 }
 
 /**
+ * 讲解语言（D97）：模型**输出**（以及讲解内容链上的各处文案）用哪种语言。
+ * 默认 `zh`；`en` 时三个 prompt 换成 `en.ts` 的英文面，示范换成三份英文示范。
+ *
+ * @anchor 只有两处语言：讲解内容（prompt → 侧边栏标签 → 导出）跟着这个设置走；
+ *         扩展自身的界面（按钮/通知/设置说明）**不**跟着走 —— 那是另一件事
+ *         （该跟 VS Code 显示语言走，量级也完全不同）。取件工具层的回灌文案
+ *         （拒绝原因、取件内容头、失败说明）保持中文：那是模型侧的指令文本，
+ *         模型读中文没有障碍，输出语言由 system prompt + 示范决定。
+ */
+export type ExplainLanguage = 'zh' | 'en';
+
+export const DEFAULT_LANGUAGE: ExplainLanguage = 'zh';
+
+export function coerceLanguage(raw: unknown): ExplainLanguage {
+  return raw === 'en' ? 'en' : DEFAULT_LANGUAGE;
+}
+
+/** 语言的人话名（`显示状态` 用）。 */
+export function describeLanguage(language: ExplainLanguage): string {
+  return language === 'en' ? 'English' : '中文';
+}
+
+/**
  * 输出契约的原样描述。system 的「输出形状」与 repair 两处都引用它，保证口径一致。
  *
  * @anchor `crossFile` 不是可选的美化，是**必须**：S9a 的第一版这里写死了
@@ -62,7 +92,8 @@ export function describeStyle(style: ExplainStyle): string {
  *         **又把那条错规则说了一遍**，第二次注定还是失败，最后以 `SCHEMA_VIOLATION` 收场。
  *         这就是用户实测到的"第一轮报错"。**初次与 repair 必须说同一句话**（D67）。
  */
-export function explainOutputContract(crossFile = false): string {
+export function explainOutputContract(crossFile = false, language: ExplainLanguage = DEFAULT_LANGUAGE): string {
+  if (language === 'en') return explainOutputContractEn(crossFile);
   return [
     '最终回答必须是**一个 JSON 对象**（可以放在 ```json 围栏里），形状如下：',
     EXPLANATION_JSON_SHAPE,
@@ -277,8 +308,12 @@ function examplesSection(style: ExplainStyle): string {
 
 export function buildSystemPrompt(
   style: ExplainStyle = DEFAULT_STYLE,
-  options: { crossFile?: boolean; maxFetchLines?: number; examples?: boolean } = {},
+  options: { language?: ExplainLanguage; crossFile?: boolean; maxFetchLines?: number; examples?: boolean } = {},
 ): string {
+  // 英文面（D97）：整套段落与示范都换成 en.ts 的版本，骨架（五节 + 只实例化当前档）不变。
+  if (options.language === 'en') {
+    return buildSystemPromptEn(style, options);
+  }
   const crossFile = options.crossFile === true;
   const withExamples = options.examples !== false;
   const parts = [
@@ -298,7 +333,8 @@ export function buildSystemPrompt(
  * 代码锚点还会给**所在目录**：跨文件取件时相对路径要有基准，
  * 否则模型只能猜"`ring_buffer.h` 是相对谁写的"（S9a）。
  */
-export function describeAnchor(anchor: Anchor): string {
+export function describeAnchor(anchor: Anchor, language: ExplainLanguage = DEFAULT_LANGUAGE): string {
+  if (language === 'en') return describeAnchorEn(anchor);
   const lines: string[] = [`来源类型：${anchor.sourceType}`, `文档名：${anchor.sourceName}`];
   const loc = anchor.location;
 
@@ -338,8 +374,9 @@ export function describeAnchor(anchor: Anchor): string {
  */
 export function buildUserPrompt(
   anchor: Anchor,
-  options: { candidates?: readonly string[]; focus?: string; crossFile?: boolean } = {},
+  options: { language?: ExplainLanguage; candidates?: readonly string[]; focus?: string; crossFile?: boolean } = {},
 ): string {
+  if (options.language === 'en') return buildUserPromptEn(anchor, options);
   const parts = ['## 锚点', describeAnchor(anchor), ''];
 
   if (options.focus !== undefined && options.focus.trim() !== '') {
@@ -387,8 +424,9 @@ export function buildUserPrompt(
 export function buildRepairPrompt(
   rawPrevious: string,
   issues: string,
-  options: { crossFile?: boolean } = {},
+  options: { language?: ExplainLanguage; crossFile?: boolean } = {},
 ): string {
+  if (options.language === 'en') return buildRepairPromptEn(rawPrevious, issues, options);
   return [
     '你上一次的输出没有通过校验。',
     '',

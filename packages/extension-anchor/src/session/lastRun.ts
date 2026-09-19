@@ -19,12 +19,18 @@
 import { isCodeLocation, isPDFLocation } from '@anchor/core';
 import type { Anchor, ExplanationResult, Location, SubHighlight, WalkthroughStep } from '@anchor/core';
 import { isAnchorLike } from '../protocol.ts';
+import type { ExplainLanguage } from '../prompts/index.ts';
 
 export interface LastRun {
   readonly result: ExplanationResult;
   readonly anchor: Anchor;
   /** 存下来的时刻（`Date.now()`）。只为"这是什么时候讲的"这句话，不参与任何判据。 */
   readonly savedAt: number;
+  /**
+   * 这次讲解用的语言（D97）。导出 Markdown 的标签跟着它走。
+   * **可选**：旧存档没有这个字段 —— 读出来按中文处理（英文选项出现之前的存档全是中文讲解）。
+   */
+  readonly language?: ExplainLanguage;
 }
 
 /**
@@ -147,6 +153,8 @@ export function readLastRun(raw: unknown): LastRun | undefined {
       title: str(result.title, MAX_TITLE_CHARS),
     },
     savedAt,
+    // D97：旧存档没有这个字段 → undefined → 导出按中文处理（可选字段，不升版本号）
+    language: raw.language === 'en' ? 'en' : undefined,
   };
 }
 
@@ -157,5 +165,6 @@ export function toStoredRun(run: LastRun): unknown {
     savedAt: run.savedAt,
     anchor: run.anchor,
     result: run.result,
+    ...(run.language !== undefined ? { language: run.language } : {}),
   };
 }

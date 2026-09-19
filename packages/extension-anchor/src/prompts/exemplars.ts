@@ -84,3 +84,86 @@ export const DETAILED_EXEMPLAR = `**summary** ：这个文件实现一个固定�
 - \`% RB_SIZE\` 的作用：让下标在 0 到 15 之间循环。\`tail + 1\` 到 16 时，取余变成 0；\`head + 1\` 到 16 时也一样。数组就像首尾相接。
 - \`rb->tail\` 和 \`*out\` 的语法：\`rb\` 是结构体指针，\`rb->tail\` 是取它指向的结构体里的 \`tail\` 成员；\`out\` 是整数指针，\`*out\` 是取出 \`out\` 指向的那个整数变量。
 - 为什么写入方和读取方不需要互相等待：写入方只改 \`tail\`，读取方只改 \`head\`。双方通过 \`head\` 和 \`tail\` 判断能不能写、能不能读。这个示例约定只有一个写入方和一个读取方，所以不需要加锁。`;
+
+/**
+ * 英文面（D97）：`anchorExplain.language = "en"` 时进 prompt 的示范。
+ * 编辑面是 `scripts/style-lab/exemplar/<档位名>.en.md`，同步锁与中文版共用同一个测试文件。
+ * 内容是用户三份中文示范的**忠实翻译** —— 结构、判据、推演顺序一一对应，只换语言。
+ */
+
+export const STANDARD_EXEMPLAR_EN = `**summary**: This file implements a ring buffer of fixed capacity \`RB_SIZE\`, backed by the array \`buf\`, with the read position in \`head\` and the write position in \`tail\`. \`rb_push(rb, v)\` tries to write the integer \`v\` into the buffer; \`rb_pop(rb, out)\` tries to take an integer out of the buffer and hand it to the caller through \`out\`. The writer and the reader do not need to wait for each other. Empty and full are told apart by "always keep one slot empty": \`head == tail\` means empty; the slot after \`tail\` coinciding with \`head\` means full.
+
+**Step 1: Write — check full, write \`v\`, advance \`tail\` (lines 14-23)**
+
+The second parameter \`v\` of \`rb_push\` is the integer to write into the buffer this time; \`rb\` points at the target buffer.
+
+- Compute the next write position (line 16): \`next = (rb->tail + 1) % RB_SIZE\`. \`next\` is where \`tail\` will be once \`v\` is written, and it is also the basis for the full check.
+- The full condition \`next == rb->head\` (lines 17-18):
+  - True: the buffer is full. The slot at \`tail\` is the last free slot; if \`v\` were written and \`tail\` set to \`next\`, \`tail\` would coincide with \`head\` — and since \`head == tail\` is defined as empty, full and empty would be indistinguishable. So it returns \`false\`, and \`v\` is not written.
+  - False: \`next\` does not coincide with \`head\` — at least one slot is free. Continue with the write.
+- Order of writing and advancing (lines 20-21): first \`rb->buf[rb->tail] = v\`, storing \`v\` into the slot currently at \`tail\`; then \`rb->tail = next\`. If \`tail\` were advanced first, the code calling \`rb_pop\` could read data at the new position that has not been written yet; write-then-advance guarantees \`v\` is already in place by the time \`tail\` moves. Finally it returns \`true\`.
+
+**Step 2: Read — check empty, take the value, advance \`head\` (lines 25-33)**
+
+The second parameter \`out\` of \`rb_pop\` is a pointer to a caller variable that receives the integer read out.
+
+- The empty condition \`rb->head == rb->tail\` (lines 27-29):
+  - True: there is nothing to read. \`head\` equal to \`tail\` means everything written has been taken. It returns \`false\` and does not modify \`*out\`.
+  - False: there is data to read. Continue.
+- Order of reading and advancing (lines 30-31): first \`*out = rb->buf[rb->head]\`, handing the data in the slot at \`head\` to the caller; then \`rb->head = (rb->head + 1) % RB_SIZE\`. If \`head\` were advanced first, that slot would count as writable, and the code calling \`rb_push\` could overwrite data not yet handed to \`*out\`; read-then-advance guarantees the data has been handed over first. Finally it returns \`true\`.`;
+
+export const CONCISE_EXEMPLAR_EN = `**summary**: This is a fixed-size ring buffer that passes integers between a writer and a reader, neither of them waiting for the other. It always keeps one slot empty, which is what tells "empty" and "full" apart.
+
+**Step 1: Write (lines 14-23)**
+
+The goal is to put an integer in. If the buffer is already full, it refuses and returns failure, so data that has not been taken yet is not overwritten; if it is not full, the integer goes in and it returns success.
+
+**Step 2: Read (lines 25-33)**
+
+The goal is to take an integer out. If the buffer is empty, it refuses and returns failure, because there is nothing to take; if it is not empty, it takes one integer out and returns success.`;
+
+export const DETAILED_EXEMPLAR_EN = `**summary**: This file implements a fixed-size ring buffer. It stores integers in an array that wraps around; \`head\` is the read position, \`tail\` is the write position. \`rb_push\` tries to write an integer; \`rb_pop\` tries to read one out. The writer and the reader do not need to wait for each other. The conditions for empty and full, and why they are judged this way, are explained line by line in Step 2 and Step 3.
+
+**Step 1: The data structure and the two positions first (lines 1-12)**
+
+- Lines 1-3: comments. They say this is a ring buffer with one writer and one reader, so no lock is needed. The comments give the conditions for empty and full as "keep one slot empty": \`head == tail\` is empty, \`(tail + 1) % N == head\` is full. This is a comment, not executable code; \`N\` here corresponds to \`RB_SIZE\` below. Why exactly that is gets expanded at line 17, in Step 2.
+- Line 4: \`#include <stdbool.h>\`. It brings in \`bool\`, \`true\`, and \`false\`. Without it, the functions cannot return \`true\` or \`false\` directly.
+- Line 6: \`#define RB_SIZE 16\`. A macro definition. Before compilation, every \`RB_SIZE\` in the code is replaced with \`16\`. So the array \`buf\` has 16 \`int\` slots, indexed 0 to 15.
+- Line 8: \`typedef struct {\`. It starts a struct definition and will use \`typedef\` to give the struct a type name.
+- Line 9: \`int buf[RB_SIZE];\`. It defines an integer array \`buf\` of length \`RB_SIZE\`, that is, 16. It holds the integers of the buffer. Indices run from 0 to 15.
+- Line 10: \`int head;\`. It defines an integer \`head\`, which holds the read position. \`rb_pop\` takes data from the slot \`head\` points at.
+- Line 11: \`int tail;\`. It defines an integer \`tail\`, which holds the write position. \`rb_push\` writes data into the slot \`tail\` points at.
+- Line 12: \`} ring_buffer_t;\`. It ends the struct definition and names this struct \`ring_buffer_t\`. From then on, writing \`ring_buffer_t rb;\` declares such a buffer.
+
+**Step 2: Write — refuse when full; otherwise write and move the write position (lines 14-23)**
+
+- Line 14: \`bool rb_push(ring_buffer_t *rb, int v)\`. It defines the function \`rb_push\`. The return type is \`bool\`, standing for success or failure. The parameter \`rb\` is a pointer to the buffer to operate on; the parameter \`v\` is the integer to write this time.
+- Line 15: \`{\`. The function body starts.
+- Line 16: \`int next = (rb->tail + 1) % RB_SIZE;\`. It defines an integer \`next\`, which holds "where the write position should go next if the slot at the current \`tail\` gets written". \`rb->tail\` means "the \`tail\` member of the struct that \`rb\` points at", equivalent to \`(*rb).tail\`. \`+ 1\` moves one slot forward. \`% RB_SIZE\` takes the remainder: if \`tail\` is 15, \`(15 + 1) % 16\` gives 0, so the index wraps from the end back to the start. \`next\` is the new position \`tail\` will move to after the write, and it is also the basis for the full check.
+- Line 17: \`if (next == rb->head) {\`. It checks whether the buffer is already full. This cannot be decided by \`tail == head\` alone, because \`tail == head\` is already defined as "empty". Full is expressed as "the slot after the write position runs into the read position", that is, \`next == head\`. The walkthrough: suppose \`RB_SIZE\` is 16, \`head\` is 0, and \`tail\` is 15. The data written but not yet read sits in \`buf[0]\` through \`buf[14]\` — 15 values in total. \`tail\` points at \`buf[15]\`, the last free slot. If one more integer were written into \`buf[15]\` and then \`tail = (15 + 1) % 16\` ran, \`tail\` would become 0. Then \`head\` is 0 and \`tail\` is 0. But \`head == tail\` is already used to mean "empty". A buffer that has just become full would look "empty", and the reader could not tell full from empty. So the last free slot must not be written. When \`next == head\`, that is exactly the case: one more write and \`tail\` coincides with \`head\`. Therefore this condition means full, and it returns \`false\` right away. If \`next != head\`, at least one slot is still free to write.
+- Line 18: \`return false;\`. If the buffer is full, it returns \`false\`: this write failed. Seeing \`false\`, the caller knows the value was not stored.
+- Line 19: \`}\`. It ends the \`if\`.
+- Line 20: \`rb->buf[rb->tail] = v;\`. It writes the integer \`v\` into the slot currently pointed at by \`tail\`. Note that this uses \`tail\`, not \`next\`. \`tail\` is the currently writable slot; \`next\` is where \`tail\` moves after the write.
+- Line 21: \`rb->tail = next;\`. Once the write is done, \`tail\` is updated to \`next\`, so the next value goes into the new slot. The order must be: write the data first, then move \`tail\`; if \`tail\` moved first, the reader might think there is new data while it has not actually been written yet.
+- Line 22: \`return true;\`. It returns \`true\`: the write succeeded.
+- Line 23: \`}\`. The function ends.
+
+**Step 3: Read — refuse when empty; otherwise read and move the read position (lines 25-33)**
+
+- Line 25: \`bool rb_pop(ring_buffer_t *rb, int *out)\`. It defines the function \`rb_pop\`. The return type is \`bool\`, standing for success or failure. The parameter \`rb\` points at the buffer. The parameter \`out\` is a pointer to an integer variable provided by the caller; on success the function writes the value read out into \`*out\`.
+- Line 26: \`{\`. The function body starts.
+- Line 27: \`if (rb->head == rb->tail) {\`. It checks whether the buffer is empty. \`head\` is the read position and \`tail\` is the write position; when the two are equal, everything written has been taken — there is nothing to read. The walkthrough: initially \`head == tail\`, which means empty; each write moves \`tail\` one slot forward; each read moves \`head\` one slot forward; when \`head\` catches up with \`tail\`, everything has been read.
+- Line 28: \`return false;\`. If the buffer is empty, it returns \`false\`: this read failed. It does not modify \`*out\`, and the caller must not treat \`*out\` as valid data.
+- Line 29: \`}\`. It ends the \`if\`.
+- Line 30: \`*out = rb->buf[rb->head];\`. It assigns the integer at the slot \`head\` points at to \`*out\`. \`*out\` means "the variable that the pointer \`out\` points at". This is how the caller receives the value that was read.
+- Line 31: \`rb->head = (rb->head + 1) % RB_SIZE;\`. After reading, \`head\` moves one slot forward. \`% RB_SIZE\` again keeps the index wrapping back to 0 after the end. The order must be: read the data first, then move \`head\`; if \`head\` moved first, the writer could overwrite data that has not been handed over yet.
+- Line 32: \`return true;\`. It returns \`true\`: the read succeeded.
+- Line 33: \`}\`. The function ends.
+
+**Addendum: the points that usually trip people up**
+
+- Empty: \`head == tail\`. Full: \`next == head\`, that is, \`(tail + 1) % RB_SIZE == head\`.
+- One slot left empty: the array has 16 slots but holds at most 15 integers, so full and empty never both look like \`head == tail\`.
+- What \`% RB_SIZE\` does: it keeps the index cycling between 0 and 15. When \`tail + 1\` reaches 16, the remainder makes it 0; the same for \`head + 1\`. The array behaves as if its two ends were joined.
+- The syntax of \`rb->tail\` and \`*out\`: \`rb\` is a pointer to a struct, and \`rb->tail\` takes the \`tail\` member of the struct it points at; \`out\` is a pointer to an integer, and \`*out\` is the integer variable \`out\` points at.
+- Why the writer and the reader do not need to wait for each other: the writer only changes \`tail\`, and the reader only changes \`head\`. Each side decides whether it can write or read from \`head\` and \`tail\`. The comments assume exactly one writer and one reader, so no lock is needed.`;

@@ -11,6 +11,7 @@
 import * as vscode from 'vscode';
 import { parseSidebarMessage } from '../protocol.ts';
 import type { HostToSidebar } from '../protocol.ts';
+import type { ExplainLanguage } from '../prompts/index.ts';
 import type { ResolvedChords } from './keybindingResolve.ts';
 import { renderSidebarHtml } from './ui/html.ts';
 
@@ -43,18 +44,22 @@ export class SidebarPanel {
   #disposed = false;
   /** 当前的字号缩放系数（D89）。`ui:ready` 重放完补发它 —— 重建的面板不丢样式。 */
   #fontScale: number;
+  /** 面板文案的语言（D97）。建面板那一刻的设置值就是初值；讲解中途切换要下一次讲解才生效。 */
+  readonly #language: ExplainLanguage;
 
   private constructor(
     panel: vscode.WebviewPanel,
     handlers: SidebarHandlers,
     chords: ResolvedChords,
     fontScale: number,
+    language: ExplainLanguage,
   ) {
     this.#panel = panel;
     this.#handlers = handlers;
     this.#fontScale = fontScale;
+    this.#language = language;
 
-    panel.webview.html = renderSidebarHtml(panel.webview.cspSource, chords, fontScale);
+    panel.webview.html = renderSidebarHtml(panel.webview.cspSource, chords, fontScale, language);
 
     panel.webview.onDidReceiveMessage((raw: unknown) => {
       // webview 发来的东西一样当外部输入：形状不对直接丢，不让坏数据进链路
@@ -113,8 +118,9 @@ export class SidebarPanel {
    * `chords` 是**用户实际绑定**解析后的键位，会被内联进 webview，好让面板有焦点时
    * 客户端能自己派发 next / prev / stop（见 D47）。`fontScale` 同理内联（D89）：
    * 建面板那一刻的系数就是初值，之后的变更走 `setFontScale`。
+   * `language` 同理内联（D97）：决定面板文案（按钮/徽章/日志）用中英哪一套。
    */
-  static create(handlers: SidebarHandlers, chords: ResolvedChords, fontScale: number): SidebarPanel {
+  static create(handlers: SidebarHandlers, chords: ResolvedChords, fontScale: number, language: ExplainLanguage = 'zh'): SidebarPanel {
     const panel = vscode.window.createWebviewPanel(
       'anchorExplain.sidebar',
       'Anchor 讲解',
@@ -127,7 +133,7 @@ export class SidebarPanel {
         localResourceRoots: [],
       },
     );
-    return new SidebarPanel(panel, handlers, chords, fontScale);
+    return new SidebarPanel(panel, handlers, chords, fontScale, language);
   }
 
   get disposed(): boolean {

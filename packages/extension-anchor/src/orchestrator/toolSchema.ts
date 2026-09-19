@@ -71,6 +71,31 @@ export const EXPLANATION_JSON_SHAPE = `{
 }`;
 
 /**
+ * 同一份契约的英文版（D97）：讲解语言为 English 时进 system prompt。
+ * **形状与字段一字不差** —— 校验闸门只认这个形状，语言只换说明文字。
+ */
+export const EXPLANATION_JSON_SHAPE_EN = `{
+  "title": "title of the whole explanation (optional)",
+  "summary": "one or two sentences, must be non-empty",
+  "confidence": 0.0,
+  "steps": [
+    {
+      "location": { "filePath": "<file path: the anchor file, or a file you actually fetched this run>", "lineStart": 1, "lineEnd": 2 },
+      "title": "title of this step",
+      "intro": "what this step is about to solve",
+      "text": "explanation body of this step, must be non-empty",
+      "highlights": [
+        {
+          "location": { "filePath": "<same as above>", "lineStart": 1, "lineEnd": 1 },
+          "narration": "the explanation for this line",
+          "emphasis": "primary | context | definition | caveat"
+        }
+      ]
+    }
+  ]
+}`;
+
+/**
  * 把模型给的 tool_call 参数解析成 `ContextRequest`。
  *
  * **只做形状解析，不做业务校验** —— 合法性（类型是否被允许、区间是否越界、是否重复取件）

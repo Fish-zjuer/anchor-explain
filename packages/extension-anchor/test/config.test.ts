@@ -243,3 +243,35 @@ test('describeConfig：把风格也报出来（显示状态里能一眼看出当
   assert.match(line, /最多取件 2 次/);
   assert.match(line, /风格 详细/);
 });
+
+// ── D97：讲解语言 ─────────────────────────────────────────────────────────
+
+test('language：默认 zh，en 之外一律回落（写错一个词不该让讲解不可用）', async () => {
+  const { coerceLanguage } = await import('../src/prompts/index.ts');
+  const base = {
+    providers: { default: { baseUrl: 'https://a.test/v1', tier1Model: 'm' } },
+    activeProvider: 'default',
+    maxFetchRounds: 2,
+    preferSecretStorage: true,
+  };
+  const en = resolveConfig({ ...base, language: 'en' });
+  assert.equal(en.language, 'en');
+  const zh = resolveConfig({ ...base, language: undefined });
+  assert.equal(zh.language, 'zh');
+  assert.equal(resolveConfig({ ...base, language: '中文' }).language, coerceLanguage('中文'));
+});
+
+test('describeConfig：English 时状态行报「输出语言 English」，中文默认不啰嗦', async () => {
+  const { describeLanguage } = await import('../src/prompts/index.ts');
+  const base = {
+    providers: { default: { baseUrl: 'https://a.test/v1', tier1Model: 'm' } },
+    activeProvider: 'default',
+    maxFetchRounds: 2,
+    preferSecretStorage: true,
+  };
+  const zhLine = describeConfig(resolveConfig(base));
+  assert.doesNotMatch(zhLine, /输出语言/, '默认中文是常态，状态行不该每个词都带');
+  const enLine = describeConfig(resolveConfig({ ...base, language: 'en' }));
+  assert.match(enLine, /输出语言 English/);
+  assert.match(enLine, new RegExp(describeLanguage('en')));
+});

@@ -915,6 +915,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 | `anchorExplain.maxFetchLines` | number | `400` | **S9a 修新增（D71）**。单次取件最多几行。**超出不会拒绝，只会截到这个数**（回灌内容头部写着真实行范围）。上限 2000；与 `DEFAULT_MAX_FETCH_LINES`（闸门侧的默认值）**同一个来源**，提示词里那句也用它 |
 | `anchorExplain.fetchScope` | `"related"` \| `"same-dir"` \| `"off"` | `"related"` | **S9a 新增（D66）**。允许读锚点文件之外哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖、构建产物目录**始终不读** |
 | `anchorExplain.style` | `"standard"` \| `"concise"` \| `"detailed"` | `"standard"` | **S8 新增（D65），D93 起三档全部示范驱动，D94 起按用户模板组织 system prompt**：# 角色 → # 输出形状 → # 通用规则 → # 档位规则（只进当前档一节）→ # 取件（工具循环必需）→ # 示例（few-shot，只进当前档示范；正文 `scripts/style-lab/exemplar/<档位名>.md`，线上常量有同步锁）。标准（默认）：数据流视角、每步讲清因果 / 精简：几句话讲清目标与边界 / 详细：逐行讲解 + 具体推演。旧值 `rigorous` 自动按 `detailed` 处理 |
+| `anchorExplain.language` | `"zh"` \| `"en"` | `"zh"` | **D97 新增**。讲解语言：影响**讲解内容链** —— prompt 与示范（`en.ts` 的英文面 + `exemplar/<档位>.en.md`，同样有同步锁）、侧边栏讲解面板文案、导出的 Markdown（存档 `LastRun.language` 跟着那一次讲解走，旧存档按中文）。命令 `Anchor: 切换讲解语言` 一键翻转（Global 落点、写后验读）；扩展的命令与通知不跟随，取件工具层的回灌文案保持中文（模型侧指令，见 `prompts/index.ts` 的 `ExplainLanguage` 注释） |
 | `anchorExplain.temperature` | number | 未设置 | 透传给端点。留空就用端点的默认值 —— 不给默认值是刻意的：不同端点对 temperature 的合理取值不一样 |
 
 以上全部声明在 `packages/extension-anchor/package.json` 的 `contributes.configuration` 里

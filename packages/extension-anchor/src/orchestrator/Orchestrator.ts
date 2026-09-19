@@ -30,7 +30,7 @@ import type {
   ExplanationResult,
 } from '@anchor/core';
 import { buildRepairPrompt, buildSystemPrompt, buildUserPrompt } from '../prompts/index.ts';
-import type { ExplainStyle } from '../prompts/index.ts';
+import type { ExplainLanguage, ExplainStyle } from '../prompts/index.ts';
 import { describeIssues, validateExplanation } from './validateExplanation.ts';
 import type { ExplanationOutline } from './validateExplanation.ts';
 import type { ModelChoice, ModelRouteInput } from './ModelRouter.ts';
@@ -98,6 +98,8 @@ export interface OrchestratorDeps {
   temperature?: number;
   /** 讲解风格（D65）。缺省 = `prompts` 的默认档 */
   style?: ExplainStyle;
+  /** 讲解语言（D97）。缺省中文；`en` 时三个 prompt 换英文面 */
+  language?: ExplainLanguage;
   logger?: ContextRequestLogger;
   /** 注入时钟，便于测试断言 `durationMs` */
   now?: () => number;
@@ -152,13 +154,18 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
       {
         role: 'system',
         // 行数上限跟着**策略**走（同一个数既管闸门也管这句提示，避免两处说法不一致 —— D71）
-        content: buildSystemPrompt(deps.style, { crossFile, maxFetchLines: deps.fetchPolicy?.maxLines }),
+        content: buildSystemPrompt(deps.style, {
+          language: deps.language,
+          crossFile,
+          maxFetchLines: deps.fetchPolicy?.maxLines,
+        }),
       },
       {
         role: 'user',
         // `focus`（D79）跟着锚点走：用户写的那句话要进 prompt，否则它只是个被存起来没人读的字段
         // （`buildUserPrompt` 早就支持 `focus`，但一直没人传 —— 见 prompts/index.ts 那段注释）。
         content: buildUserPrompt(anchor, {
+          language: deps.language,
           candidates: deps.candidateFiles,
           crossFile,
           focus: anchor.focus,
@@ -191,7 +198,10 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
         { role: 'assistant', content: candidate },
         {
           role: 'user',
-          content: buildRepairPrompt(candidate, describeIssues(first.issues), { crossFile }),
+          content: buildRepairPrompt(candidate, describeIssues(first.issues), {
+            language: deps.language,
+            crossFile,
+          }),
         },
       ]);
 

@@ -513,3 +513,30 @@ test('S9a 修复：轮数用尽的报错要说实话（被拒次数 + 最后一�
     },
   );
 });
+
+// ── D97：讲解语言透传 ─────────────────────────────────────────────────────
+
+test('deps.language = en：system / user prompt 都换英文面（中文一个字都不该出现在指令里）', async () => {
+  // harness 不收 language —— 单独建一个带语言的编排器（其余依赖与 harness 相同）
+  const provider: ChatProvider = { chat(req) { requests.push(req); return Promise.resolve({ content: validJson(), toolCalls: [] }); } };
+  const requests: ChatRequest[] = [];
+  await createOrchestrator({
+    chat: provider,
+    routeModel: createModelRouter({ tier1Model: 'cheap' }),
+    adapter: {
+      capabilities: { contextTypes: ['file'], maxSpan: 5 },
+      fetchContext: () => Promise.resolve(''),
+    },
+    makeOutline: () => Promise.resolve({ documentLineCount: DOC_LINES, pageCount: null }),
+    maxFetchRounds: 3,
+    language: 'en',
+  })(anchorWith());
+
+  const system = String(requests[0]?.messages[0]?.content ?? '');
+  const user = String(requests[0]?.messages[1]?.content ?? '');
+  assert.match(system, /^# Role/m);
+  assert.match(system, /You write the explanation\s+in English/);
+  assert.match(user, /^## Anchor/m);
+  assert.doesNotMatch(system, /代码讲解生成器/);
+  assert.doesNotMatch(user, /锚点/);
+});

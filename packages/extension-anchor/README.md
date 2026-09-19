@@ -126,6 +126,13 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 改完不用重载窗口，下一次讲解就生效（`显示状态` 会报当前档位）。
 旧值 `rigorous` 自动按 `detailed` 处理。
 
+### 讲解语言（D97，默认中文）
+
+`Anchor: 切换讲解语言` 一键在 **中文 ↔ English** 之间翻转（也可改设置 `anchorExplain.language`），
+下一次讲解生效。它影响**整条讲解内容链**：prompt 与示范（三档各有英文示范 `exemplar/<档位>.en.md`）、
+讲解面板的按钮与徽章文案、导出的 Markdown（英文讲解导出的历史文件也是英文的）。
+扩展的命令与通知仍跟随 VS Code 界面；`显示状态` 在非默认语言时会多报一句「输出语言 English」。
+
 配好之后用 `Anchor: 显示状态` 核对一句：
 `模型：default：deepseek-flash @ https://api.deepseek.com；最多取件 3 次`。
 

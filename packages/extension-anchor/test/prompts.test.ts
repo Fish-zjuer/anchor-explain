@@ -223,3 +223,96 @@ test('focus（追问那条线）进 user prompt 时排在原文之前，并说�
     '先说要追什么，再给原文',
   );
 });
+
+// ── D97：讲解语言的英文面 ─────────────────────────────────────────────────
+
+test('英文 system prompt：五节结构同形（英文标题）、说明用英文输出、档位行在', () => {
+  for (const style of ['standard', 'concise', 'detailed'] as const) {
+    const prompt = buildSystemPrompt(style, { language: 'en' });
+    assert.match(prompt, /^# Role/m, style);
+    assert.match(prompt, /^# Output shape/m, style);
+    assert.match(prompt, /^# General rules/m, style);
+    assert.match(prompt, /^# Tier rules/m, style);
+    assert.match(prompt, /^# Fetching context/m, style);
+    assert.match(prompt, /^# Examples \(few-shot\)/m, style);
+    assert.match(prompt, /You write the explanation\s+in English/, style);
+    assert.match(prompt, /Do not rewrite code blocks\./, style);
+    assert.match(prompt, new RegExp(`Current tier: ${style}\.`), style);
+  }
+});
+
+test('英文 prompt 钉住与中文对应的硬要求（改英文面时这些不许松）', () => {
+  const prompt = buildSystemPrompt('standard', { language: 'en' });
+  assert.match(prompt, /Say "writer \/ reader", not "producer \/ consumer"/);
+  assert.match(prompt, /No colloquialisms, no anthropomorphism, no metaphors/);
+  assert.match(prompt, /how data flows through this piece/);
+  assert.match(prompt, /one step ≈ one complete action over 3-8 lines/);
+  assert.match(prompt, /A program reads this JSON: `location` decides which lines get highlighted/);
+  assert.match(prompt, /1-based counted from the first line of the file/);
+  assert.match(prompt, /never write the words "Key point \/ Context \/ Definition \/ Caveat"/i);
+  // D96 的"不要猜路径"两种语言同口径
+  assert.match(buildSystemPrompt('standard', { language: 'en', crossFile: true }), /Do not guess paths/);
+});
+
+test('英文档位规则只进当前档的一节（与中文版同一条纪律）', () => {
+  const standard = buildSystemPrompt('standard', { language: 'en' });
+  assert.match(standard, /## standard tier/);
+  assert.match(standard, /write first, then advance/);
+  assert.doesNotMatch(standard, /## concise tier/);
+  assert.doesNotMatch(standard, /## detailed tier/);
+});
+
+test('中文默认不变：不传 language 与传 zh 是同一个 prompt，且不含英文面', () => {
+  assert.equal(buildSystemPrompt('standard'), buildSystemPrompt('standard', { language: 'zh' }));
+  const prompt = buildSystemPrompt('standard');
+  assert.doesNotMatch(prompt, /# Role/);
+  assert.doesNotMatch(prompt, /# Output shape/);
+});
+
+test('coerceLanguage：en 之外一律回落中文（写错一个词不该让讲解不可用）', async () => {
+  const { coerceLanguage, describeLanguage, DEFAULT_LANGUAGE } = await import('../src/prompts/index.ts');
+  assert.equal(DEFAULT_LANGUAGE, 'zh');
+  assert.equal(coerceLanguage('en'), 'en');
+  assert.equal(coerceLanguage('zh'), 'zh');
+  for (const bad of ['中文', 'EN', 'english', '', null, undefined, 7, {}]) {
+    assert.equal(coerceLanguage(bad), 'zh', JSON.stringify(bad));
+  }
+  assert.match(describeLanguage('zh'), /中文/);
+  assert.match(describeLanguage('en'), /English/);
+});
+
+test('英文输出契约：crossFile 两套口径与中文一一对应', () => {
+  const single = explainOutputContract(false, 'en');
+  assert.match(single, /must be \*\*the anchor file itself\*\*/);
+  assert.doesNotMatch(single, /you actually had this run/);
+
+  const cross = explainOutputContract(true, 'en');
+  assert.match(cross, /you actually had this run/);
+  assert.match(cross, /put that step's `location` \*\*in that file\*\*/);
+  assert.match(cross, /do not split steps just to look cross-file/);
+  assert.match(cross, /Your final answer must be \*\*a single JSON object\*\*/);
+});
+
+test('英文 repair 与英文 system 同口径（D67 的规矩两种语言都成立）', () => {
+  const cross = buildRepairPrompt('{}', 'problems', { language: 'en', crossFile: true });
+  assert.match(cross, /Your previous output did not pass validation/);
+  assert.match(cross, /you actually had this run/);
+  assert.doesNotMatch(cross, /the anchor file itself/);
+});
+
+test('英文 user prompt：锚点描述与标题换成英文，候选清单照常进', () => {
+  const prompt = buildUserPrompt(CODE_ANCHOR, {
+    language: 'en',
+    candidates: ['ring_buffer.h'],
+    crossFile: true,
+    focus: 'the boundary checks',
+  });
+  assert.match(prompt, /## Anchor/);
+  // 文件路径原样保留（不当场改写路径）；Windows 反斜杠用一个字符类避开转义混淆
+  assert.ok(prompt.includes('File path: C:\\repo\\test\\fixtures\\main.c'), prompt.split('\n')[3] ?? '');
+  assert.match(prompt, /Directory: C:\/repo\/test\/fixtures/);
+  assert.match(prompt, /## The line the user wants to follow/);
+  assert.match(prompt, /## Files that may be related/);
+  assert.match(prompt, /- ring_buffer\.h/);
+  assert.match(prompt, /Now produce the explanation JSON as required by the system prompt\./);
+});

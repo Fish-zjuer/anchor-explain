@@ -9,8 +9,8 @@
  * 本文件**禁止 import 'vscode'**（D19）。
  */
 
-import { DEFAULT_STYLE, coerceStyle, describeStyle } from './prompts/index.ts';
-import type { ExplainStyle } from './prompts/index.ts';
+import { DEFAULT_LANGUAGE, DEFAULT_STYLE, coerceLanguage, coerceStyle, describeLanguage, describeStyle } from './prompts/index.ts';
+import type { ExplainLanguage, ExplainStyle } from './prompts/index.ts';
 import { MAX_FETCH_LINES_CEILING, DEFAULT_MAX_FETCH_LINES } from './orchestrator/validateContextRequest.ts';
 import type { FetchScope } from './orchestrator/validateContextRequest.ts';
 
@@ -39,6 +39,11 @@ export interface AnchorConfig {
   preferSecretStorage: boolean;
   /** 讲解风格（D65）。默认 `concise`（简约）：用户第一版的反馈是"不要那么多名词什么的" */
   style: ExplainStyle;
+  /**
+   * 讲解语言（D97）。默认 `zh`；`en` 时 prompt/示范/侧边栏讲解面板/导出全换成英文面。
+   * 扩展自身的按钮与通知不跟随（见 prompts/index.ts 里 ExplainLanguage 的注释）。
+   */
+  language: ExplainLanguage;
   /**
    * 跨文件取件的范围（S9a）。默认 `related`：嵌入式里宏/结构体/调用者散在各文件，
    * 只看锚点文件讲不出"数据从哪来、给谁用"（用户的原话）。
@@ -137,6 +142,8 @@ export interface RawConfigInputs {
   temperature?: unknown;
   /** `anchorExplain.style` 的原始值（可空） */
   style?: unknown;
+  /** `anchorExplain.language` 的原始值（可空，D97） */
+  language?: unknown;
   /** `anchorExplain.fetchScope` 的原始值（可空） */
   fetchScope?: unknown;
 }
@@ -158,6 +165,8 @@ export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
     preferSecretStorage: raw.preferSecretStorage !== false,
     // 风格非法值退化成默认档，不报错：设置里写错一个词不该让讲解不可用
     style: coerceStyle(raw.style),
+    // 语言同理（D97）：写错一个词回落中文，而不是让讲解不可用
+    language: coerceLanguage(raw.language),
     fetchScope: coerceFetchScope(raw.fetchScope),
   };
   if (temperature !== undefined) config.temperature = temperature;
@@ -178,7 +187,9 @@ export function describeConfig(config: AnchorConfig): string {
   }
   const vision = config.provider.tier2Model ? `，视觉档 ${config.provider.tier2Model}` : '';
   // 风格用 describeStyle 的人话名（D93）：档位 id 是英文，"一眼看出当前是哪档"靠的是中文。
-  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${config.fetchScope}`;
+  // 语言只在非默认时出现（D97）：默认中文是常态，每一行状态都带"输出语言 中文"反而是噪音。
+  const language = config.language === 'en' ? `；输出语言 ${describeLanguage(config.language)}` : '';
+  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${config.fetchScope}${language}`;
 }
 
 /**

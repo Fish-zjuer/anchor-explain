@@ -101,3 +101,47 @@ test('fullStamp：0 / 非法值不猜时间，明说"时间未知"', () => {
   assert.equal(fullStamp(Number.NaN), '时间未知');
   assert.equal(fullStamp(new Date(2026, 0, 2, 3, 4, 5).getTime()), '2026-01-02 03:04:05');
 });
+
+// ── D97：英文讲解的导出面 ─────────────────────────────────────────────────
+
+test('explanationMarkdown（en）：标签、行号格式与 emphasis 全部换英文；旧存档（无 language）仍按中文', async () => {
+  const { DETAILED_EXEMPLAR_EN } = await import('../src/prompts/exemplars.ts');
+  void DETAILED_EXEMPLAR_EN; // 确保英文面加载（与常量锁同一个文件源）
+
+  const enRun: LastRun = {
+    ...runOf({
+      steps: [
+        {
+          location: ANCHOR.location,
+          title: 'Write — check full first',
+          text: 'Body text.',
+          highlights: [
+            // 路径用正斜杠写（samePath / basenameOf 两种斜杠都认）—— 字面量里写反斜杠会被转义
+            { location: { filePath: 'C:/repo/Core/Inc/esc.h', lineStart: 41, lineEnd: 44 }, narration: 'the full condition', emphasis: 'definition' },
+            { location: ANCHOR.location, narration: 'no emphasis given' },
+          ],
+        },
+      ],
+    }),
+    language: 'en',
+  };
+  const md = explanationMarkdown(enRun);
+  assert.match(md, /^# /);
+  assert.match(md, /- Source: main\.c lines 40-48/, '头部的位置也走本文件的英文格式化，整份导出不混两种语言');
+  assert.match(md, /- Explained at: 2026-09-19 14:25:30/);
+  assert.match(md, /- Confidence: 80%/);
+  assert.match(md, /- Focus: 只关心边界判断/);
+  assert.match(md, /## Summary/);
+  assert.match(md, /## Steps/);
+  assert.match(md, /Location: lines 40-48/);
+  assert.match(md, /\*\*Definition\*\* the full condition \(esc\.h lines 41-44\)/);
+  assert.match(md, /\*\*Key point\*\* no emphasis given \(lines 40-48\)/);
+  assert.match(md, /Exported by Anchor Explain \(Fish-zjuer\.anchor-explain\)\./);
+  assert.doesNotMatch(md, /由 Anchor Explain 导出/);
+
+  // 旧存档（D97 之前写的，没有 language 字段）→ 中文面，一个字都不变
+  const zhMd = explanationMarkdown(runOf({ steps: [{ location: ANCHOR.location, text: '正文' }] }));
+  assert.match(zhMd, /## 摘要/);
+  assert.match(zhMd, /位置：第 40-48 行/);
+  assert.match(zhMd, /由 Anchor Explain 导出/);
+});

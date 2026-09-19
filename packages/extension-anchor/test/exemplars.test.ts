@@ -85,3 +85,42 @@ test('examples: false（实验台 baseline）= 模板整条在、示例节整段
   assert.doesNotMatch(bare, /# 示例（few-shot）/);
   assert.ok(!bare.includes(STANDARD_EXEMPLAR), 'baseline 不带任何示范正文');
 });
+
+// ── D97：英文示范的同步锁与注入 ───────────────────────────────────────────
+
+function exemplarEnOf(tier: string): string {
+  const md = readFileSync(
+    new URL(`../scripts/style-lab/exemplar/${tier}.en.md`, import.meta.url),
+    'utf8',
+  );
+  const at = md.indexOf(MARKER);
+  assert.ok(at >= 0, `${tier}.en.md 里丢了示范标记`);
+  return md.slice(at + MARKER.length).trim();
+}
+
+test('耦合锁（英文面）：三个英文常量与各自 exemplar/<档位>.en.md 的正文一字不差', async () => {
+  const { CONCISE_EXEMPLAR_EN, DETAILED_EXEMPLAR_EN, STANDARD_EXEMPLAR_EN } = await import(
+    '../src/prompts/exemplars.ts'
+  );
+  assert.equal(STANDARD_EXEMPLAR_EN, exemplarEnOf('standard'), '英文标准示范两边不一致 —— 改了 .en.md 要重新生成常量');
+  assert.equal(CONCISE_EXEMPLAR_EN, exemplarEnOf('concise'), '英文精简示范两边不一致');
+  assert.equal(DETAILED_EXEMPLAR_EN, exemplarEnOf('detailed'), '英文详细示范两边不一致');
+});
+
+test('语言 = en 时「示例」节放的是当前档的英文示范，且是 prompt 的最后一节', async () => {
+  const { CONCISE_EXEMPLAR_EN, DETAILED_EXEMPLAR_EN, STANDARD_EXEMPLAR_EN } = await import(
+    '../src/prompts/exemplars.ts'
+  );
+  const cases = [
+    ['standard', '## Standard tier example', STANDARD_EXEMPLAR_EN],
+    ['concise', '## Concise tier example', CONCISE_EXEMPLAR_EN],
+    ['detailed', '## Detailed tier example', DETAILED_EXEMPLAR_EN],
+  ] as const;
+  for (const [style, heading, exemplar] of cases) {
+    const prompt = buildSystemPrompt(style, { language: 'en' });
+    assert.ok(prompt.includes(heading), `${style}：英文示例小节标题 ${heading} 要在`);
+    assert.ok(prompt.includes(exemplar), `${style}：自己的英文示范正文要在`);
+    assert.ok(prompt.trimEnd().endsWith(exemplar), `${style}：示例是英文 prompt 的最后一节`);
+    assert.ok(!prompt.includes('第 1 步'), `${style}：英文 prompt 不该混进中文示范`);
+  }
+});

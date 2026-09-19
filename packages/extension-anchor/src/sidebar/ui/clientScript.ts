@@ -32,21 +32,101 @@ export const SIDEBAR_CLIENT_SCRIPT = `
 
   applyFontScale(typeof ANCHOR_FONT_SCALE === "number" ? ANCHOR_FONT_SCALE : 1);
 
-  var EMPHASIS_LABEL = {
-    primary: "重点",
-    context: "上下文",
-    definition: "定义",
-    caveat: "注意"
+  /**
+   * 面板文案（D97）。讲解语言为 English 时宿主内联 ANCHOR_LANGUAGE = "en"，
+   * 其余一切照旧（不内联 = 中文默认，旧宿主与 DOM 桩测试都落在这一支）。
+   * **纪律同全文件**：字符串里不许出现反引号；中文文案一字未改 ——
+   * sidebarClient.test.ts 按原文钉着它们，改一个字那里就红。
+   */
+  var STRINGS = {
+    zh: {
+      emphasis: { primary: "重点", context: "上下文", definition: "定义", caveat: "注意" },
+      state: { idle: "已结束", running: "讲解中", playing: "播放中", paused: "已暂停", done: "已讲完", error: "出错" },
+      lineRange: function (a, b) { return "第 " + a + "-" + b + " 行"; },
+      lineOne: function (a) { return "第 " + a + " 行"; },
+      pageOne: function (p) { return "第 " + p + " 页"; },
+      pageRange: function (a, b) { return "第 " + a + "-" + b + " 页"; },
+      fileLines: function (a, b) { return a + "-" + b + " 行"; },
+      stepBadge: function (i, n) { return "第 " + i + "/" + n + " 步"; },
+      scanningPoint: function (i, n) { return "正在扫第 " + i + "/" + n + " 个逻辑点"; },
+      viewingWhole: "正在看整段",
+      confidence: function (p) { return "可信度 " + p + "%"; },
+      titleFontSmaller: "调小讲解文字",
+      titleFontLarger: "调大讲解文字（独立于 VS Code 的 Ctrl+加减）",
+      stepFallback: "步骤",
+      titleRevealPdf: "把 PDF 滚到这一页，并闪一下那一块",
+      titleRevealCode: "在编辑器里定位到这一段",
+      prev: "上一步",
+      next: "下一步",
+      done: "讲完了",
+      stop: "退出",
+      replay: "重放上次讲解",
+      titleReplay: "不再问模型：把这份讲解从第 1 步重新走一遍，结果一模一样",
+      reExplain: "重新讲一遍",
+      titleReExplain: "用同一个锚点再问一次模型 —— 会得到另一种讲法，也会再花一次钱",
+      unknownRequest: "未知请求",
+      traceTitle: "取件日志",
+      traceEmpty: "本次讲解没有请求额外上下文。",
+      accepted: "接受",
+      rejected: "拒绝",
+      chars: function (n) { return " · " + n + " 字"; },
+      round: function (n) { return "第 " + n + " 轮 "; },
+      exportBtn: "导出讲解",
+      titleExport: "把这份讲解导出成 Markdown 文件（会弹另存为）",
+      historyBtn: "历史文件夹",
+      titleHistory: "打开讲解历史文件夹（每次讲解成功都会自动存一份）",
+      waiting: "等待讲解…",
+      endedLine: "讲解已结束 —— 按「上一步」可以回看，按「退出」收掉高亮。想再看一遍不用重新选：",
+      doneLine: "已经讲完了 —— 按「上一步」可以回看。想再看一遍不用重新选：",
+      clientError: "面板脚本出错："
+    },
+    en: {
+      emphasis: { primary: "Key point", context: "Context", definition: "Definition", caveat: "Caveat" },
+      state: { idle: "Ended", running: "Explaining", playing: "Playing", paused: "Paused", done: "Done", error: "Error" },
+      lineRange: function (a, b) { return "lines " + a + "-" + b; },
+      lineOne: function (a) { return "line " + a; },
+      pageOne: function (p) { return "page " + p; },
+      pageRange: function (a, b) { return "pages " + a + "-" + b; },
+      fileLines: function (a, b) { return "lines " + a + "-" + b; },
+      stepBadge: function (i, n) { return "Step " + i + "/" + n; },
+      scanningPoint: function (i, n) { return "Scanning point " + i + "/" + n; },
+      viewingWhole: "Viewing the whole block",
+      confidence: function (p) { return "Confidence " + p + "%"; },
+      titleFontSmaller: "Smaller explanation text",
+      titleFontLarger: "Larger explanation text (independent of VS Code zoom)",
+      stepFallback: "Step",
+      titleRevealPdf: "Scroll the PDF to this page and flash the region",
+      titleRevealCode: "Reveal this range in the editor",
+      prev: "Previous",
+      next: "Next",
+      done: "Finished",
+      stop: "Exit",
+      replay: "Replay last explanation",
+      titleReplay: "No model call: replay this explanation from step 1 — identical result",
+      reExplain: "Explain again",
+      titleReExplain: "Ask the model again with the same anchor — a different take, and another spend",
+      unknownRequest: "unknown request",
+      traceTitle: "Context fetches",
+      traceEmpty: "No extra context was requested for this explanation.",
+      accepted: "accepted",
+      rejected: "rejected",
+      chars: function (n) { return " · " + n + " chars"; },
+      round: function (n) { return "round " + n + " "; },
+      exportBtn: "Export",
+      titleExport: "Export this explanation as a Markdown file (opens Save As)",
+      historyBtn: "History folder",
+      titleHistory: "Open the history folder (every successful explanation is saved automatically)",
+      waiting: "Waiting for an explanation…",
+      endedLine: "Explanation ended — Previous to review, Exit to clear the highlights. To watch it again without re-selecting:",
+      doneLine: "Finished — Previous to review. To watch it again without re-selecting:",
+      clientError: "Panel script error: "
+    }
   };
+  var L = typeof ANCHOR_LANGUAGE === "string" && ANCHOR_LANGUAGE === "en" ? STRINGS.en : STRINGS.zh;
 
-  var STATE_LABEL = {
-    idle: "已结束",
-    running: "讲解中",
-    playing: "播放中",
-    paused: "已暂停",
-    done: "已讲完",
-    error: "出错"
-  };
+  var EMPHASIS_LABEL = L.emphasis;
+
+  var STATE_LABEL = L.state;
 
   var snapshot = null;
   var trace = [];
@@ -113,11 +193,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   function locText(loc) {
     if (!loc) return "";
     if (typeof loc.lineStart === "number") {
-      return loc.lineEnd > loc.lineStart
-        ? "第 " + loc.lineStart + "-" + loc.lineEnd + " 行"
-        : "第 " + loc.lineStart + " 行";
+      return loc.lineEnd > loc.lineStart ? L.lineRange(loc.lineStart, loc.lineEnd) : L.lineOne(loc.lineStart);
     }
-    if (typeof loc.page === "number") return "第 " + loc.page + " 页";
+    if (typeof loc.page === "number") return L.pageOne(loc.page);
     return "";
   }
 
@@ -128,16 +206,16 @@ export const SIDEBAR_CLIENT_SCRIPT = `
 
     var meta = mk("div", "meta");
     meta.appendChild(mk("span", "badge", STATE_LABEL[state] || state));
-    meta.appendChild(mk("span", "badge", "第 " + (index + 1) + "/" + result.steps.length + " 步"));
+    meta.appendChild(mk("span", "badge", L.stepBadge(index + 1, result.steps.length)));
     if (typeof pointIndex === "number" && pointIndex >= 0) {
       var points = (result.steps[index].highlights || []).length;
       // live：当前这一刻的位置，给它上色，其余徽章保持安静
-      meta.appendChild(mk("span", "badge live", "正在扫第 " + (pointIndex + 1) + "/" + points + " 个逻辑点"));
+      meta.appendChild(mk("span", "badge live", L.scanningPoint(pointIndex + 1, points)));
     } else {
-      meta.appendChild(mk("span", "badge live", "正在看整段"));
+      meta.appendChild(mk("span", "badge live", L.viewingWhole));
     }
     var pct = Math.round((typeof result.confidence === "number" ? result.confidence : 0) * 100);
-    meta.appendChild(mk("span", "badge", "可信度 " + pct + "%"));
+    meta.appendChild(mk("span", "badge", L.confidence(pct)));
     wrap.appendChild(meta);
 
     // 字号调节（D89）：独立于 VS Code 的窗口缩放。放在头部而不是工具条 ——
@@ -145,10 +223,10 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var fontTools = mk("div", "font-tools");
     var smaller = mk("button", null, "A-");
     smaller.setAttribute("data-act", "fontSmaller");
-    smaller.title = "调小讲解文字";
+    smaller.title = L.titleFontSmaller;
     var bigger = mk("button", null, "A+");
     bigger.setAttribute("data-act", "fontLarger");
-    bigger.title = "调大讲解文字（独立于 VS Code 的 Ctrl+加减）";
+    bigger.title = L.titleFontLarger;
     fontTools.appendChild(smaller);
     fontTools.appendChild(bigger);
     wrap.appendChild(fontTools);
@@ -163,7 +241,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     li.setAttribute("data-index", String(i));
 
     var head = mk("div", "step-head");
-    head.appendChild(mk("span", "step-title", (i + 1) + ". " + (step.title || "步骤")));
+    head.appendChild(mk("span", "step-title", (i + 1) + ". " + (step.title || L.stepFallback)));
 
     var loc = mk("button", "loc", locTextWithFile(step.location));
     loc.setAttribute("data-act", "reveal");
@@ -171,7 +249,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     // 两条线的定位方式不同，提示词也不能一样 ——
     // 对 PDF 说"在编辑器里定位"是句假话，用户会以为是它坏了（S6）；
     // D76 起这句还要说清"会闪一下那一块"——只滚页的话，目标就在当前页时看着像没反应。
-    loc.title = isPdfLoc(step.location) ? "把 PDF 滚到这一页，并闪一下那一块" : "在编辑器里定位到这一段";
+    loc.title = isPdfLoc(step.location) ? L.titleRevealPdf : L.titleRevealCode;
     head.appendChild(loc);
     li.appendChild(head);
 
@@ -223,15 +301,15 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   function buildToolbar(done, atStart, ended) {
     var bar = mk("div", "toolbar");
 
-    var prev = mk("button", null, "上一步");
+    var prev = mk("button", null, L.prev);
     prev.setAttribute("data-act", "prev");
     prev.disabled = atStart;
 
-    var next = mk("button", null, done ? "讲完了" : "下一步");
+    var next = mk("button", null, done ? L.done : L.next);
     next.setAttribute("data-act", "next");
     next.disabled = done || ended;
 
-    var stop = mk("button", null, "退出");
+    var stop = mk("button", null, L.stop);
     stop.setAttribute("data-act", "stop");
     stop.disabled = false; // 明写出来（而不是"不赋值"）：这是"永远能按"的意图，测试也钉着它
 
@@ -259,14 +337,14 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   function buildRerun() {
     var row = mk("div", "rerun");
 
-    var replay = mk("button", null, "重放上次讲解");
+    var replay = mk("button", null, L.replay);
     replay.setAttribute("data-act", "replay");
-    replay.title = "不再问模型：把这份讲解从第 1 步重新走一遍，结果一模一样";
+    replay.title = L.titleReplay;
     row.appendChild(replay);
 
-    var again = mk("button", null, "重新讲一遍");
+    var again = mk("button", null, L.reExplain);
     again.setAttribute("data-act", "reExplain");
-    again.title = "用同一个锚点再问一次模型 —— 会得到另一种讲法，也会再花一次钱";
+    again.title = L.titleReExplain;
     row.appendChild(again);
 
     return row;
@@ -279,34 +357,34 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   function describeEntry(e) {
     var req = (e && e.request) || {};
     var params = req.params || {};
-    var kind = req.type ? req.type : "未知请求";
+    var kind = req.type ? req.type : L.unknownRequest;
     var start = typeof params.start === "number" ? params.start : "?";
     var end = typeof params.end === "number" ? params.end : "?";
     if (kind === "file" && typeof params.path === "string") {
       // 末两段（Inc/esc.h）：这里正是"两个同名文件分不清"会出问题的地方（D69）
-      return shortTail(params.path) + " " + start + "-" + end + " 行";
+      return shortTail(params.path) + " " + L.fileLines(start, end);
     }
-    if (kind === "page_range") return "第 " + start + "-" + end + " 页";
+    if (kind === "page_range") return L.pageRange(start, end);
     return kind;
   }
 
   function buildTrace() {
     var box = mk("section", "trace");
-    var title = mk("h2", null, "取件日志");
+    var title = mk("h2", null, L.traceTitle);
     box.appendChild(title);
     if (!trace.length) {
-      box.appendChild(mk("div", "empty", "本次讲解没有请求额外上下文。"));
+      box.appendChild(mk("div", "empty", L.traceEmpty));
       return box;
     }
     var ul = mk("ul");
     for (var i = 0; i < trace.length; i++) {
       var e = trace[i];
-      var mark = e.accepted ? "接受" : "拒绝";
+      var mark = e.accepted ? L.accepted : L.rejected;
       var reason = e.rejectReason ? "（" + e.rejectReason + "）" : "";
-      var chars = typeof e.resultChars === "number" ? " · " + e.resultChars + " 字" : "";
+      var chars = typeof e.resultChars === "number" ? L.chars(e.resultChars) : "";
       // 逐字段防御：entry 的形状由宿主保证，但这一段不能让整块日志消失
       var round = typeof e.round === "number" ? e.round : "?";
-      ul.appendChild(mk("li", null, "第 " + round + " 轮 " + describeEntry(e) + " " + mark + reason + chars));
+      ul.appendChild(mk("li", null, L.round(round) + describeEntry(e) + " " + mark + reason + chars));
     }
     box.appendChild(ul);
     return box;
@@ -320,14 +398,14 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   function buildTools() {
     var row = mk("div", "tools");
 
-    var exportBtn = mk("button", null, "导出讲解");
+    var exportBtn = mk("button", null, L.exportBtn);
     exportBtn.setAttribute("data-act", "export");
-    exportBtn.title = "把这份讲解导出成 Markdown 文件（会弹另存为）";
+    exportBtn.title = L.titleExport;
     row.appendChild(exportBtn);
 
-    var historyBtn = mk("button", null, "历史文件夹");
+    var historyBtn = mk("button", null, L.historyBtn);
     historyBtn.setAttribute("data-act", "openHistory");
-    historyBtn.title = "打开讲解历史文件夹（每次讲解成功都会自动存一份）";
+    historyBtn.title = L.titleHistory;
     row.appendChild(historyBtn);
 
     return row;
@@ -339,7 +417,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     while (root.firstChild) root.removeChild(root.firstChild);
 
     if (!snapshot) {
-      root.appendChild(mk("p", "empty", "等待讲解…"));
+      root.appendChild(mk("p", "empty", L.waiting));
       return;
     }
 
@@ -364,9 +442,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
         mk(
           "p",
           "ended",
-          snapshot.ended
-            ? "讲解已结束 —— 按「上一步」可以回看，按「退出」收掉高亮。想再看一遍不用重新选："
-            : "已经讲完了 —— 按「上一步」可以回看。想再看一遍不用重新选：",
+          snapshot.ended ? L.endedLine : L.doneLine,
         ),
       );
       root.appendChild(buildRerun());
@@ -413,7 +489,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var root = document.getElementById("root");
     if (!root) return;
     var text = err && err.message ? err.message : String(err);
-    var box = mk("div", "client-error", "面板脚本出错：" + text);
+    var box = mk("div", "client-error", L.clientError + text);
     root.insertBefore(box, root.firstChild);
   }
 
