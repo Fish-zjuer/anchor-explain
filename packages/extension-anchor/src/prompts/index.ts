@@ -19,35 +19,38 @@
 import type { Anchor } from '@anchor/core';
 import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
 import { EXPLANATION_JSON_SHAPE, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
-import { STANDARD_EXEMPLAR } from './exemplarStandard.ts';
-
+import { CONCISE_EXEMPLAR, DETAILED_EXEMPLAR, STANDARD_EXEMPLAR } from './exemplars.ts';
 /**
- * 讲解风格（D65 两档起家，D92 起三档，用户可选，`anchorExplain.style`）：
+ * 讲解风格（D65 两档起家 → D92 三档 → D93 **三档全部示范驱动**，用户可选，`anchorExplain.style`）：
  *
- * - `standard`（**标准**，D92 新增，默认）：讲解的长相与口吻以「标准示范」为准 ——
- *   用户 D90 定稿的那份示范整个进 prompt 做 few-shot（D91 实测它在因果完整度与口吻上
- *   稳定优于纯指令版）。**"像人话"描述不出来，但可以示范出来。**
- * - `concise`（简约）：回到 D65 的纯指令版 —— 说人话，能用大白话讲清就不用术语；
- *   一句话一个动作。用户对它的原话是"不要那么多名词什么的，要不还不如读代码本身了"。
- * - `rigorous`（严谨）：术语可以用，但每个术语都要落到这段代码的具体位置上，并说清依据
- *   （不变量、边界、返回值）。
+ * - `standard`（**标准**，默认）：讲解的长相与口吻以「标准示范」为准 ——
+ *   数据流视角，每步讲清因果与后果。用户 D90 定稿，D91 实测稳定优于纯指令版。
+ * - `concise`（**精简**）：几句话讲清这块的目标与边界，拒绝展开 —— 示范即规格。
+ * - `detailed`（**详细**）：逐行讲解，关键判断给具体推演（数值代入走一遍），
+ *   容易卡住的点单独列出 —— 示范即规格。
  *
- * **三档共享的那条更重要**：步骤按**数据怎么流**来切，不按从上到下的行序 ——
- * 用户的原话是"太从上到下了，我希望能表达出数据流转的感觉"。
+ * **三档的共同点**：骨架（按数据怎么流切步、取件规则、输出 JSON 契约）完全相同，
+ * 唯一的区别是文末注入的「示范」—— 用户 D90 的立场是"我不要 prompt，我要例子"，
+ * 所以三档都没有风格描述指令，只有一句指向示范的指针。
+ *
+ * 旧值 `rigorous`（D65 的严谨档）随 D93 退役：设置里还存着它的用户自动迁到 `detailed`
+ * （两档的意图最接近 —— 都要比标准档更展开）。
  */
-export type ExplainStyle = 'standard' | 'concise' | 'rigorous';
+export type ExplainStyle = 'standard' | 'concise' | 'detailed';
 
 export const DEFAULT_STYLE: ExplainStyle = 'standard';
 
 export function coerceStyle(raw: unknown): ExplainStyle {
-  if (raw === 'standard' || raw === 'concise' || raw === 'rigorous') return raw;
+  if (raw === 'standard' || raw === 'concise' || raw === 'detailed') return raw;
+  if (raw === 'rigorous') return 'detailed'; // D93：旧档位名迁移（两档意图最接近）
   return DEFAULT_STYLE;
 }
 
 /** 风格的人话名。设置面板、`显示状态` 与测试共用。 */
 export function describeStyle(style: ExplainStyle): string {
   if (style === 'standard') return '标准（口吻与颗粒度以「标准示范」为准）';
-  return style === 'rigorous' ? '严谨（术语可用，但要说清依据）' : '简约（说人话，少用术语）';
+  if (style === 'concise') return '精简（几句话讲清目标与边界）';
+  return '详细（逐行讲解，带具体推演）';
 }
 
 /**
@@ -88,16 +91,11 @@ export function buildSystemPrompt(
   style: ExplainStyle = DEFAULT_STYLE,
   options: { crossFile?: boolean; maxFetchLines?: number } = {},
 ): string {
-  // D92：三档分工 —— standard（默认）= 标准示范驱动（D91 实测胜者，示范整个进 prompt 做 few-shot）；
-  // concise / rigorous = D65 的两套纯指令文本，谁也不吃示范（示范是标准档专属）。
-  if (style === 'standard') {
-    return (
-      buildSystemPromptWithStyleSection(EXEMPLAR_STYLE_POINTER, options) +
-      '\n\n' +
-      exemplarSection(STANDARD_EXEMPLAR)
-    );
-  }
-  return buildSystemPromptWithStyleSection(styleSection(style), options);
+  // D93：三档**全部示范驱动** —— 骨架完全相同，唯一的区别是文末注入哪个示范。
+  // 每档示范的编辑面：scripts/style-lab/exemplar/<style>.md（常量有同步锁）。
+  const body =
+    style === 'standard' ? STANDARD_EXEMPLAR : style === 'concise' ? CONCISE_EXEMPLAR : DETAILED_EXEMPLAR;
+  return buildSystemPromptWithStyleSection(EXEMPLAR_STYLE_POINTER, options) + '\n\n' + exemplarSection(body);
 }
 
 /**
@@ -217,32 +215,18 @@ function fetchSourceRule(crossFile: boolean, maxFetchLines?: number): string {
  * D89：实验台也需要这两档的**原文**（变体A 是现行简约档的对照组），
  * 所以从这里导出一份只读入口 —— 变体的措辞改在这里，实验室自动跟上。
  */
-export function builtinStyleSection(style: Exclude<ExplainStyle, 'standard'>): string {
-  return styleSection(style);
-}
-
-function styleSection(style: Exclude<ExplainStyle, 'standard'>): string {
-  const shared = [
-    '- `summary` 一句话说清**这块在干什么、数据从哪到哪**，不要写成摘要式套话。',
-    '- 不要写"这段代码实现了一个……它的作用是……"这种开场白，直接讲事情。',
-    '- 不要复述代码已经写出来的东西（"这里调用了一个函数"）；讲的是它**为什么**在这儿、**带来什么后果**。',
-  ];
-
-  if (style === 'rigorous') {
-    return [
-      '**严谨档**：术语可以用，但每个术语都必须落到这段代码里的具体位置或字段上，并说清依据。',
-      '',
-      ...shared,
-      '- 讲判断/计算时，说清**不变量、边界与返回值**（空、满、溢出、越界、-1 这类哨兵值）。',
-      '- 讲状态变更时，说清**改了哪个字段、它之前/之后是什么含义**。',
-      '- 允许一步更小（1-3 行一点），宁可多一步，不要含糊。',
-    ].join('\n');
-  }
-
+/**
+ * 纯指令简约档的原文（D65）。D93 起线上三档**全部示范驱动**，这份文本唯一的消费者是
+ * 实验台的 `--baseline`（"无示范"对照 —— 量示范到底带来多少提升）。
+ * 严谨档的旧指令文本随 D93 退役（git 历史里找得到）。
+ */
+export function builtinStyleSection(): string {
   return [
     '**简约档**：说人话 —— 能用大白话讲清的，就不要用术语。',
     '',
-    ...shared,
+    '- `summary` 一句话说清**这块在干什么、数据从哪到哪**，不要写成摘要式套话。',
+    '- 不要写"这段代码实现了一个……它的作用是……"这种开场白，直接讲事情。',
+    '- 不要复述代码已经写出来的东西（"这里调用了一个函数"）；讲的是它**为什么**在这儿、**带来什么后果**。',
     '- 术语只在**它就是这段代码里的标识符**时才用（结构体名、函数名、字段名），不要引入代码里没出现过的名词。',
     '- 一句话讲完一个动作。写不出来就说明还没想清楚，不要用名词堆砌来充数。',
     '- 一句话超过 40 个字就该拆开重写。',

@@ -108,18 +108,22 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 
 ### 讲解风格（§6，S8 起可调）
 
-| 值 | 什么意思 |
+**三档都是示范驱动**（D93）：骨架完全相同，唯一的区别是注入哪份「示范」。每档示范的编辑面
+是 `scripts/style-lab/exemplar/<档位名>.md`（线上常量有同步锁，改 .md 后重新生成常量即可）。
+
+| 值 | 示范的讲法 |
 |---|---|
-| `standard`（默认） | **标准**：讲解的长相与口吻以「标准示范」为准（`scripts/style-lab/exemplar/standard.md`，用户定稿，few-shot 进 prompt）——像人话、顺着数据流、每步讲清因果与后果 |
-| `concise` | **简约**：说人话，能用大白话讲清就不用术语；一句话一个动作（纯指令，无示范） |
-| `rigorous` | **严谨**：术语可以用，但每个都要落到这段代码的具体位置上，并说清依据（不变量、边界、返回值） |
+| `standard`（默认） | **标准**：数据流视角，每步讲清因果与后果 |
+| `concise` | **精简**：几句话讲清这块的目标与边界，拒绝展开 |
+| `detailed` | **详细**：逐行讲解，关键判断给具体推演，容易卡住的点单独列出 |
 
 ```jsonc
-{ "anchorExplain.style": "rigorous" }
+{ "anchorExplain.style": "detailed" }
 ```
 
 **三档都要求"按数据怎么流"组织步骤**（数据从哪来 → 在这里怎么改 → 出去给谁用），
 而不是从上到下一行行讲。改完不用重载窗口，下一次讲解就生效（`显示状态` 会报当前档位）。
+旧值 `rigorous` 自动按 `detailed` 处理。
 
 配好之后用 `Anchor: 显示状态` 核对一句：
 `模型：default：deepseek-flash @ https://api.deepseek.com；最多取件 3 次`。
@@ -144,13 +148,13 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 
 ### 讲解风格实验室（D89 起，D90 起**例子驱动**）
 
-风格不靠抽象指令描述，靠**示范**：`scripts/style-lab/exemplar/standard.md` 是用户定稿的
-「标准示范」，**线上 `standard` 档（默认）已经整份用它做 few-shot**（D92；有耦合锁保证线上常量与
-这个文件一字不差）。要制定**更详细 / 更精简**的示范，复制该文件换个名字（如 `detailed.md` /
-`concise.md`），只改 `ANCHOR_EXEMPLAR_START` 标记之后的内容 —— **每个示范文件就是一个变体**，
-新示范要上线就替换 standard.md 并同步常量（锁会提醒）。跑 `pnpm style:lab`（需要
-`ANCHOR_LAB_API_KEY`；`--baseline` 是"无示范的纯指令简约档"对照），产物在 `.style-lab-out/`：
-`blind/` 里是匿名乱序的盲评稿，按"像人话程度/信息量/数据流/位置好懂"打分，评完开 `key.md` 对答案。
+风格不靠抽象指令描述，靠**示范**：`scripts/style-lab/exemplar/` 下**每个 .md 就是一份示范，
+也是线上三档的直接来源**（standard.md → `standard` 档、concise.md → `concise` 档、
+detailed.md → `detailed` 档；线上常量有耦合锁，改 .md 后重新生成常量即可）。
+想再制定新变体（比如更口语的详细版），复制一个改名（文件名即变体名），跑
+`pnpm style:lab`（需要 `ANCHOR_LAB_API_KEY`；`--baseline` 是"无示范的纯指令简约档"对照）
+对比效果，胜出者替换对应档位的 .md。产物在 `.style-lab-out/`：`blind/` 是匿名乱序的盲评稿，
+按"像人话程度/信息量/数据流/位置好懂"打分，评完开 `key.md` 对答案。
 
 ### 固定按钮与开始界面（S8）
 

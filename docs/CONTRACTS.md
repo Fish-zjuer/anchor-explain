@@ -911,7 +911,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 |---|---|---|---|
 | `anchorExplain.maxFetchLines` | number | `400` | **S9a 修新增（D71）**。单次取件最多几行。**超出不会拒绝，只会截到这个数**（回灌内容头部写着真实行范围）。上限 2000；与 `DEFAULT_MAX_FETCH_LINES`（闸门侧的默认值）**同一个来源**，提示词里那句也用它 |
 | `anchorExplain.fetchScope` | `"related"` \| `"same-dir"` \| `"off"` | `"related"` | **S9a 新增（D66）**。允许读锚点文件之外哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖、构建产物目录**始终不读** |
-| `anchorExplain.style` | `"standard"` \| `"concise"` \| `"rigorous"` | `"standard"` | **S8 新增（D65），D92 起三档**。标准（默认）：口吻与颗粒度以「标准示范」为准（few-shot 进 prompt，正文见 `scripts/style-lab/exemplar/standard.md`，线上常量有同步锁）/ 简约（说人话、少用术语，纯指令）/ 严谨（术语可用，但要说清依据）。**三档都要求按"数据怎么流"组织步骤**，不是从上到下一行行念 |
+| `anchorExplain.style` | `"standard"` \| `"concise"` \| `"detailed"` | `"standard"` | **S8 新增（D65），D93 起三档全部示范驱动**：骨架相同，唯一区别是注入的「示范」（正文 `scripts/style-lab/exemplar/<档位名>.md`，线上常量有同步锁）。标准（默认）：数据流视角、每步讲清因果 / 精简：几句话讲清目标与边界 / 详细：逐行讲解 + 具体推演。旧值 `rigorous` 自动按 `detailed` 处理。**三档都要求按"数据怎么流"组织步骤**，不是从上到下一行行念 |
 | `anchorExplain.temperature` | number | 未设置 | 透传给端点。留空就用端点的默认值 —— 不给默认值是刻意的：不同端点对 temperature 的合理取值不一样 |
 
 以上全部声明在 `packages/extension-anchor/package.json` 的 `contributes.configuration` 里

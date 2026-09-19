@@ -9,7 +9,7 @@
  * 本文件**禁止 import 'vscode'**（D19）。
  */
 
-import { DEFAULT_STYLE, coerceStyle } from './prompts/index.ts';
+import { DEFAULT_STYLE, coerceStyle, describeStyle } from './prompts/index.ts';
 import type { ExplainStyle } from './prompts/index.ts';
 import { MAX_FETCH_LINES_CEILING, DEFAULT_MAX_FETCH_LINES } from './orchestrator/validateContextRequest.ts';
 import type { FetchScope } from './orchestrator/validateContextRequest.ts';
@@ -177,7 +177,8 @@ export function describeConfig(config: AnchorConfig): string {
     return `没有可用的 provider（activeProvider = "${config.providerId}"）。请在设置里填 anchorExplain.providers。`;
   }
   const vision = config.provider.tier2Model ? `，视觉档 ${config.provider.tier2Model}` : '';
-  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${config.style}；取件范围 ${config.fetchScope}`;
+  // 风格用 describeStyle 的人话名（D93）：档位 id 是英文，"一眼看出当前是哪档"靠的是中文。
+  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${config.fetchScope}`;
 }
 
 /**

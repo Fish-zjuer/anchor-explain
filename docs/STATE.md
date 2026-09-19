@@ -340,6 +340,21 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   `evaluateSessionEnd()`。红→绿实测：注释掉两条分支后链式冒烟 6 条 FAIL（`session:end 10 → 11`），
   恢复即绿。顺带修掉一个"假的绿"：冒烟桩把 `openTextDocument` 放在 `window` 下，而真实 API 在
   `workspace` 上 —— 跨文件那条路一直没被跑到过（与约束 111 / 112 同一类陷阱）。
+- **D93（三档全部示范驱动，2026-09-19）**「三个风格的示范我已经写好了。你来落地」：
+  - 用户把三份示范都写完了：`exemplar/standard.md`（D90 版，数据流+因果论证）、
+    **`concise.md`**（几句话讲清目标与边界）、**`detailed.md`**（逐行讲解 + 数值代入推演 +
+    「容易卡住的点」单独列出）。D92 的 `git add -A` 曾把当时写到一半的两份收进提交，
+    本次以工作区定稿版为准。
+  - **rigorous（严谨）档退役更名 detailed（详细）**：用户的第三份示范是"逐行讲"而不是
+    "术语+依据"，档名跟着示范走；设置里存过 `rigorous` 的用户由 `coerceStyle` 自动迁到
+    `detailed`（两档意图最接近）。
+  - **三档机制统一**：`buildSystemPrompt(style)` = 同一条骨架 + 同一句指针 +
+    `exemplarSection(<该档示范>)` —— 三档之间**唯一**的区别是示范正文；
+    三份常量集中在 `src/prompts/exemplars.ts`（生成器从 .md 转出，反引号转义），
+    `test/exemplars.test.ts` 三条耦合锁（常量 ↔ .md 一字不差 + 每档只注入自己的示范）。
+    `prompts/index.ts` 里的 `styleSection` 退役，`builtinStyleSection()` 只剩纯指令简约档
+    一份文本，唯一消费者是实验台 `--baseline` 对照。
+  - 实验台无需改动即变成"三档对比台"：exemplar/ 下每个 .md 本来就是一个变体。
 - **D92（新增「标准」档，2026-09-19）**「新增档位：标准，对应我的标准」：
   - `anchorExplain.style` 三档：**`standard`（新增，默认）** = 标准示范驱动（`EXEMPLAR_STYLE_POINTER`
     指针 + `exemplarSection(标准示范)`，即 D91 固化的那套，从简约档里独立成档）；

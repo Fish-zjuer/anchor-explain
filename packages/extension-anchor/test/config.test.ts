@@ -219,11 +219,12 @@ test('promoteFlattenedProviders：整理成正确形状，且**已经写对的�
   assert.deepEqual(promoteFlattenedProviders('坏东西', 'default'), {});
 });
 
-test('style：认三档、非法值退化成默认（写错一个词不该让讲解不可用）', () => {
+test('style：认三档、旧值迁移、非法值退化成默认（写错一个词不该让讲解不可用）', () => {
   const base = { providers: {}, activeProvider: 'default', maxFetchRounds: 3, preferSecretStorage: true };
   assert.equal(resolveConfig({ ...base, style: 'standard' }).style, 'standard');
-  assert.equal(resolveConfig({ ...base, style: 'rigorous' }).style, 'rigorous');
   assert.equal(resolveConfig({ ...base, style: 'concise' }).style, 'concise');
+  assert.equal(resolveConfig({ ...base, style: 'detailed' }).style, 'detailed');
+  assert.equal(resolveConfig({ ...base, style: 'rigorous' }).style, 'detailed', 'D93：旧档位名迁移');
   assert.equal(resolveConfig(base).style, 'standard', '不配就是标准（D92：用户定稿的示范是默认讲法）');
   for (const bad of ['严谨', 'Concise ', 42, null]) {
     assert.equal(resolveConfig({ ...base, style: bad }).style, 'standard', JSON.stringify(bad));
@@ -236,9 +237,9 @@ test('describeConfig：把风格也报出来（显示状态里能一眼看出当
     activeProvider: 'default',
     maxFetchRounds: 2,
     preferSecretStorage: true,
-    style: 'rigorous',
+    style: 'detailed',
   });
   const line = describeConfig(cfg);
   assert.match(line, /最多取件 2 次/);
-  assert.match(line, /风格 rigorous/);
+  assert.match(line, /风格 详细/);
 });
