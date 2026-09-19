@@ -340,6 +340,18 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   `evaluateSessionEnd()`。红→绿实测：注释掉两条分支后链式冒烟 6 条 FAIL（`session:end 10 → 11`），
   恢复即绿。顺带修掉一个"假的绿"：冒烟桩把 `openTextDocument` 放在 `window` 下，而真实 API 在
   `workspace` 上 —— 跨文件那条路一直没被跑到过（与约束 111 / 112 同一类陷阱）。
+- **D90（示例驱动 + 修历史文件夹，2026-09-19）**「我不要 prompt，我要例子。修改示范我改好了，称为标准」：
+  - **风格改为例子驱动**：D89 的六个"候选风格指令"（prompt 文本）撤下（`docs/style-candidates.md` 删除）
+    —— 用户明确不要抽象 prompt 描述。`scripts/style-lab/exemplar/standard.md` 是用户**定稿的标准示范**
+    （D89 初稿由用户改定，一字未动收下）；实验台改为 **exemplar/ 下每个 .md 就是一个变体**
+    （`ANCHOR_EXEMPLAR_START` 之后原样进「示范」小节，"说话的方式"只剩一句指向示范的指针）；
+    `--baseline` 给"无示范的现行简约档"对照。后续"更详细 / 更精简"的示范 = 复制改名加文件即可。
+    **下一轮**：跑 lab（可 --dry-run 先看 prompt）→ 盲评 standard vs 后续示范 vs baseline →
+    把胜出的示范固化进线上 prompt（styleSection 收窄成指针 + 示范注入）。
+  - **修「打开历史文件夹」**：`vscode.env.openExternal` 会把用户数据目录里的路径改写成
+    `vscode-userdata:` 协议，Windows 没有应用认它（用户实测弹"获取打开此 vscode-userdata 链接的应用"）。
+    改成 `revealInFileManager()` 直接 spawn 系统文件管理器（explorer.exe / open / xdg-open）；
+    explorer 成功也返回码 1，所以**不拿退出码当成败判据**，spawn 没抛 error 即成功。
 - **D89（五件套，2026-09-19）**「字号自己调 / 讲解要能带走 / 报错高亮别捣乱 / 端点示例按官方文档 /
   讲解风格不像人话」：
   - **字号**：讲解面板自己的缩放系数（`--anchor-font-scale`，0.75–1.75、步进 10%，存 workspaceState），

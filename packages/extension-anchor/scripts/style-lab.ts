@@ -1,9 +1,11 @@
 /**
- * 风格实验台（D89）—— 讲解语言风格的系统性 A/B 对比。
+ * 风格实验台（D89 起，D90 起**例子驱动**）—— 讲解风格的系统性 A/B 对比。
  *
- * 线一：`docs/style-candidates.md` 里的候选风格全文，同锚点同温度各跑一遍，产出盲评稿。
- * 线二：`scripts/style-lab/exemplar/draft.md` 里用户改出来的"理想讲解"，
- *       原样注入 system prompt 的「示范」小节（few-shot）。
+ * 用户的话是「我不要 prompt，我要例子」：风格不靠抽象指令描述，靠**示范**。
+ * `scripts/style-lab/exemplar/` 下的每一个 .md 就是一个变体 —— 文件里
+ * `ANCHOR_EXEMPLAR_START` 标记之后的"示范讲解"会原样进 system prompt 的「示范」小节：
+ *   - `standard.md` 是用户定稿的**标准**；
+ *   - `detailed.md` / `concise.md` 等以后照同一格式添加（复制改名即可）。
  *
  * 跑法（仓库根目录）：
  *
@@ -13,9 +15,9 @@
  *   --model deepseek-flash     模型 id（默认 deepseek-flash，官方文档当前的模型之一；
  *                              另一档是 deepseek-v4-pro）
  *   --base-url <url>           默认 https://api.deepseek.com（官方文档的 OpenAI 兼容 base_url）
- *   --only B,D                 只跑列出的变体（按 `## 变体X` 的那个记号匹配）
+ *   --only standard,concise    只跑列出的变体（按示范文件名匹配）
+ *   --baseline                 额外跑一个"无示范"对照（现行简约档指令，线上现在的行为）
  *   --temperature 0.7          默认 0.7 —— 各变体必须同温度，比较才成立
- *   --no-exemplar              不注入示范（对比"有/没有示范"的差别用）
  *   --dry-run                  不发请求：只组装 prompt 落盘，检查解析是否正确
  *
  * 产物（`.style-lab-out/`，已进 .gitignore）：
@@ -33,23 +35,25 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { buildSystemPromptWithStyleSection, buildUserPrompt } from '../src/prompts/index.ts';
+import {
+  buildSystemPromptWithStyleSection,
+  buildUserPrompt,
+  builtinStyleSection,
+} from '../src/prompts/index.ts';
 import { explanationMarkdown } from '../src/session/exportNotes.ts';
 import type { Anchor, ExplanationResult } from '@anchor/core';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..', '..');
-const CANDIDATES_MD = join(REPO_ROOT, 'docs', 'style-candidates.md');
+const EXEMPLAR_DIR = join(HERE, 'style-lab', 'exemplar');
 const ANCHORS_DIR = join(HERE, 'style-lab', 'anchors');
-const EXEMPLAR_MD = join(HERE, 'style-lab', 'exemplar', 'draft.md');
 const EXEMPLAR_MARKER = '<!-- ANCHOR_EXEMPLAR_START -->';
 
-interface Variant {
-  /** `## 变体X：…` 里的那个记号（A/B/…）。--only 与 open/ 目录名用它。 */
+interface ExemplarVariant {
+  /** 示范文件名去 .md：`standard` / `detailed` / `concise` …。--only 与 open/ 目录名用它 */
   id: string;
-  title: string;
-  /** 剥掉评审注释后的指令全文 —— 原样进 system prompt 的「说话的方式」一节 */
-  text: string;
+  /** 示范正文（标记之后的全部内容）。`undefined` = baseline（无示范，现行简约档指令） */
+  body: string | undefined;
 }
 
 interface LabAnchor {
@@ -64,7 +68,7 @@ interface ParsedArgs {
   outDir: string;
   only: string[];
   temperature: number;
-  useExemplar: boolean;
+  baseline: boolean;
   dryRun: boolean;
 }
 
@@ -75,7 +79,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     outDir: join(REPO_ROOT, '.style-lab-out'),
     only: [],
     temperature: 0.7,
-    useExemplar: true,
+    baseline: false,
     dryRun: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -86,37 +90,37 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (arg === '--out') args.outDir = next();
     else if (arg === '--only') args.only = next().split(',').map((s) => s.trim()).filter((s) => s !== '');
     else if (arg === '--temperature') args.temperature = Number(next());
-    else if (arg === '--no-exemplar') args.useExemplar = false;
+    else if (arg === '--baseline') args.baseline = true;
     else if (arg === '--dry-run') args.dryRun = true;
-    else throw new Error(`不认识的参数：${arg}`);
+    else throw new Error(`不认识的参数：${arg}（--no-exemplar 已被示范文件本身取代，见文件头）`);
   }
   if (!Number.isFinite(args.temperature)) throw new Error('--temperature 需要一个数字');
   return args;
 }
 
 /**
- * 从候选文档切出变体。**只认 `## 变体X：…` 开头的节**；`<!-- … -->` 注释是写给评审的，
- * 剥掉之后才算指令文本 —— 评审在注释里写什么都到不了模型那儿。
+ * 装载示范变体：exemplar/ 下每个 .md 一个。标记之后是示范正文（**原样**进 prompt，
+ * 用户的定稿一字不动）；没有标记或标记后为空的文件直接报错 —— 那说明格式坏了，
+ * 静默跳过会让"我以为在跑标准、其实什么都没跑"。
  */
-function loadCandidates(): Variant[] {
-  if (!existsSync(CANDIDATES_MD)) throw new Error(`找不到候选文档：${CANDIDATES_MD}`);
-  const raw = readFileSync(CANDIDATES_MD, 'utf8');
-  const sections = raw.split(/^## /mu).slice(1);
-  const variants: Variant[] = [];
-  for (const section of sections) {
-    const lines = section.split(/\r?\n/);
-    const heading = (lines.shift() ?? '').trim();
-    const match = /^变体([A-Za-z0-9]+)[：:]/u.exec(heading);
-    if (!match) continue; // 文档里可能还有别的 `## ` 节（评审说明），不是变体
-    const text = lines
-      .join('\n')
-      .replace(/<!--[\s\S]*?-->/gu, '')
-      .trim();
-    if (text === '') throw new Error(`变体${match[1]} 的指令是空的 —— 正文被删光了吗？`);
-    variants.push({ id: match[1] ?? '', title: heading, text });
-  }
-  if (variants.length === 0) throw new Error('候选文档里没有解析出任何变体（要 `## 变体X：…` 的格式）');
-  return variants;
+function loadExemplarVariants(): ExemplarVariant[] {
+  if (!existsSync(EXEMPLAR_DIR)) throw new Error(`找不到示范目录：${EXEMPLAR_DIR}`);
+  const names = readdirSync(EXEMPLAR_DIR, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.md'))
+    .map((e) => e.name)
+    .sort();
+  if (names.length === 0) throw new Error(`示范目录里没有任何 .md：${EXEMPLAR_DIR}`);
+
+  return names.map((name) => {
+    const raw = readFileSync(join(EXEMPLAR_DIR, name), 'utf8');
+    const at = raw.indexOf(EXEMPLAR_MARKER);
+    if (at < 0) {
+      throw new Error(`${name} 里没有 ${EXEMPLAR_MARKER} 标记 —— 示范必须是标记之后的那一段`);
+    }
+    const body = raw.slice(at + EXEMPLAR_MARKER.length).trim();
+    if (body === '') throw new Error(`${name} 的标记之后没有内容`);
+    return { id: name.replace(/\.md$/u, ''), body };
+  });
 }
 
 /** focus 旁车文件（`<锚点名>.focus`）：`#` 开头的行是注释、空行忽略。 */
@@ -156,28 +160,29 @@ function loadAnchors(): LabAnchor[] {
   });
 }
 
-/** 示范文本 = `ANCHOR_EXEMPLAR_START` 标记之后的全部内容（用户改的就是那一段）。 */
-function loadExemplar(): string | undefined {
-  if (!existsSync(EXEMPLAR_MD)) return undefined;
-  const raw = readFileSync(EXEMPLAR_MD, 'utf8');
-  const at = raw.indexOf(EXEMPLAR_MARKER);
-  if (at < 0) return undefined;
-  const text = raw.slice(at + EXEMPLAR_MARKER.length).trim();
-  return text === '' ? undefined : text;
-}
+/**
+ * 例子驱动下的"说话的方式"一节：**只有一句指针**，风格全部由文末的示范承载 ——
+ * 抽象指令写多了就又回到"prompt 描述风格"的老路（用户 D90 明确不要）。
+ */
+const STYLE_POINTER = [
+  '**口吻与颗粒度以文末「示范」为准**：像它那样说话 —— 不写开场白、不复述代码，',
+  'summary 说清这块在干什么、数据从哪到哪；步骤顺着数据流切，每个子点落到具体行。',
+].join('\n');
 
-function systemPromptFor(variant: Variant, exemplar: string | undefined): string {
-  const base = buildSystemPromptWithStyleSection(variant.text);
-  if (!exemplar) return base;
+function systemPromptFor(variant: ExemplarVariant): string {
+  // baseline = 线上现在的行为：现行简约档指令、没有示范 —— 它是"例子到底带来多少提升"的对照
+  const base = buildSystemPromptWithStyleSection(variant.body === undefined ? builtinStyleSection('concise') : STYLE_POINTER);
+  if (variant.body === undefined) return base;
   return [
     base,
     '',
     '## 示范（输出的**长相与口吻**以此为准）',
     '',
     '下面是一份理想的讲解，讲的是这个产品的另一段代码。它的结构（summary / 第 N 步 / 子点与真实行号）',
-    '和说话的口吻**照它来**；但内容必须全部来自用户这次的锚点 —— 不要把示范里的东西搬进去。',
+    '和说话的口吻**照它来**；若它与上面的一般规则冲突，**以它为准**。',
+    '内容必须全部来自用户这次的锚点 —— 不要把示范里的东西搬进去。',
     '',
-    exemplar,
+    variant.body,
   ].join('\n');
 }
 
@@ -238,16 +243,18 @@ function pad2(n: number): string {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const variants = loadCandidates();
   const anchors = loadAnchors();
-  const exemplar = args.useExemplar ? loadExemplar() : undefined;
   const apiKey = args.dryRun ? undefined : process.env.ANCHOR_LAB_API_KEY;
 
-  const picked = args.only.length === 0 ? variants : variants.filter((v) => args.only.includes(v.id));
-  if (picked.length === 0) throw new Error(`--only 匹配不到变体（有：${variants.map((v) => v.id).join(', ')}）`);
+  let variants = loadExemplarVariants();
+  if (args.baseline) variants.push({ id: 'baseline', body: undefined });
+  if (args.only.length > 0) variants = variants.filter((v) => args.only.includes(v.id));
+  if (variants.length === 0) {
+    throw new Error(`--only 匹配不到变体（示范目录里有：${loadExemplarVariants().map((v) => v.id).join(', ')}）`);
+  }
 
-  console.log(`变体 ${picked.length} 个（${picked.map((v) => v.id).join(' ')}） × 锚点 ${anchors.length} 个`);
-  console.log(`模型 ${args.model} @ ${args.baseUrl}，温度 ${args.temperature}，示范 ${exemplar ? '注入' : '关闭'}`);
+  console.log(`变体 ${variants.length} 个（${variants.map((v) => v.id).join(' ')}） × 锚点 ${anchors.length} 个`);
+  console.log(`模型 ${args.model} @ ${args.baseUrl}，温度 ${args.temperature}`);
   if (args.dryRun) console.log('—— dry-run：不发请求，只落 prompt ——');
   else if (!apiKey) throw new Error('缺 ANCHOR_LAB_API_KEY 环境变量（或加 --dry-run 只看 prompt）');
   console.log(`产物目录：${args.outDir}`);
@@ -269,13 +276,13 @@ async function main(): Promise<void> {
     const user = buildUserPrompt(lab.anchor, { focus: lab.focus });
     keyLines.push(`## ${lab.name}`, '');
 
-    for (let j = 0; j < picked.length; j++) {
-      const variant = picked[j]!;
+    for (let j = 0; j < variants.length; j++) {
+      const variant = variants[j]!;
       // 盲评编号：锚点 i 的第 j 个变体拿到 (i+j) mod n —— 每个锚点内编号各不相同，
       // 又没有一个"变体永远排第一"的固定位置。对应关系只进 key.md。
-      const blindNo = ((i + j) % picked.length) + 1;
-      const system = systemPromptFor(variant, exemplar);
-      const cacheKey = `${variant.id}|${lab.name}|${args.model}|${args.temperature}|${exemplar ? 'ex' : 'noex'}`;
+      const blindNo = ((i + j) % variants.length) + 1;
+      const system = systemPromptFor(variant);
+      const cacheKey = `${variant.id}|${lab.name}|${args.model}|${args.temperature}`;
 
       let raw = cache[cacheKey]?.raw;
       if (raw === undefined && !args.dryRun) {
@@ -311,17 +318,15 @@ async function main(): Promise<void> {
       }
       // blind：文件名里只有编号与锚点，变体名只进 key.md
       writeFileSync(join(args.outDir, 'blind', `${pad2(blindNo)}-${lab.name}.md`), body, 'utf8');
-      keyLines.push(
-        `- \`${pad2(blindNo)}-${lab.name}.md\` → 变体${variant.id}（${variant.title.replace(/^变体[^\s:：]*[：:]\s*/u, '')}）`,
-      );
+      keyLines.push(`- \`${pad2(blindNo)}-${lab.name}.md\` → ${variant.id}`);
     }
     keyLines.push('');
   }
 
   keyLines.push(
     '',
-    `本次：变体 ${picked.map((v) => v.id).join(' ')}；模型 ${args.model}；温度 ${args.temperature}；` +
-      `示范 ${exemplar ? '注入' : '关闭'}；真实调用 ${calls} 次，失败 ${failures} 次。`,
+    `本次：变体 ${variants.map((v) => v.id).join(' ')}；模型 ${args.model}；温度 ${args.temperature}；` +
+      `真实调用 ${calls} 次，失败 ${failures} 次。`,
   );
 
   writeFileSync(join(args.outDir, 'key.md'), `${keyLines.join('\n')}\n`, 'utf8');
@@ -338,7 +343,8 @@ async function main(): Promise<void> {
       '4. 位置与行号好不好懂',
       '',
       '同一编号（NN）下各锚点是**同一个变体** —— 按变体汇总分数，选出总分最高、单锚点不崩的那一个。',
-      `答案在 key.md。本次模型 ${args.model}、温度 ${args.temperature}、示范 ${exemplar ? '已注入' : '关闭'}。`,
+      '变体来自 scripts/style-lab/exemplar/ 下的示范文件（standard 是定稿的标准；baseline 是无示范对照）。',
+      `答案在 key.md。本次模型 ${args.model}、温度 ${args.temperature}。`,
       '',
     ].join('\n'),
     'utf8',

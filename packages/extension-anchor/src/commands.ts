@@ -11,6 +11,7 @@
  * 装配顺序（STATE.md 里写死的）：commands → sidebar → playback → statusbar。
  */
 
+import { spawn } from 'node:child_process';
 import * as vscode from 'vscode';
 import {
   AnchorError,
@@ -471,6 +472,30 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   /**
+   * 用**操作系统的文件管理器**打开一个本地文件夹（Windows 资源管理器 / macOS Finder / Linux xdg-open）。
+   *
+   * @anchor 为什么不走 `vscode.env.openExternal`（D90）：globalStorage 在 VS Code 的
+   * 用户数据目录里，`openExternal` 会把这种路径改写成 `vscode-userdata:` 协议 ——
+   * 用户实测弹出「获取打开此 vscode-userdata 链接的应用」，Windows 上没有任何应用认它。
+   * 直接叫系统文件管理器就没有这层改写。explorer.exe 成功时退出码也可能是 1，
+   * 所以**不能拿退出码当成败判据**：spawn 没抛 error 就当成功。
+   */
+  function revealInFileManager(dir: vscode.Uri): Promise<boolean> {
+    const command =
+      process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    return new Promise((resolve) => {
+      try {
+        const child = spawn(command, [dir.fsPath], { detached: true, stdio: 'ignore' });
+        child.on('error', () => resolve(false));
+        child.unref();
+        resolve(true);
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  /**
    * 「打开讲解历史文件夹」（D89）。目录不存在就先建 —— "打开一个空文件夹"
    * 也好过"报错说文件夹不存在"；第一次使用时历史里本来就是空的。
    */
@@ -482,9 +507,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       void vscode.window.showErrorMessage(`Anchor：历史文件夹建不出来 —— ${userFacing(err)}`);
       return;
     }
-    // openExternal 对目录同样成立：Windows 开资源管理器，mac 开 Finder。
-    // 返回 false = 系统侧没接住，明说（不静默 —— "点了没反应"是最难排查的一类反馈，D63）。
-    const opened = await vscode.env.openExternal(dir);
+    const opened = await revealInFileManager(dir);
     if (opened) {
       note(`打开历史文件夹：${dir.fsPath}`);
     } else {

@@ -141,14 +141,15 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 包括"你本来就把 problems 关着"的情况（我们什么都不动）。已知边界：这是窗口级设置，
 讲解期间同机其他 VS Code 窗口的波浪线也会一起消失；讲解中途崩溃也不怕，下次启动会自动补还原。
 
-### 讲解风格实验室（D89，实验性）
+### 讲解风格实验室（D89 起，D90 起**例子驱动**）
 
-觉得讲解"不像人话"？风格现在是**可以系统性对比**的：`docs/style-candidates.md` 里放着六个候选
-风格的指令全文（**直接在上面改**），`scripts/style-lab/exemplar/draft.md` 是一份示范讲解初稿
-（**把它改成你心里的理想讲解**，它会作为 few-shot 示范进 prompt）。改完跑
-`pnpm style:lab`（需要 `ANCHOR_LAB_API_KEY`），产物在 `.style-lab-out/`：
-`blind/` 里是匿名乱序的盲评稿，按"像人话程度/信息量/数据流/位置好懂"打分，
-评完开 `key.md` 对答案，选出最好的风格再固化进扩展。
+风格不靠抽象指令描述，靠**示范**：`scripts/style-lab/exemplar/standard.md` 是用户定稿的
+「标准示范」（讲解的长相与口吻以它为准，作为 few-shot 进 prompt）。要制定**更详细 / 更精简**的
+示范，复制该文件换个名字（如 `detailed.md` / `concise.md`），只改 `ANCHOR_EXEMPLAR_START`
+标记之后的内容 —— **每个示范文件就是一个变体**。跑 `pnpm style:lab`（需要
+`ANCHOR_LAB_API_KEY`；加 `--baseline` 可带上"无示范"的现行线上行为作对照），产物在
+`.style-lab-out/`：`blind/` 里是匿名乱序的盲评稿，按"像人话程度/信息量/数据流/位置好懂"打分，
+评完开 `key.md` 对答案，选出最好的示范再固化进扩展。
 
 ### 固定按钮与开始界面（S8）
 
