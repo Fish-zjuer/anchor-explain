@@ -589,7 +589,8 @@ check(!bundleText.includes('test/fixtures/main.c'), '产物里没有假 AI 的�
 check(bundleText.includes('chat/completions'), 'OpenAI 兼容端点进了产物（这是 S3 的真身）');
 check(bundleText.includes('fetch_context'), '§8 的工具定义进了产物');
 check(bundleText.includes('请求被拒绝'), '§3.2 的拒绝回灌文案进了产物');
-check(bundleText.includes('讲解助手'), 'prompt 进了产物（它是产品的一部分，不是注释）');
+check(bundleText.includes('代码讲解生成器'), 'prompt 进了产物（它是产品的一部分，不是注释；D94 用户模板的角色段）');
+check(bundleText.includes('示例只影响口吻、详略和句式密度'), '示例节的免责句进了产物（D94：三档示范驱动）');
 check(bundleText.includes('anchorExplain.apiKey.'), 'SecretStorage 的键名约定进了产物（读写两侧同源）');
 
 // ---- S7 打包了第三方代码：署名必须一起进产物 ------------------------------

@@ -124,7 +124,7 @@ test('不需要取件时：一次调用就拿到结果', async () => {
 
   // 第一轮就该把工具定义给出去，否则模型永远没法请求上下文
   assert.ok(h.requests[0]?.tools, '请求里必须带 tools');
-  assert.match(JSON.stringify(h.requests[0]?.messages[0]), /讲解助手/, 'system prompt 在第一位');
+  assert.match(JSON.stringify(h.requests[0]?.messages[0]), /代码讲解生成器/, 'system prompt 在第一位（D94 用户模板的角色段）');
 });
 
 test('取件一轮：请求合法 → 读到内容 → 内容作为工具结果回到对话里', async () => {

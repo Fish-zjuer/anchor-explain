@@ -1,11 +1,17 @@
 /**
  * 给模型的指令。事实源：docs/CONTRACTS.md §3.3（输出必须过的校验）+ §8（工具）。
  *
- * @anchor 这些文本是**产品的一部分**，不是注释：讲解质量、要不要取件、
- *         输出能不能过 `validateExplanation`，全靠它。所以它单独一个目录，
- *         不和编排逻辑混在一起。
+ * @anchor prompt 是**产品的一部分**。D94 起整体换成用户给的模板：
+ *         # 角色 → # 输出形状 → # 通用规则 → # 档位规则 → （取件，扩展工具循环必需）
+ *         → # 示例（few-shot）。三档**全部示范驱动**，同一时刻只实例化当前档：
+ *         「档位规则」只放当前档的一节、「示例」只放当前档的示范正文 ——
+ *         档位由设置固定而不是逐条请求指定，多放只会有跨档串味和多花 token。
+ *         模板文本是用户 D94 的原文，仅两处必要适配（都标注了）：
+ *           1. 「若上游要求 JSON」按本扩展的真实 schema 落（location / highlights ——
+ *              校验闸门、侧边栏、高亮都消费它；模板里的 line_range / points 与之等价）；
+ *           2. 取件一节是模板之外必须保留的（没有它模型不会正确使用 fetch_context）。
  *
- * 三条纪律（都出自踩过的坑）：
+ * 三条纪律（都出自踩过的坑，D94 仍然成立）：
  *   1. **把校验规则说在前面**。§3.3 会拒的东西（空 text、行号越界、跑别的文件）
  *      必须在 prompt 里就说清 —— 让模型第一次就写对，比让它错了再 repair 便宜得多。
  *   2. **行号口径必须写死**。模型默认数 0-based 或"从代码片段第一行算起"，
@@ -20,21 +26,15 @@ import type { Anchor } from '@anchor/core';
 import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
 import { EXPLANATION_JSON_SHAPE, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
 import { CONCISE_EXEMPLAR, DETAILED_EXEMPLAR, STANDARD_EXEMPLAR } from './exemplars.ts';
+
 /**
- * 讲解风格（D65 两档起家 → D92 三档 → D93 **三档全部示范驱动**，用户可选，`anchorExplain.style`）：
+ * 讲解风格（D93 起三档全部示范驱动，D94 起按用户模板进同一个 prompt 结构）：
  *
- * - `standard`（**标准**，默认）：讲解的长相与口吻以「标准示范」为准 ——
- *   数据流视角，每步讲清因果与后果。用户 D90 定稿，D91 实测稳定优于纯指令版。
- * - `concise`（**精简**）：几句话讲清这块的目标与边界，拒绝展开 —— 示范即规格。
- * - `detailed`（**详细**）：逐行讲解，关键判断给具体推演（数值代入走一遍），
- *   容易卡住的点单独列出 —— 示范即规格。
+ * - `standard`（**标准**，默认）：讲清关键判据、操作顺序和原因，不逐行解释语法。
+ * - `concise`（**精简**）：让读者快速知道这段代码做什么、成功失败结果是什么。
+ * - `detailed`（**详细**）：面向初学者，逐行讲清每行在做什么、为什么这样写。
  *
- * **三档的共同点**：骨架（按数据怎么流切步、取件规则、输出 JSON 契约）完全相同，
- * 唯一的区别是文末注入的「示范」—— 用户 D90 的立场是"我不要 prompt，我要例子"，
- * 所以三档都没有风格描述指令，只有一句指向示范的指针。
- *
- * 旧值 `rigorous`（D65 的严谨档）随 D93 退役：设置里还存着它的用户自动迁到 `detailed`
- * （两档的意图最接近 —— 都要比标准档更展开）。
+ * 旧值 `rigorous`（D65 的严谨档）随 D93 退役：设置里还存着它的用户自动迁到 `detailed`。
  */
 export type ExplainStyle = 'standard' | 'concise' | 'detailed';
 
@@ -48,13 +48,13 @@ export function coerceStyle(raw: unknown): ExplainStyle {
 
 /** 风格的人话名。设置面板、`显示状态` 与测试共用。 */
 export function describeStyle(style: ExplainStyle): string {
-  if (style === 'standard') return '标准（口吻与颗粒度以「标准示范」为准）';
-  if (style === 'concise') return '精简（几句话讲清目标与边界）';
-  return '详细（逐行讲解，带具体推演）';
+  if (style === 'standard') return '标准（讲清判据、顺序与原因）';
+  if (style === 'concise') return '精简（快速知道做什么、成功失败结果）';
+  return '详细（逐行讲解，面向初学者）';
 }
 
 /**
- * 输出契约的原样描述。system 与 repair 两处都引用它，保证口径一致。
+ * 输出契约的原样描述。system 的「输出形状」与 repair 两处都引用它，保证口径一致。
  *
  * @anchor `crossFile` 不是可选的美化，是**必须**：S9a 的第一版这里写死了
  *         "`filePath` 必须与锚点**同一个文件**"（S1 时代的口径），而它同时被 repair 轮引用 ——
@@ -87,115 +87,159 @@ export function explainOutputContract(crossFile = false): string {
   ].join('\n');
 }
 
-export function buildSystemPrompt(
-  style: ExplainStyle = DEFAULT_STYLE,
-  options: { crossFile?: boolean; maxFetchLines?: number } = {},
-): string {
-  // D93：三档**全部示范驱动** —— 骨架完全相同，唯一的区别是文末注入哪个示范。
-  // 每档示范的编辑面：scripts/style-lab/exemplar/<style>.md（常量有同步锁）。
-  const body =
-    style === 'standard' ? STANDARD_EXEMPLAR : style === 'concise' ? CONCISE_EXEMPLAR : DETAILED_EXEMPLAR;
-  return buildSystemPromptWithStyleSection(EXEMPLAR_STYLE_POINTER, options) + '\n\n' + exemplarSection(body);
-}
+/** 档位的人话名（进角色段的那行「本次讲解档位」）。 */
+const TIER_LABEL: Record<ExplainStyle, string> = {
+  standard: 'standard（标准）',
+  concise: 'concise（精简）',
+  detailed: 'detailed（详细）',
+};
 
-/**
- * 示范驱动时"说话的方式"一节的指针文本（D91）。风格描述只剩这一句 ——
- * 其余全由文末的示范承载；抽象指令写多了就回到"用 prompt 描述风格"的老路（D90 用户明确不要）。
- */
-export const EXEMPLAR_STYLE_POINTER = [
-  '**口吻与颗粒度以文末「示范」为准**：像它那样说话 —— 不写开场白、不复述代码，',
-  'summary 说清这块在干什么、数据从哪到哪；步骤顺着数据流切，每个子点落到具体行。',
-].join('\n');
+/** 各档的示范正文（编辑面：`scripts/style-lab/exemplar/<档位名>.md`，常量有同步锁）。 */
+const TIER_EXEMPLAR: Record<ExplainStyle, string> = {
+  standard: STANDARD_EXEMPLAR,
+  concise: CONCISE_EXEMPLAR,
+  detailed: DETAILED_EXEMPLAR,
+};
 
-/** 「示范」小节的固定包装。实验台（`scripts/style-lab.ts`）与线上用的是**同一份措辞**。 */
-export function exemplarSection(body: string): string {
+function roleSection(style: ExplainStyle): string {
   return [
-    '## 示范（输出的**长相与口吻**以此为准）',
+    '# 角色',
     '',
-    '下面是一份理想的讲解，讲的是这个产品的另一段代码。它的结构（summary / 第 N 步 / 子点与真实行号）',
-    '和说话的口吻**照它来**；若它与上面的一般规则冲突，**以它为准**。',
-    '内容必须全部来自用户这次的锚点 —— 不要把示范里的东西搬进去。',
-    '',
-    body,
+    '你是代码讲解生成器。用户会给你一段代码，并指定讲解档位：concise（精简）、standard（标准）、' +
+      'detailed（详细）。未指定时用 standard。你输出中文讲解，只讲用户给出的代码，不编造行为。' +
+      '不要改写代码块。',
+    // 扩展适配：代码以"锚点"的形式给出（文档名、位置与该处的原文），档位由扩展按设置显式指定。
+    '在本扩展里，这段代码以"锚点"的形式给出：文档名、位置，以及该处的原文。',
+    `本次讲解档位：${TIER_LABEL[style]}。`,
   ].join('\n');
 }
 
-/**
- * 骨架不变、"说话的方式"可注入的版本（D89 风格实验台的落点）。
- *
- * @anchor 为什么非有不可：风格对比实验（`scripts/style-lab.ts`）要把**候选风格全文**
- *         塞进同一条骨架里跑，否则变体之间差的就不只是风格。骨架（数据流切步、
- *         取件规则、输出契约）留在这里单源维护，实验台的变体只提供这一节 ——
- *         两边不会长成两套 prompt。`buildSystemPrompt` 现在就是它的两档特例。
- *
- * `styleText` 是"## 说话的方式"一节的**正文**（不含标题）；HTML 注释会被剥掉，
- * 所以候选文档里写给评审看的"设计意图"注解不会漏进 prompt。
- */
-export function buildSystemPromptWithStyleSection(
-  styleText: string,
-  options: { crossFile?: boolean; maxFetchLines?: number } = {},
-): string {
-  const crossFile = options.crossFile === true;
+function outputShapeSection(crossFile: boolean): string {
   return [
-    '你是一个代码与技术文档讲解助手。用户会给你一个"锚点"：文档里的一段位置，可能还带着那段的原文。',
+    '# 输出形状',
     '',
-    '你的任务是把这段内容讲清楚，并且**把讲解切成有序的步骤**，每一步对应文档里的一处具体位置。',
+    '按以下形状输出：',
     '',
-    '## 步骤怎么切：按数据怎么流，不要按行序',
+    'summary：<一段话，概括代码目标、外部行为、关键约定>',
     '',
-    '**这是最重要的一条。** 不要从上到下一行一行地讲 —— 那等于把代码念一遍，用户不如自己读。',
-    '请按**数据在这段代码里的流动**来组织步骤，每一步回答三件事：',
-    '- 数据**从哪来**（谁写进去的、入参、上一个结构）',
-    '- 在这里**被怎么改**（取值、计算、转移、判掉）',
-    '- 出去**给谁用**（返回给谁、留给后面哪一步、影响什么状态）',
+    '第 N 步：<短标题>（第 X-Y 行）',
     '',
-    '于是步骤的顺序是**数据走一圈的顺序**，可能与行号顺序不同 —— 这是允许的，',
-    '但每一步的 `location` 仍要指向文档里真实的行/页。',
-    '如果这段的逻辑就是"顺序执行"，那就把每个动作说成"数据经过它之后变成了什么"。',
+    '- <子点>',
+    '- <子点>',
     '',
-    '每一步还可以带若干 `highlights`（子高亮），对应这一步内部的一个更小的逻辑点。',
-    '粒度参考：一步 ≈ 3-8 行的一个完整动作；一个子高亮 ≈ 1-2 行的一个关键点。',
+    '行号必须来自用户代码的编辑器行号，从 1 起。步骤划分按代码的功能块，不按空行硬拆。',
     '',
-    '## 说话的方式',
-    '',
-    stripHtmlComments(styleText).trim(),
-    '',
-    '## 什么时候该取件',
-    '',
-    `如果你手里的信息不足以准确讲解（比如只看到零散几行、不认识某个结构体或宏），`,
-    `可以调用工具 \`${FETCH_CONTEXT_TOOL.name}\` 请求额外上下文。规则：`,
-    '- 只在**真的需要**时调用。能凭现有信息讲清楚的，不要为了保险而多取一次。',
-    '- 一次最多请求一小段（代码按行、PDF 按页），并且 `start` / `end` 都要给。',
-    fetchSourceRule(crossFile, options.maxFetchLines),
-    '- 取件次数有上限，且已经取过的区间不会重复给你。',
-    '- 收到取件结果后就该给出最终 JSON，不要反复取件。',
-    '',
-    '## 输出',
+    // 扩展适配：模板原文是"字段为 summary、steps；steps 内放 title、line_range、points"，
+    // 这里按本扩展的真实 schema 落（line_range ↔ location，points ↔ highlights）。
+    '若上游要求 JSON（本扩展就是），字段为 summary、confidence、steps；steps 内放 title、' +
+      'location（行区间：filePath / lineStart / lineEnd，即 line_range）、intro、text、' +
+      'highlights（即 points：location + narration，emphasis 可选）。文本内容仍遵守下面的规则。',
     '',
     explainOutputContract(crossFile),
   ].join('\n');
 }
 
-/** 剥掉 `<!-- … -->`：候选文档里给评审看的注解不属于 prompt。不跨行递归，够用。 */
-function stripHtmlComments(text: string): string {
-  return text.replace(/<!--[\s\S]*?-->/gu, '');
-}
+/** 通用规则 —— 用户 D94 模板原文，一字未改。 */
+const GENERAL_RULES_SECTION = [
+  '# 通用规则',
+  '',
+  '1. 用“写入方 / 读取方”，不用“生产者 / 消费者”。',
+  '2. 不口语化，不拟人，不比喻。不要写“追着跑”“撞上”“让位”这类说法。' +
+    '用“等于”“重合”“下一个位置是”“返回失败”这类直接表述。',
+  '3. 变量、参数、字段第一次出现时，先说明它是什么、存放什么、谁用它做什么，再在后续子点里使用。不要让它突然出现。',
+  '4. 不省略宾语。写“把整数 v 写进写位置当前格子”，不要写“往写位置写”。',
+  '5. summary 只概括目标、外部行为、关键约定。复杂原因、逐行语法、条件推演放到下面的步骤或逐行解释里。',
+  '6. 条件判断优先写成：',
+  '   `条件`：',
+  '   - True：……',
+  '   - False：……',
+  '   标准档和详细档必须写 True / False 推演。精简档不写推演，只写结果。',
+  '7. 每个子点信息密度要高，但不要堆砌术语。不要用“重点 / 上下文 / 定义 / 注意”当固定标签；' +
+    '需要时直接用“满判据”“空判据”“顺序”“为什么这样判”这类描述性标题。',
+  '8. 不要每步都套同一个句式。避免模板腔和 AI 味。',
+].join('\n');
+
+/** 档位规则 —— 用户 D94 模板原文，一字未改（按当前档只实例化一节）。 */
+const TIER_RULES: Record<ExplainStyle, string> = {
+  concise: [
+    '## concise 精简档',
+    '',
+    '目的：让读者快速知道“这段代码做什么、成功失败结果是什么”。',
+    '',
+    '- 形状：summary + 1-2 个步骤。每步 1-2 段或 1-2 条子点，不要拆太碎。',
+    '- 只讲目标、结果、外部行为。不解释内部变量名、取模、指针、顺序原因。',
+    '- 尽量用“读位置 / 写位置”指代，不出现 head / tail 等代码名。',
+    '- 写入方要放整数：满了拒绝，返回失败；没满放入，返回成功。',
+    '- 读取方要取整数：空了拒绝，返回失败；不空取出，返回成功。',
+    '- 不写 True / False 推演。',
+    '- 语言直接，避免连续使用“目标是把……；如果……就……”这种模板句。',
+  ].join('\n'),
+  standard: [
+    '## standard 标准档',
+    '',
+    '目的：讲清关键判据、操作顺序和原因，但不逐行解释语法。',
+    '',
+    '- 形状：summary + 第 N 步 + 子点。',
+    '- summary 概括目标、外部行为、空 / 满约定。',
+    '- 步骤里要写：',
+    '  - 判据：条件为 True 怎样，False 怎样。',
+    '  - 为什么这样判：例如满时再写会让写位置与读位置重合，而重合表示空，无法区分。',
+    '  - 顺序：先写后移、先读后移；否则另一方可能读到未就绪数据，或覆盖未交出数据。',
+    '- 可以用 head / tail 等名字，但第一次出现要说明它是什么。',
+    '- 不逐行解释 #include、#define、typedef、rb->、*out、% 等语法。',
+  ].join('\n'),
+  detailed: [
+    '## detailed 详细档',
+    '',
+    '目的：面向初学者，逐行或逐块讲清每行在做什么、为什么这样写。',
+    '',
+    '- 形状：summary + 第 N 步 + 子点。子点按行号或行号块组织。',
+    '- summary 只概括整体，不展开推演；复杂逻辑放到下面逐行解释。',
+    '- 每行解释要显式：',
+    '  - 这一行定义了什么、存放什么、谁用它做什么。',
+    '  - 语法含义：如 #include、#define、typedef struct、rb->、*out、% 取模。',
+    '  - 条件判断写完整 True / False 推演。',
+    '- 对“为什么 (tail + 1) % N == head 是满”必须单独展开：举例、推演、说明留一个空位的原因。' +
+      '例如假设 head=0、tail=15，再写一个 tail 会变 0 与 head 重合，而重合表示空，所以最后一个空位不能写。',
+    '- 补充容易卡住的点：空 / 满、取模循环、指针语法、无锁条件。',
+    '- 不写口语比喻。',
+  ].join('\n'),
+};
 
 /**
- * "能取哪里的件"这一句，按 `anchorExplain.fetchScope` 走（S9a）。
+ * 「取件」一节 —— **模板之外必须保留的一段**（扩展适配）：
+ * 没有它模型不会正确使用 `fetch_context`，跨文件讲解（S9a）就废了。
  *
  * @anchor 跨文件那一版要**同时**做两件事：给它许可（否则它就是不敢引用别的文件，
  *         讲解里只会写"某个宏"），和给它节制（一次一个文件、只为讲清数据流）。
  *         用户的原话是"没有跨文件的理解啊，像是嵌入式等等，很多分散的代码"——
  *         所以这里明确点名嵌入式最常见的三样：**宏、结构体、调用者**。
  */
-function fetchSourceRule(crossFile: boolean, maxFetchLines?: number): string {
-  if (!crossFile) return '- 只能取**锚点所在的那个文件**，不能取别的文件。';
+function fetchSection(crossFile: boolean, maxFetchLines?: number): string {
+  if (!crossFile) {
+    return [
+      '# 取件（扩展环境的工具）',
+      '',
+      '如果你手里的信息不足以准确讲解（比如只看到零散几行、不认识某个结构体或宏），',
+      `可以调用工具 \`${FETCH_CONTEXT_TOOL.name}\` 请求额外上下文。规则：`,
+      '- 只在**真的需要**时调用。能凭现有信息讲清楚的，不要为了保险而多取一次。',
+      '- 一次最多请求一小段（代码按行、PDF 按页），并且 `start` / `end` 都要给。',
+      '- 只能取**锚点所在的那个文件**，不能取别的文件。',
+      '- 取件次数有上限，且已经取过的区间不会重复给你。',
+      '- 收到取件结果后就该给出最终 JSON，不要反复取件。',
+    ].join('\n');
+  }
   // 行数上限**只说一个数**：它来自策略（`anchorExplain.maxFetchLines`，默认 400）。
   // 想读的范围比上限大时不会被拒，只会截到上限（回灌的内容头部写着真实行范围）——
   // 所以这里不必教它"别超"，只要把它想要的如实写出来。
   const limit = typeof maxFetchLines === 'number' && maxFetchLines > 0 ? maxFetchLines : null;
   return [
+    '# 取件（扩展环境的工具）',
+    '',
+    '如果你手里的信息不足以准确讲解（比如只看到零散几行、不认识某个结构体或宏），',
+    `可以调用工具 \`${FETCH_CONTEXT_TOOL.name}\` 请求额外上下文。规则：`,
+    '- 只在**真的需要**时调用。能凭现有信息讲清楚的，不要为了保险而多取一次。',
+    '- 一次最多请求一小段（代码按行、PDF 按页），并且 `start` / `end` 都要给。',
     '- **可以读锚点文件之外的相关文件** —— 用 `path` 点名要读哪个文件（写相对路径时按**锚点文件所在目录**算，' +
       '例如 `ring_buffer.h`），`path` 省略才是"锚点这个文件"。',
     '  宏定义、类型/结构体、以及**调用它或被它调用的代码**通常不在同一个文件里 ——',
@@ -205,32 +249,36 @@ function fetchSourceRule(crossFile: boolean, maxFetchLines?: number): string {
       (limit === null ? '；读完就该给出结论。' : `，单次最多 ${limit} 行 —— 要多了只会给你前 ${limit} 行。`),
     '- 密钥、依赖目录（`node_modules`）、构建产物读不到，也不用试。',
     '- 你**只能在讲解里引用你读过的文件**（或锚点文件）—— 没读过的文件不许出现在 location 里。',
+    '- 取件次数有上限，且已经取过的区间不会重复给你。',
+    '- 收到取件结果后就该给出最终 JSON，不要反复取件。',
   ].join('\n');
 }
 
-/**
- * 两档风格的具体指令。**都要被"少讲废话"这条约束管住**（D65）——
- * 用户对第一版的原话是"不要那么多名词什么的，要不还不如读代码本身了"。
- *
- * D89：实验台也需要这两档的**原文**（变体A 是现行简约档的对照组），
- * 所以从这里导出一份只读入口 —— 变体的措辞改在这里，实验室自动跟上。
- */
-/**
- * 纯指令简约档的原文（D65）。D93 起线上三档**全部示范驱动**，这份文本唯一的消费者是
- * 实验台的 `--baseline`（"无示范"对照 —— 量示范到底带来多少提升）。
- * 严谨档的旧指令文本随 D93 退役（git 历史里找得到）。
- */
-export function builtinStyleSection(): string {
-  return [
-    '**简约档**：说人话 —— 能用大白话讲清的，就不要用术语。',
-    '',
-    '- `summary` 一句话说清**这块在干什么、数据从哪到哪**，不要写成摘要式套话。',
-    '- 不要写"这段代码实现了一个……它的作用是……"这种开场白，直接讲事情。',
-    '- 不要复述代码已经写出来的东西（"这里调用了一个函数"）；讲的是它**为什么**在这儿、**带来什么后果**。',
-    '- 术语只在**它就是这段代码里的标识符**时才用（结构体名、函数名、字段名），不要引入代码里没出现过的名词。',
-    '- 一句话讲完一个动作。写不出来就说明还没想清楚，不要用名词堆砌来充数。',
-    '- 一句话超过 40 个字就该拆开重写。',
-  ].join('\n');
+function examplesSection(style: ExplainStyle): string {
+  // 小节标题沿用用户模板原文：「精简档示例 / 标准档示例 / 详细档示例」。
+  const headings: Record<ExplainStyle, string> = {
+    standard: '## 标准档示例',
+    concise: '## 精简档示例',
+    detailed: '## 详细档示例',
+  };
+  return ['# 示例（few-shot）', '', '示例只影响口吻、详略和句式密度。若示例与上面规则冲突，以规则为准，但优先模仿示例的讲解节奏。', '', headings[style], '', TIER_EXEMPLAR[style]].join('\n');
+}
+
+export function buildSystemPrompt(
+  style: ExplainStyle = DEFAULT_STYLE,
+  options: { crossFile?: boolean; maxFetchLines?: number; examples?: boolean } = {},
+): string {
+  const crossFile = options.crossFile === true;
+  const withExamples = options.examples !== false;
+  const parts = [
+    roleSection(style),
+    outputShapeSection(crossFile),
+    GENERAL_RULES_SECTION,
+    `# 档位规则\n\n${TIER_RULES[style]}`,
+    fetchSection(crossFile, options.maxFetchLines),
+  ];
+  if (withExamples) parts.push(examplesSection(style));
+  return parts.join('\n\n');
 }
 
 /**

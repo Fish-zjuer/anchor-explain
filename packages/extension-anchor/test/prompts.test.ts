@@ -1,10 +1,9 @@
 /**
- * 指令文本的单测（D65）。
+ * 指令文本的单测（D65 起；D94 换用户模板后随结构更新）。
  *
- * @anchor 为什么 prompt 也值得测：它是**产品表面**，不是注释。用户对第一版的反馈是
- *         "不要那么多名词什么的，要不还不如读代码本身了"、"太从上到下了，我希望能表达出
- *         数据流转的感觉" —— 这两句话必须变成**指令里的硬要求**，否则下次改 prompt 的人
- *         （可能还是我）会把它当措辞随手改回去。
+ * @anchor 为什么 prompt 也值得测：它是**产品表面**，不是注释。用户对讲解的反馈
+ *         （"不像人话"、"太从上到下"）最终都落成了这份模板里的硬规则 ——
+ *         下次改 prompt 的人（可能还是我）把它当措辞随手改回去时，这里会红。
  */
 
 import { test } from 'node:test';
@@ -29,48 +28,77 @@ const CODE_ANCHOR: Anchor = {
   extractedText: 'static int rb_pop(...)',
 };
 
-test('三档都要求"按数据怎么流"组织步骤（这是用户最在意的那一条，骨架三档共享）', () => {
+test('五节结构：角色 / 输出形状 / 通用规则 / 档位规则 / 取件 / 示例，三档都在（D94 模板）', () => {
   for (const style of ['standard', 'concise', 'detailed'] as const) {
     const prompt = buildSystemPrompt(style);
-    assert.match(prompt, /按数据怎么流/, style);
-    assert.match(prompt, /从哪来/, style);
-    assert.match(prompt, /给谁用/, style);
-    // 反面要求也要在：不许从上到下一行行念
-    assert.match(prompt, /不要从上到下一行一行地讲/, style);
+    assert.match(prompt, /^# 角色/m, style);
+    assert.match(prompt, /^# 输出形状/m, style);
+    assert.match(prompt, /^# 通用规则/m, style);
+    assert.match(prompt, /^# 档位规则/m, style);
+    assert.match(prompt, /^# 取件（扩展环境的工具）/m, style);
+    assert.match(prompt, /^# 示例（few-shot）/m, style);
   }
 });
 
-test('三档都要"少讲废话"（D93 起三档全示范驱动，这句话由共享的指针带出）', () => {
-  for (const style of ['standard', 'concise', 'detailed'] as const) {
-    assert.match(buildSystemPrompt(style), /不写开场白、不复述代码/, style);
+test('角色段：生成器定位 + 只讲给出的代码 + 本次档位行（三档各不相同）', () => {
+  const cases = [
+    ['standard', '本次讲解档位：standard（标准）。'],
+    ['concise', '本次讲解档位：concise（精简）。'],
+    ['detailed', '本次讲解档位：detailed（详细）。'],
+  ] as const;
+  for (const [style, line] of cases) {
+    const prompt = buildSystemPrompt(style);
+    assert.match(prompt, /只讲用户给出的代码，不编造行为/, style);
+    assert.match(prompt, /不要改写代码块/, style);
+    assert.ok(prompt.includes(line), `${style}：${line}`);
   }
 });
 
-test('标准档（默认）：整个搬进标准示范，示范排在输出契约之后（D92）', () => {
+test('通用规则原文钉住（用户 D94 的硬要求，改措辞会红）', () => {
   const prompt = buildSystemPrompt('standard');
-  assert.match(prompt, /## 示范（输出的\*\*长相与口吻\*\*以此为准）/);
-  assert.match(prompt, /留一个空位/, '用户定稿的示范正文真的在里面');
-  assert.match(prompt, /内容必须全部来自用户这次的锚点/, '防"照抄示范"的那句话也在');
-  assert.ok(
-    prompt.indexOf('## 输出') >= 0 && prompt.indexOf('## 示范（输出的**长相与口吻**以此为准）') > prompt.indexOf('## 输出'),
-    '示范在输出契约之后',
+  assert.match(prompt, /用“写入方 \/ 读取方”，不用“生产者 \/ 消费者”/);
+  assert.match(prompt, /不口语化，不拟人，不比喻/);
+  assert.match(prompt, /不省略宾语/);
+  assert.match(prompt, /标准档和详细档必须写 True \/ False 推演。精简档不写推演，只写结果。/);
+  assert.match(prompt, /不要用“重点 \/ 上下文 \/ 定义 \/ 注意”当固定标签/);
+  assert.match(prompt, /避免模板腔和 AI 味/);
+});
+
+test('输出形状：用户模板的文本形状 + 扩展真实 JSON 契约（D94 的两处适配之一）', () => {
+  const prompt = buildSystemPrompt('standard');
+  assert.match(prompt, /按代码的功能块，不按空行硬拆/);
+  assert.match(prompt, /若上游要求 JSON（本扩展就是），字段为 summary、confidence、steps/);
+  assert.match(prompt, /highlights（即 points：location \+ narration，emphasis 可选）/);
+  assert.match(prompt, /最终回答必须是\*\*一个 JSON 对象\*\*/, '真实 schema 的契约整段保留');
+  assert.match(prompt, /行号一律是\*\*从文件第一行开始数的 1-based 行号\*\*/);
+});
+
+test('档位规则只进当前档的一节（跨档串味是示范驱动最怕的事）', () => {
+  const standard = buildSystemPrompt('standard');
+  assert.match(standard, /## standard 标准档/);
+  assert.match(standard, /目的：讲清关键判据、操作顺序和原因，但不逐行解释语法。/);
+  assert.doesNotMatch(standard, /## concise 精简档/);
+  assert.doesNotMatch(standard, /## detailed 详细档/);
+
+  const concise = buildSystemPrompt('concise');
+  assert.match(concise, /## concise 精简档/);
+  assert.match(concise, /不写 True \/ False 推演/);
+  assert.doesNotMatch(concise, /## standard 标准档/);
+
+  const detailed = buildSystemPrompt('detailed');
+  assert.match(detailed, /## detailed 详细档/);
+  assert.match(detailed, /补充容易卡住的点/);
+  assert.doesNotMatch(detailed, /## standard 标准档/);
+});
+
+test('示例节：免责句 + 自己的示范正文（示范正文的耦合锁在 exemplars.test.ts）', () => {
+  const standard = buildSystemPrompt('standard');
+  assert.match(standard, /# 示例（few-shot）/);
+  assert.match(
+    standard,
+    /示例只影响口吻、详略和句式密度。若示例与上面规则冲突，以规则为准，但优先模仿示例的讲解节奏。/,
   );
-});
-
-test('精简档：注入的是精简示范（几句话讲清目标与边界），不是标准示范', () => {
-  const prompt = buildSystemPrompt('concise');
-  assert.match(prompt, /## 示范（输出的\*\*长相与口吻\*\*以此为准）/);
-  assert.match(prompt, /始终空着一个格子/, '用户定稿的精简示范正文真的在里面');
-  assert.doesNotMatch(prompt, /先写后移/, '那是标准/详细示范里的句子，不该出现在精简档');
-});
-
-test('详细档：注入的是详细示范（逐行讲解 + 推演 + 容易卡住的点），不是标准示范', () => {
-  const prompt = buildSystemPrompt('detailed');
-  assert.match(prompt, /## 示范（输出的\*\*长相与口吻\*\*以此为准）/);
-  assert.match(prompt, /容易卡住的点/, '用户定稿的详细示范正文真的在里面');
-  assert.match(prompt, /顺序必须是先读出数据，再移动/, '详细示范的顺序论证在里面');
-  assert.doesNotMatch(prompt, /始终空着一个格子/, '那是精简示范里的句子，不该出现在详细档');
-  assert.doesNotMatch(prompt, /先写后移保证/, '那是标准示范里的句子，不该出现在详细档');
+  assert.match(standard, /留一个空位/, '标准示范正文在里面');
 });
 
 test('三档的 prompt 各不相同（改档不会白改）', () => {
