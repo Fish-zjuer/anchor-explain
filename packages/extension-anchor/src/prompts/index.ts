@@ -19,6 +19,7 @@
 import type { Anchor } from '@anchor/core';
 import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
 import { EXPLANATION_JSON_SHAPE, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
+import { STANDARD_EXEMPLAR } from './exemplarStandard.ts';
 
 /**
  * 讲解风格（D65）。**两档，用户可选**（`anchorExplain.style`）：
@@ -82,7 +83,40 @@ export function buildSystemPrompt(
   style: ExplainStyle = DEFAULT_STYLE,
   options: { crossFile?: boolean; maxFetchLines?: number } = {},
 ): string {
-  return buildSystemPromptWithStyleSection(styleSection(style), options);
+  // D91：简约档（默认）不再用一段指令**描述**风格，而是把用户定稿的标准示范**整个搬进来**
+  //（few-shot）。"像人话"这件事描述不出来，但可以示范出来 —— 实验台实测（D91，4 锚点 ×
+  // standard/baseline）示范驱动的输出在因果完整度与口吻上都稳定优于纯指令档。
+  // 严谨档保持原指令文本不动：那是另一档口味，用户没有要求它变。
+  if (style !== 'concise') {
+    return buildSystemPromptWithStyleSection(styleSection(style), options);
+  }
+  return (
+    buildSystemPromptWithStyleSection(EXEMPLAR_STYLE_POINTER, options) +
+    '\n\n' +
+    exemplarSection(STANDARD_EXEMPLAR)
+  );
+}
+
+/**
+ * 示范驱动时"说话的方式"一节的指针文本（D91）。风格描述只剩这一句 ——
+ * 其余全由文末的示范承载；抽象指令写多了就回到"用 prompt 描述风格"的老路（D90 用户明确不要）。
+ */
+export const EXEMPLAR_STYLE_POINTER = [
+  '**口吻与颗粒度以文末「示范」为准**：像它那样说话 —— 不写开场白、不复述代码，',
+  'summary 说清这块在干什么、数据从哪到哪；步骤顺着数据流切，每个子点落到具体行。',
+].join('\n');
+
+/** 「示范」小节的固定包装。实验台（`scripts/style-lab.ts`）与线上用的是**同一份措辞**。 */
+export function exemplarSection(body: string): string {
+  return [
+    '## 示范（输出的**长相与口吻**以此为准）',
+    '',
+    '下面是一份理想的讲解，讲的是这个产品的另一段代码。它的结构（summary / 第 N 步 / 子点与真实行号）',
+    '和说话的口吻**照它来**；若它与上面的一般规则冲突，**以它为准**。',
+    '内容必须全部来自用户这次的锚点 —— 不要把示范里的东西搬进去。',
+    '',
+    body,
+  ].join('\n');
 }
 
 /**

@@ -39,6 +39,8 @@ import {
   buildSystemPromptWithStyleSection,
   buildUserPrompt,
   builtinStyleSection,
+  EXEMPLAR_STYLE_POINTER,
+  exemplarSection,
 } from '../src/prompts/index.ts';
 import { explanationMarkdown } from '../src/session/exportNotes.ts';
 import type { Anchor, ExplanationResult } from '@anchor/core';
@@ -164,26 +166,15 @@ function loadAnchors(): LabAnchor[] {
  * 例子驱动下的"说话的方式"一节：**只有一句指针**，风格全部由文末的示范承载 ——
  * 抽象指令写多了就又回到"prompt 描述风格"的老路（用户 D90 明确不要）。
  */
-const STYLE_POINTER = [
-  '**口吻与颗粒度以文末「示范」为准**：像它那样说话 —— 不写开场白、不复述代码，',
-  'summary 说清这块在干什么、数据从哪到哪；步骤顺着数据流切，每个子点落到具体行。',
-].join('\n');
-
 function systemPromptFor(variant: ExemplarVariant): string {
-  // baseline = 线上现在的行为：现行简约档指令、没有示范 —— 它是"例子到底带来多少提升"的对照
-  const base = buildSystemPromptWithStyleSection(variant.body === undefined ? builtinStyleSection('concise') : STYLE_POINTER);
+  // baseline = 线上简约档**之前**的样子（纯指令、无示范）—— 它是"例子带来多少提升"的对照。
+  // （D91 起线上简约档本身已是"标准示范驱动"，所以 baseline 与线上不再相同，特此说明。）
+  const base = buildSystemPromptWithStyleSection(
+    variant.body === undefined ? builtinStyleSection('concise') : EXEMPLAR_STYLE_POINTER,
+  );
   if (variant.body === undefined) return base;
-  return [
-    base,
-    '',
-    '## 示范（输出的**长相与口吻**以此为准）',
-    '',
-    '下面是一份理想的讲解，讲的是这个产品的另一段代码。它的结构（summary / 第 N 步 / 子点与真实行号）',
-    '和说话的口吻**照它来**；若它与上面的一般规则冲突，**以它为准**。',
-    '内容必须全部来自用户这次的锚点 —— 不要把示范里的东西搬进去。',
-    '',
-    variant.body,
-  ].join('\n');
+  // 「示范」小节的包装措辞与线上 buildSystemPrompt 同源（prompts/index.ts 的 exemplarSection），不各写一份
+  return `${base}\n\n${exemplarSection(variant.body)}`;
 }
 
 function extractJson(text: string): ExplanationResult | null {

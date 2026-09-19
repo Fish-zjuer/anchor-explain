@@ -340,6 +340,19 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   `evaluateSessionEnd()`。红→绿实测：注释掉两条分支后链式冒烟 6 条 FAIL（`session:end 10 → 11`），
   恢复即绿。顺带修掉一个"假的绿"：冒烟桩把 `openTextDocument` 放在 `window` 下，而真实 API 在
   `workspace` 上 —— 跨文件那条路一直没被跑到过（与约束 111 / 112 同一类陷阱）。
+- **D91（标准示范固化进线上，2026-09-19）**「你帮我操作」：用「API keys」文件夹里
+  「DeepSeek project——Anchor——test」的 key 跑了实验台（standard vs baseline × 4 锚点，8/8 成功），
+  逐份评审：**standard 在四个锚点上都稳定复现示范口吻** —— 每步是一段连贯的因果叙述
+  （时钟关断写入被丢弃、判空必须在转数字前、读-改-写保护的是别人的位），baseline 仍是碎卡片式短句。
+  于是把 standard **固化进线上简约档（默认）**：
+  - `src/prompts/exemplarStandard.ts`：示范正文常量（生成器从 standard.md 转出，反引号转义）；
+  - `buildSystemPrompt('concise')` = 骨架 + 一句指针（`EXEMPLAR_STYLE_POINTER`）+ `exemplarSection(标准示范)`
+    排在输出契约之后；严谨档不动（另一档口味，用户没要求变）；
+  - `exemplarSection` / `EXEMPLAR_STYLE_POINTER` 由实验台与线上**共用**（措辞零漂移）；
+  - `test/exemplarStandard.test.ts` 耦合锁：线上常量必须与 standard.md 标记后正文一字不差
+    —— **改示范的正确顺序：改 .md → 重跑生成器抄进常量 → 锁绿灯 → 提交**；
+  - 后续"更详细/更精简"示范：复制 standard.md 改名（detailed.md / concise.md）→ lab 对比 →
+    胜出者替换 standard.md + 常量。
 - **D90（示例驱动 + 修历史文件夹，2026-09-19）**「我不要 prompt，我要例子。修改示范我改好了，称为标准」：
   - **风格改为例子驱动**：D89 的六个"候选风格指令"（prompt 文本）撤下（`docs/style-candidates.md` 删除）
     —— 用户明确不要抽象 prompt 描述。`scripts/style-lab/exemplar/standard.md` 是用户**定稿的标准示范**

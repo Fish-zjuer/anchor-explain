@@ -40,20 +40,20 @@ test('两档风格都要求"按数据怎么流"组织步骤（这是用户最在
   }
 });
 
-test('两档都要"少讲废话"：不复述代码、不写开场白', () => {
-  for (const style of ['concise', 'rigorous'] as const) {
-    const prompt = buildSystemPrompt(style);
-    assert.match(prompt, /不要写成摘要式套话/, style);
-    assert.match(prompt, /不要复述代码已经写出来的东西/, style);
-  }
+test('两档都要"少讲废话"：不复述代码、不写开场白（各自的说法不同，但都在）', () => {
+  // 简约档 D91 起改为示范驱动：这条纪律由指针一句话带出，细节全在示范里；
+  // 严谨档仍是完整的指令文本，原来的两句话原样保留。
+  assert.match(buildSystemPrompt('concise'), /不写开场白、不复述代码/);
+  const rigorous = buildSystemPrompt('rigorous');
+  assert.match(rigorous, /不要写成摘要式套话/);
+  assert.match(rigorous, /不要复述代码已经写出来的东西/);
 });
 
-test('简约档：禁用术语（除非它就是代码里的标识符），且要有长度约束', () => {
+test('简约档：不再用指令描述风格，而是整个搬进标准示范（D91）', () => {
   const prompt = buildSystemPrompt('concise');
-  assert.match(prompt, /\*\*简约档\*\*/);
-  assert.match(prompt, /不要用术语/);
-  assert.match(prompt, /它就是这段代码里的标识符/);
-  assert.match(prompt, /超过 40 个字/, '一句话的长度上限是防名词堆砌的具体手段');
+  assert.match(prompt, /## 示范（输出的\*\*长相与口吻\*\*以此为准）/);
+  assert.match(prompt, /留一个空位/, '用户定稿的示范正文真的在里面');
+  assert.match(prompt, /内容必须全部来自用户这次的锚点/, '必须防"照抄示范"的那句话也在');
 });
 
 test('严谨档：术语可以用，但必须落到具体位置并说清依据', () => {

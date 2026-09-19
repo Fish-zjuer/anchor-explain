@@ -110,7 +110,7 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 
 | 值 | 什么意思 |
 |---|---|
-| `concise`（默认） | **简约**：说人话，能用大白话讲清就不用术语；一句话一个动作 |
+| `concise`（默认） | **简约**（D91 起 = **标准示范驱动**）：讲解的长相与口吻以 `scripts/style-lab/exemplar/standard.md` 里用户定稿的标准示范为准（few-shot 进 prompt）——像人话、顺着数据流、每步讲清因果与后果 |
 | `rigorous` | **严谨**：术语可以用，但每个都要落到这段代码的具体位置上，并说清依据（不变量、边界、返回值） |
 
 ```jsonc
@@ -144,12 +144,12 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 ### 讲解风格实验室（D89 起，D90 起**例子驱动**）
 
 风格不靠抽象指令描述，靠**示范**：`scripts/style-lab/exemplar/standard.md` 是用户定稿的
-「标准示范」（讲解的长相与口吻以它为准，作为 few-shot 进 prompt）。要制定**更详细 / 更精简**的
-示范，复制该文件换个名字（如 `detailed.md` / `concise.md`），只改 `ANCHOR_EXEMPLAR_START`
-标记之后的内容 —— **每个示范文件就是一个变体**。跑 `pnpm style:lab`（需要
-`ANCHOR_LAB_API_KEY`；加 `--baseline` 可带上"无示范"的现行线上行为作对照），产物在
-`.style-lab-out/`：`blind/` 里是匿名乱序的盲评稿，按"像人话程度/信息量/数据流/位置好懂"打分，
-评完开 `key.md` 对答案，选出最好的示范再固化进扩展。
+「标准示范」，**线上简约档（默认）已经整份用它做 few-shot**（D91 固化；有耦合锁保证线上常量与
+这个文件一字不差）。要制定**更详细 / 更精简**的示范，复制该文件换个名字（如 `detailed.md` /
+`concise.md`），只改 `ANCHOR_EXEMPLAR_START` 标记之后的内容 —— **每个示范文件就是一个变体**，
+新示范要上线就替换 standard.md 并同步常量（锁会提醒）。跑 `pnpm style:lab`（需要
+`ANCHOR_LAB_API_KEY`；`--baseline` 是"无示范的旧简约档"对照），产物在 `.style-lab-out/`：
+`blind/` 里是匿名乱序的盲评稿，按"像人话程度/信息量/数据流/位置好懂"打分，评完开 `key.md` 对答案。
 
 ### 固定按钮与开始界面（S8）
 
