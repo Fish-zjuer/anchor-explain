@@ -167,8 +167,8 @@ function loadAnchors(): LabAnchor[] {
  * 抽象指令写多了就又回到"prompt 描述风格"的老路（用户 D90 明确不要）。
  */
 function systemPromptFor(variant: ExemplarVariant): string {
-  // baseline = 线上简约档**之前**的样子（纯指令、无示范）—— 它是"例子带来多少提升"的对照。
-  // （D91 起线上简约档本身已是"标准示范驱动"，所以 baseline 与线上不再相同，特此说明。）
+  // baseline = 纯指令简约档（无示范）。D92 起它就是线上的简约档；标准示范走 standard 档 ——
+  // 这份对照仍然有用：量"示范到底带来多少提升"。
   const base = buildSystemPromptWithStyleSection(
     variant.body === undefined ? builtinStyleSection('concise') : EXEMPLAR_STYLE_POINTER,
   );

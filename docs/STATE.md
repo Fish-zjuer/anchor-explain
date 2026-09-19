@@ -340,6 +340,17 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   `evaluateSessionEnd()`。红→绿实测：注释掉两条分支后链式冒烟 6 条 FAIL（`session:end 10 → 11`），
   恢复即绿。顺带修掉一个"假的绿"：冒烟桩把 `openTextDocument` 放在 `window` 下，而真实 API 在
   `workspace` 上 —— 跨文件那条路一直没被跑到过（与约束 111 / 112 同一类陷阱）。
+- **D92（新增「标准」档，2026-09-19）**「新增档位：标准，对应我的标准」：
+  - `anchorExplain.style` 三档：**`standard`（新增，默认）** = 标准示范驱动（`EXEMPLAR_STYLE_POINTER`
+    指针 + `exemplarSection(标准示范)`，即 D91 固化的那套，从简约档里独立成档）；
+    **`concise`** 回到 D65 的纯指令简约版（`**简约档**`、40 字上限那些硬要求原样回归）；
+    **`rigorous`** 不动。示范是标准档专属 —— 简约/严谨都不吃示范。
+  - 改默认档的理由：用户造标准示范就是为了替换默认讲法；若默认仍停在简约，
+    等于修好了却不开。设置里存过旧值的用户不受影响（`concise`/`rigorous` 仍是合法值）。
+  - 同步面：package.json（enum/default/说明）、config.ts 走 coerceStyle（自动三档）、
+    prompts.test.ts（三档断言 + 默认档改为 standard）、config.test.ts、
+    exemplarStandard.test.ts（示范专属标准档的锁）、README、CONTRACTS §6、lab 的 baseline 注释
+    （baseline = 纯指令简约档，恰是线上简约档）。
 - **D91（标准示范固化进线上，2026-09-19）**「你帮我操作」：用「API keys」文件夹里
   「DeepSeek project——Anchor——test」的 key 跑了实验台（standard vs baseline × 4 锚点，8/8 成功），
   逐份评审：**standard 在四个锚点上都稳定复现示范口吻** —— 每步是一段连贯的因果叙述

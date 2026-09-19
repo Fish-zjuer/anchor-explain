@@ -29,8 +29,8 @@ const CODE_ANCHOR: Anchor = {
   extractedText: 'static int rb_pop(...)',
 };
 
-test('两档风格都要求"按数据怎么流"组织步骤（这是用户最在意的那一条）', () => {
-  for (const style of ['concise', 'rigorous'] as const) {
+test('三档都要求"按数据怎么流"组织步骤（这是用户最在意的那一条）', () => {
+  for (const style of ['standard', 'concise', 'rigorous'] as const) {
     const prompt = buildSystemPrompt(style);
     assert.match(prompt, /按数据怎么流/, style);
     assert.match(prompt, /从哪来/, style);
@@ -40,20 +40,33 @@ test('两档风格都要求"按数据怎么流"组织步骤（这是用户最在
   }
 });
 
-test('两档都要"少讲废话"：不复述代码、不写开场白（各自的说法不同，但都在）', () => {
-  // 简约档 D91 起改为示范驱动：这条纪律由指针一句话带出，细节全在示范里；
-  // 严谨档仍是完整的指令文本，原来的两句话原样保留。
-  assert.match(buildSystemPrompt('concise'), /不写开场白、不复述代码/);
-  const rigorous = buildSystemPrompt('rigorous');
-  assert.match(rigorous, /不要写成摘要式套话/);
-  assert.match(rigorous, /不要复述代码已经写出来的东西/);
+test('三档都要"少讲废话"：不复述代码、不写开场白（各自的说法不同，但都在）', () => {
+  // 标准档靠指针一句话；简约/严谨档仍在指令文本里带着这两条（D65 的原话）。
+  assert.match(buildSystemPrompt('standard'), /不写开场白、不复述代码/);
+  assert.match(buildSystemPrompt('concise'), /不要写成摘要式套话/);
+  assert.match(buildSystemPrompt('concise'), /不要复述代码已经写出来的东西/);
+  assert.match(buildSystemPrompt('rigorous'), /不要写成摘要式套话/);
+  assert.match(buildSystemPrompt('rigorous'), /不要复述代码已经写出来的东西/);
 });
 
-test('简约档：不再用指令描述风格，而是整个搬进标准示范（D91）', () => {
-  const prompt = buildSystemPrompt('concise');
+test('标准档（默认）：整个搬进标准示范，示范排在输出契约之后（D92）', () => {
+  const prompt = buildSystemPrompt('standard');
   assert.match(prompt, /## 示范（输出的\*\*长相与口吻\*\*以此为准）/);
   assert.match(prompt, /留一个空位/, '用户定稿的示范正文真的在里面');
-  assert.match(prompt, /内容必须全部来自用户这次的锚点/, '必须防"照抄示范"的那句话也在');
+  assert.match(prompt, /内容必须全部来自用户这次的锚点/, '防"照抄示范"的那句话也在');
+  assert.ok(
+    prompt.indexOf('## 输出') >= 0 && prompt.indexOf('## 示范（输出的**长相与口吻**以此为准）') > prompt.indexOf('## 输出'),
+    '示范在输出契约之后',
+  );
+});
+
+test('简约档：D92 起回到纯指令版（示范专属标准档），D65 的硬要求原样在', () => {
+  const prompt = buildSystemPrompt('concise');
+  assert.match(prompt, /\*\*简约档\*\*/);
+  assert.match(prompt, /不要用术语/);
+  assert.match(prompt, /它就是这段代码里的标识符/);
+  assert.match(prompt, /超过 40 个字/, '一句话的长度上限是防名词堆砌的具体手段');
+  assert.doesNotMatch(prompt, /## 示范/, '简约档不吃示范');
 });
 
 test('严谨档：术语可以用，但必须落到具体位置并说清依据', () => {
@@ -61,26 +74,36 @@ test('严谨档：术语可以用，但必须落到具体位置并说清依据',
   assert.match(prompt, /\*\*严谨档\*\*/);
   assert.match(prompt, /说清依据/);
   assert.match(prompt, /不变量、边界与返回值/);
+  assert.doesNotMatch(prompt, /## 示范/, '严谨档也不吃示范');
 });
 
-test('两档的指令确实不一样（改档不会白改）', () => {
-  assert.notEqual(buildSystemPrompt('concise'), buildSystemPrompt('rigorous'));
+test('三档的指令各不相同（改档不会白改）', () => {
+  const prompts = {
+    standard: buildSystemPrompt('standard'),
+    concise: buildSystemPrompt('concise'),
+    rigorous: buildSystemPrompt('rigorous'),
+  };
+  assert.notEqual(prompts.standard, prompts.concise);
+  assert.notEqual(prompts.standard, prompts.rigorous);
+  assert.notEqual(prompts.concise, prompts.rigorous);
 });
 
-test('不传档位时用默认档，且默认是简约（D65：用户嫌名词多）', () => {
-  assert.equal(DEFAULT_STYLE, 'concise');
+test('不传档位时用默认档，且默认是标准（D92：用户定稿的示范就是默认讲法）', () => {
+  assert.equal(DEFAULT_STYLE, 'standard');
   assert.equal(buildSystemPrompt(), buildSystemPrompt(DEFAULT_STYLE));
 });
 
-test('coerceStyle：只认严谨档，其余（含拼错）一律退化成默认', () => {
-  assert.equal(coerceStyle('rigorous'), 'rigorous');
+test('coerceStyle：三档各归各位，其余（含拼错）一律退化成默认', () => {
+  assert.equal(coerceStyle('standard'), 'standard');
   assert.equal(coerceStyle('concise'), 'concise');
-  for (const bad of ['严谨', 'RIGOROUS', '', null, undefined, 7, {}]) {
-    assert.equal(coerceStyle(bad), 'concise', JSON.stringify(bad));
+  assert.equal(coerceStyle('rigorous'), 'rigorous');
+  for (const bad of ['标准', 'SIMPLE', '', null, undefined, 7, {}]) {
+    assert.equal(coerceStyle(bad), DEFAULT_STYLE, JSON.stringify(bad));
   }
 });
 
-test('describeStyle：两档都有人话名（设置面板与显示状态共用）', () => {
+test('describeStyle：三档都有人话名（设置面板与显示状态共用）', () => {
+  assert.match(describeStyle('standard'), /标准/);
   assert.match(describeStyle('concise'), /简约/);
   assert.match(describeStyle('rigorous'), /严谨/);
 });

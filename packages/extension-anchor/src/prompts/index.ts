@@ -22,26 +22,31 @@ import { EXPLANATION_JSON_SHAPE, FETCH_CONTEXT_TOOL } from '../orchestrator/tool
 import { STANDARD_EXEMPLAR } from './exemplarStandard.ts';
 
 /**
- * 讲解风格（D65）。**两档，用户可选**（`anchorExplain.style`）：
+ * 讲解风格（D65 两档起家，D92 起三档，用户可选，`anchorExplain.style`）：
  *
- * - `concise`（简约，默认）：说人话，能用大白话就不用术语 —— 用户的原话是
- *   "不要那么多名词什么的，要不还不如读代码本身了"。
+ * - `standard`（**标准**，D92 新增，默认）：讲解的长相与口吻以「标准示范」为准 ——
+ *   用户 D90 定稿的那份示范整个进 prompt 做 few-shot（D91 实测它在因果完整度与口吻上
+ *   稳定优于纯指令版）。**"像人话"描述不出来，但可以示范出来。**
+ * - `concise`（简约）：回到 D65 的纯指令版 —— 说人话，能用大白话讲清就不用术语；
+ *   一句话一个动作。用户对它的原话是"不要那么多名词什么的，要不还不如读代码本身了"。
  * - `rigorous`（严谨）：术语可以用，但每个术语都要落到这段代码的具体位置上，并说清依据
  *   （不变量、边界、返回值）。
  *
- * **两档共享的那一条更重要**：步骤按**数据怎么流**来切，不按从上到下的行序 ——
+ * **三档共享的那条更重要**：步骤按**数据怎么流**来切，不按从上到下的行序 ——
  * 用户的原话是"太从上到下了，我希望能表达出数据流转的感觉"。
  */
-export type ExplainStyle = 'concise' | 'rigorous';
+export type ExplainStyle = 'standard' | 'concise' | 'rigorous';
 
-export const DEFAULT_STYLE: ExplainStyle = 'concise';
+export const DEFAULT_STYLE: ExplainStyle = 'standard';
 
 export function coerceStyle(raw: unknown): ExplainStyle {
-  return raw === 'rigorous' ? 'rigorous' : DEFAULT_STYLE;
+  if (raw === 'standard' || raw === 'concise' || raw === 'rigorous') return raw;
+  return DEFAULT_STYLE;
 }
 
 /** 风格的人话名。设置面板、`显示状态` 与测试共用。 */
 export function describeStyle(style: ExplainStyle): string {
+  if (style === 'standard') return '标准（口吻与颗粒度以「标准示范」为准）';
   return style === 'rigorous' ? '严谨（术语可用，但要说清依据）' : '简约（说人话，少用术语）';
 }
 
@@ -83,18 +88,16 @@ export function buildSystemPrompt(
   style: ExplainStyle = DEFAULT_STYLE,
   options: { crossFile?: boolean; maxFetchLines?: number } = {},
 ): string {
-  // D91：简约档（默认）不再用一段指令**描述**风格，而是把用户定稿的标准示范**整个搬进来**
-  //（few-shot）。"像人话"这件事描述不出来，但可以示范出来 —— 实验台实测（D91，4 锚点 ×
-  // standard/baseline）示范驱动的输出在因果完整度与口吻上都稳定优于纯指令档。
-  // 严谨档保持原指令文本不动：那是另一档口味，用户没有要求它变。
-  if (style !== 'concise') {
-    return buildSystemPromptWithStyleSection(styleSection(style), options);
+  // D92：三档分工 —— standard（默认）= 标准示范驱动（D91 实测胜者，示范整个进 prompt 做 few-shot）；
+  // concise / rigorous = D65 的两套纯指令文本，谁也不吃示范（示范是标准档专属）。
+  if (style === 'standard') {
+    return (
+      buildSystemPromptWithStyleSection(EXEMPLAR_STYLE_POINTER, options) +
+      '\n\n' +
+      exemplarSection(STANDARD_EXEMPLAR)
+    );
   }
-  return (
-    buildSystemPromptWithStyleSection(EXEMPLAR_STYLE_POINTER, options) +
-    '\n\n' +
-    exemplarSection(STANDARD_EXEMPLAR)
-  );
+  return buildSystemPromptWithStyleSection(styleSection(style), options);
 }
 
 /**
@@ -214,11 +217,11 @@ function fetchSourceRule(crossFile: boolean, maxFetchLines?: number): string {
  * D89：实验台也需要这两档的**原文**（变体A 是现行简约档的对照组），
  * 所以从这里导出一份只读入口 —— 变体的措辞改在这里，实验室自动跟上。
  */
-export function builtinStyleSection(style: ExplainStyle): string {
+export function builtinStyleSection(style: Exclude<ExplainStyle, 'standard'>): string {
   return styleSection(style);
 }
 
-function styleSection(style: ExplainStyle): string {
+function styleSection(style: Exclude<ExplainStyle, 'standard'>): string {
   const shared = [
     '- `summary` 一句话说清**这块在干什么、数据从哪到哪**，不要写成摘要式套话。',
     '- 不要写"这段代码实现了一个……它的作用是……"这种开场白，直接讲事情。',

@@ -23,8 +23,8 @@ test('耦合锁：线上常量与 exemplar/standard.md 标记之后的正文一�
   assert.equal(STANDARD_EXEMPLAR, md.slice(at + MARKER.length).trim(), '两边副本不一致 —— 改了示范要两边同步（或跑一遍生成器）');
 });
 
-test('线上简约档 = 指针 + 标准示范，示范排在输出契约之后（它是一节的结尾，不是插在中间的注脚）', () => {
-  const prompt = buildSystemPrompt('concise');
+test('线上标准档（默认）= 指针 + 标准示范，示范排在输出契约之后（它是一节的结尾，不是插在中间的注脚）', () => {
+  const prompt = buildSystemPrompt('standard');
   assert.match(prompt, /以文末「示范」为准/, '说话的方式一节只剩指针');
   assert.ok(prompt.includes(exemplarSection(STANDARD_EXEMPLAR)), '示范小节整段在线上 prompt 里');
   assert.ok(
@@ -34,8 +34,10 @@ test('线上简约档 = 指针 + 标准示范，示范排在输出契约之后�
   assert.match(prompt, /留一个空位/, '示范正文真的在里面（用户定稿的那份，不是别的什么话）');
 });
 
-test('严谨档不吃示范（那是另一档口味，用户没有要求它变）', () => {
-  const prompt = buildSystemPrompt('rigorous');
-  assert.doesNotMatch(prompt, /## 示范/);
-  assert.ok(!prompt.includes(EXEMPLAR_STYLE_POINTER), '指针也不该出现');
+test('示范专属标准档：严谨档与简约档都不吃示范（D92）', () => {
+  for (const style of ['rigorous', 'concise'] as const) {
+    const prompt = buildSystemPrompt(style);
+    assert.doesNotMatch(prompt, /## 示范/, style);
+    assert.ok(!prompt.includes(EXEMPLAR_STYLE_POINTER), `${style} 连指针也不该出现`);
+  }
 });

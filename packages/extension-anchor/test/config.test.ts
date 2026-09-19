@@ -219,13 +219,14 @@ test('promoteFlattenedProviders：整理成正确形状，且**已经写对的�
   assert.deepEqual(promoteFlattenedProviders('坏东西', 'default'), {});
 });
 
-test('style：认两档、非法值退化成默认（写错一个词不该让讲解不可用）', () => {
+test('style：认三档、非法值退化成默认（写错一个词不该让讲解不可用）', () => {
   const base = { providers: {}, activeProvider: 'default', maxFetchRounds: 3, preferSecretStorage: true };
+  assert.equal(resolveConfig({ ...base, style: 'standard' }).style, 'standard');
   assert.equal(resolveConfig({ ...base, style: 'rigorous' }).style, 'rigorous');
   assert.equal(resolveConfig({ ...base, style: 'concise' }).style, 'concise');
-  assert.equal(resolveConfig(base).style, 'concise', '不配就是简约（D65 的默认档）');
+  assert.equal(resolveConfig(base).style, 'standard', '不配就是标准（D92：用户定稿的示范是默认讲法）');
   for (const bad of ['严谨', 'Concise ', 42, null]) {
-    assert.equal(resolveConfig({ ...base, style: bad }).style, 'concise', JSON.stringify(bad));
+    assert.equal(resolveConfig({ ...base, style: bad }).style, 'standard', JSON.stringify(bad));
   }
 });
 
