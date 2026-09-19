@@ -127,7 +127,10 @@ function outputShapeSection(crossFile: boolean): string {
     '- <子点>',
     '- <子点>',
     '',
-    '行号必须来自用户代码的编辑器行号，从 1 起。步骤划分按代码的功能块，不按空行硬拆。',
+    '行号必须来自用户代码的编辑器行号，从 1 起。步骤划分按代码的功能块，不按空行硬拆；',
+    '组织时讲清数据在这一段里怎么流动 —— 从哪来、在这里被怎么改、出去给谁用 —— ' +
+      '不要从上到下逐行念代码（详细档的逐行解释除外）。',
+    '粒度参考：一步 ≈ 3-8 行的一个完整动作；一个子点 ≈ 1-2 行的一个关键点。',
     '',
     // 扩展适配：模板原文是"字段为 summary、steps；steps 内放 title、line_range、points"，
     // 这里按本扩展的真实 schema 落（line_range ↔ location，points ↔ highlights）。
@@ -135,7 +138,13 @@ function outputShapeSection(crossFile: boolean): string {
       'location（行区间：filePath / lineStart / lineEnd，即 line_range）、intro、text、' +
       'highlights（即 points：location + narration，emphasis 可选）。文本内容仍遵守下面的规则。',
     '',
+    // 扩展适配：把"程序怎么读你的输出"明说 —— 模型知道行号的后果，才不会随手写错。
+    '程序会读取这份 JSON：`location` 决定高亮画在哪几行（行号错，高亮就错位），' +
+      '`narration` 显示在侧边栏，`title` 是步骤标题。',
+    '',
     explainOutputContract(crossFile),
+    '',
+    '（`emphasis` 只决定高亮颜色与侧边栏的小标签；不要把「重点 / 上下文 / 定义 / 注意」这类词写进讲解文字里 —— 见通用规则 7。）',
   ].join('\n');
 }
 

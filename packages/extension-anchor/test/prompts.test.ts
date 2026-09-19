@@ -64,13 +64,19 @@ test('通用规则原文钉住（用户 D94 的硬要求，改措辞会红）', 
   assert.match(prompt, /避免模板腔和 AI 味/);
 });
 
-test('输出形状：用户模板的文本形状 + 扩展真实 JSON 契约（D94 的两处适配之一）', () => {
+test('输出形状：用户模板的文本形状 + 程序读取规则 + 扩展真实 JSON 契约（D94/D95 适配点）', () => {
   const prompt = buildSystemPrompt('standard');
   assert.match(prompt, /按代码的功能块，不按空行硬拆/);
+  // D95：模板只是参考 —— 我们自己的两条硬要求合并了回来
+  assert.match(prompt, /讲清数据在这一段里怎么流动 —— 从哪来、在这里被怎么改、出去给谁用/);
+  assert.match(prompt, /粒度参考：一步 ≈ 3-8 行的一个完整动作/);
+  // D95：程序怎么读 JSON 要明说（行号错 = 高亮错位）
+  assert.match(prompt, /程序会读取这份 JSON：`location` 决定高亮画在哪几行/);
   assert.match(prompt, /若上游要求 JSON（本扩展就是），字段为 summary、confidence、steps/);
   assert.match(prompt, /highlights（即 points：location \+ narration，emphasis 可选）/);
   assert.match(prompt, /最终回答必须是\*\*一个 JSON 对象\*\*/, '真实 schema 的契约整段保留');
   assert.match(prompt, /行号一律是\*\*从文件第一行开始数的 1-based 行号\*\*/);
+  assert.match(prompt, /不要把「重点 \/ 上下文 \/ 定义 \/ 注意」这类词写进讲解文字里/, 'emphasis 只管颜色，不进文字');
 });
 
 test('档位规则只进当前档的一节（跨档串味是示范驱动最怕的事）', () => {
