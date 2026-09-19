@@ -191,7 +191,7 @@ export function describeConfig(config: AnchorConfig): string {
 export function checkBaseUrl(raw: string): string | null {
   const value = raw.trim();
   if (value === '') return '不能为空';
-  if (!/^https?:\/\//iu.test(value)) return '要带上协议头，例如 https://api.deepseek.com/v1';
+  if (!/^https?:\/\//iu.test(value)) return '要带上协议头，例如 https://api.deepseek.com';
   if (/\/chat\/completions\/?$/iu.test(value)) return '不要带 /chat/completions —— 我们自己在后面拼它';
   return null;
 }

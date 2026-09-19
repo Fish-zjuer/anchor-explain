@@ -15,18 +15,21 @@ body {
   padding: 12px 12px 24px;
   color: var(--vscode-foreground);
   font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size, 13px);
+  /* D89：与讲解面板同一条公式 —— 基准字号乘用户自己的缩放系数。
+     下面原来的固定 px（15/12/11）全部换成 em：这个面板过去在 VS Code 缩放下
+     标题和正文各走各的，现在整块等比例伸缩，结构不再散架。 */
+  font-size: calc(var(--vscode-font-size, 13px) * var(--anchor-font-scale, 1));
   line-height: 1.5;
 }
 
 .head { margin-bottom: 16px; }
-.head .brand { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
-.head .sub { color: var(--vscode-descriptionForeground); font-size: 12px; margin-top: 2px; }
+.head .brand { font-size: 1.15em; font-weight: 600; letter-spacing: 0.02em; }
+.head .sub { color: var(--vscode-descriptionForeground); font-size: 0.92em; margin-top: 2px; }
 
 .section { margin-bottom: 18px; }
 .section > h2 {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: 0.85em;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -48,7 +51,7 @@ body {
 
 .chord {
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 11px;
+  font-size: 0.85em;
   padding: 1px 5px;
   border-radius: 4px;
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
@@ -56,11 +59,11 @@ body {
   white-space: nowrap;
 }
 
-.note { color: var(--vscode-descriptionForeground); font-size: 12px; margin: 4px 0 8px; }
+.note { color: var(--vscode-descriptionForeground); font-size: 0.92em; margin: 4px 0 8px; }
 
 button.run {
   font-family: inherit;
-  font-size: 12px;
+  font-size: 0.92em;
   padding: 3px 10px;
   border: none;
   border-radius: 4px;
@@ -71,7 +74,7 @@ button.run {
 button.run:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
 button.run:disabled { cursor: default; opacity: 0.5; }
 
-.status-line { display: flex; gap: 8px; font-size: 12px; padding: 2px 0; }
+.status-line { display: flex; gap: 8px; font-size: 0.92em; padding: 2px 0; }
 .status-line .label { flex: 0 0 62px; color: var(--vscode-descriptionForeground); }
 .status-line .value { flex: 1 1 auto; word-break: break-word; }
 .status-line.ok .value { color: var(--vscode-foreground); }

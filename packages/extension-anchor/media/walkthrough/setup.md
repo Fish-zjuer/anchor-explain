@@ -9,7 +9,7 @@
 ```json
 {
   "anchorExplain.providers": {
-    "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" }
+    "default": { "baseUrl": "https://api.deepseek.com", "tier1Model": "deepseek-flash" }
   }
 }
 ```

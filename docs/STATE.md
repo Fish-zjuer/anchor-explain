@@ -117,9 +117,9 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
 1. 起宿主（F5 或 `pnpm devhost`；**`devhost` 不会自动构建，改完代码先 `pnpm build`**）
 2. `Ctrl+Shift+P` → `Anchor: 设置 API Key` → 选 provider → 粘贴 key（存进 SecretStorage，**不进 settings.json**）
 3. 设置里填 `anchorExplain.providers`：
-   `{ "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" } }`
+   `{ "default": { "baseUrl": "https://api.deepseek.com", "tier1Model": "deepseek-flash" } }`
    （端点 + 模型名由你选；一个 OpenAI 兼容实现覆盖 OpenAI / DeepSeek / 通义 / Ollama）
-4. `Anchor: 显示状态` → 应看到「模型：default：deepseek-chat @ https://api.deepseek.com/v1；最多取件 3 次」
+4. `Anchor: 显示状态` → 应看到「模型：default：deepseek-flash @ https://api.deepseek.com；最多取件 3 次」
 5. 选中 `main.c` 一段 → `Ctrl+Shift+A` → 确认 → **这次的讲解内容是真的了**
    （不再是 `rb_pop` 那段写死文本；高亮位置也应落在你选的那段附近）
 6. 想看 AI 有没有取件、取件被拒的理由 → 输出面板选「Anchor」通道
@@ -340,6 +340,28 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   `evaluateSessionEnd()`。红→绿实测：注释掉两条分支后链式冒烟 6 条 FAIL（`session:end 10 → 11`），
   恢复即绿。顺带修掉一个"假的绿"：冒烟桩把 `openTextDocument` 放在 `window` 下，而真实 API 在
   `workspace` 上 —— 跨文件那条路一直没被跑到过（与约束 111 / 112 同一类陷阱）。
+- **D89（五件套，2026-09-19）**「字号自己调 / 讲解要能带走 / 报错高亮别捣乱 / 端点示例按官方文档 /
+  讲解风格不像人话」：
+  - **字号**：讲解面板自己的缩放系数（`--anchor-font-scale`，0.75–1.75、步进 10%，存 workspaceState），
+    面板头部 A−/A+ + 新命令 `fontLarger`/`fontSmaller`/`fontReset`（键 `ctrl+alt+=`/`ctrl+alt+-`）。
+    开始面板跟随同一系数、固定 px 全改 em —— VS Code 的 Ctrl+=/- 缩放窗口、我们缩放面板，互不相干。
+  - **导出与历史**：每次讲解成功自动把同一份存档渲染成 Markdown 落 `globalStorage/history/`
+    （用户选定：扩展私有目录，不进工作区不碰 git）；`exportLast` 另存为 + `openHistoryFolder`
+    开文件夹 + 面板一行两颗按钮。渲染函数 `exportNotes.ts` 是导出与自动存的**唯一**格式化处。
+  - **报错遮罩**：讲解期间 `problems.visibility` 切到 false（错误/警告/提示全藏，只剩我们的高亮），
+    退出/收工/扩展卸载时按 `problemsVeilRule.restoreAction` 的判据**精确还原**（原值可能是
+    undefined=删键）；记录存 workspaceState，崩溃后 activate 的 `recover()` 补还原。
+    已知边界：该设置是窗口级全局，讲解期间同机其他窗口的波浪线也一起消失。
+  - **DeepSeek 示例按官方文档**：base_url `https://api.deepseek.com`（不带 /v1）、模型名
+    `deepseek-flash`（`deepseek-chat` 已不在官方文档里）—— package.json / config / commands /
+    README×2 / CONTRACTS / STATE / setup.md / smoke 全部同步。
+  - **风格两条线（本轮只搭台，不改线上 prompt）**：`buildSystemPromptWithStyleSection` 让
+    "说话的方式"一节可注入；`docs/style-candidates.md` 六个候选风格全文（A=现行对照，用户直接改，
+    实验台按 `## 变体X` 切分读取）；`scripts/style-lab/exemplar/draft.md` 示范初稿（用户改成
+    "像人话"的金标准，`ANCHOR_EXEMPLAR_START` 之后原样进 system prompt「示范」小节）；
+    `scripts/style-lab.ts` 同锚点同温度跑全部变体 → `blind/` 盲评稿 + `key.md` 答案表（断点续跑、
+    `--dry-run` 验 prompt、`--no-exemplar` 对比）。**下一轮**：用户审候选、改示范 → 跑 lab →
+    盲评选胜者 → 固化进 `styleSection`（或新增 style 枚举值）。
 - **D85（新能力）**「把这个插件变成可分发的形式」：`.vsix` 本地安装包（**双击即装**），
   `pnpm package:vsix` 一条命令出两个包，产物落 `release/`。包里**没有源码、没有任何 key** ——
   打包脚本把 `.vsix` 读回来核"禁带"清单（src/test/map/lockfile/env），再把每个 entry 解压出来扫密钥特征。

@@ -35,7 +35,10 @@ body {
   margin: 0;
   padding: 0;
   font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size);
+  /* D89：基准字号 = VS Code 字号 × 用户自己的缩放系数。系数变了只动这一行 ——
+     下面的字号全是 em，整块布局等比例伸缩；固定槽宽（--anchor-gutter-w / --anchor-tag-w）
+     不跟着缩，那是"列对齐"的职责，不能被字号动摇。 */
+  font-size: calc(var(--vscode-font-size, 13px) * var(--anchor-font-scale, 1));
   color: var(--vscode-foreground);
   background: var(--vscode-sideBar-background);
   line-height: 1.6;
@@ -80,6 +83,32 @@ body {
   border-color: var(--vscode-focusBorder);
   color: var(--vscode-foreground);
   font-weight: 600;
+}
+
+/* ── 字号调节（D89）：头部右下的两颗小按钮 ──────────────────── */
+
+.font-tools {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* 配色与尺寸复用工具条按钮那一套：同一块面板里不该有两种"小按钮"长相 */
+.font-tools button {
+  font: inherit;
+  font-size: 0.8em;
+  line-height: 1.2;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  border: none;
+  border-radius: var(--anchor-radius);
+  padding: 2px 9px;
+  cursor: pointer;
+}
+
+.font-tools button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
 }
 
 /* ── 步骤列表 ───────────────────────────────────────────────── */
@@ -225,7 +254,8 @@ body {
 }
 
 .toolbar button,
-.rerun button {
+.rerun button,
+.tools button {
   font: inherit;
   font-size: 0.9em;
   color: var(--vscode-button-secondaryForeground);
@@ -237,10 +267,12 @@ body {
 }
 
 .toolbar button:hover:not(:disabled),
-.rerun button:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+.rerun button:hover:not(:disabled),
+.tools button:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
 
 .toolbar button:disabled,
-.rerun button:disabled { opacity: 0.45; cursor: default; }
+.rerun button:disabled,
+.tools button:disabled { opacity: 0.45; cursor: default; }
 
 .trace { margin-top: 12px; font-size: 0.82em; padding-bottom: var(--anchor-gap); }
 
@@ -283,6 +315,17 @@ body {
   gap: 6px;
   margin-top: 6px;
   padding-bottom: var(--anchor-gap);
+}
+
+/**
+ * D89：导出讲解 / 历史文件夹那一行。紧跟在工具条下面、取件日志上面，
+ * 是"把成果拿走"的出口；按钮长相复用 .rerun 那一套（见合并后的选择器）。
+ */
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .empty { color: var(--vscode-descriptionForeground); }

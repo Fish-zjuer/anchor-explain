@@ -19,6 +19,7 @@
     "link:ext": "pnpm build && node scripts/link-extension.mjs",
     "unlink:ext": "node scripts/link-extension.mjs --uninstall",
     "preview:sidebar": "node scripts/preview-sidebar.mjs --serve",
+    "style:lab": "node packages/extension-anchor/scripts/style-lab.ts",
     "smoke": "node scripts/smoke-extension.mjs",
     "smoke:chain": "node scripts/smoke-walkthrough.mjs",
     "smoke:fileswitch": "node scripts/smoke-file-switch.mjs",

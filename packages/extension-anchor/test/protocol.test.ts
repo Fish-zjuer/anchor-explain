@@ -85,7 +85,19 @@ test('parseSidebarMessage：无参消息放行', () => {
   // 不带任何参数 —— 要重放哪一份、要重新问谁，全由宿主按存档决定。
   // 让面板能带参数（比如自己指定一份讲解）等于让外部输入能指定要放什么，
   // 与 §5.5「只回传动作 id」是同一条立场。
-  for (const type of ['ui:ready', 'ui:next', 'ui:prev', 'ui:stop', 'ui:replay', 'ui:reExplain']) {
+  // D89 的四个（字号×2 / 导出 / 历史）同理：系数调到多少、导到哪儿，都是宿主的事。
+  for (const type of [
+    'ui:ready',
+    'ui:next',
+    'ui:prev',
+    'ui:stop',
+    'ui:replay',
+    'ui:reExplain',
+    'ui:fontLarger',
+    'ui:fontSmaller',
+    'ui:export',
+    'ui:openHistory',
+  ]) {
     assert.deepEqual(parseSidebarMessage({ type }), { type });
   }
 });

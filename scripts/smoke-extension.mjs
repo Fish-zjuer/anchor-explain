@@ -505,12 +505,12 @@ SETTINGS.providers = undefined;
 SETTINGS.activeProvider = undefined;
 settingsWrites.length = 0;
 // providers 是空的 → 不问 provider id，只问 baseUrl 与模型名（两个答案按顺序排队）
-inputAnswers.push('https://api.deepseek.com', 'deepseek-chat');
+inputAnswers.push('https://api.deepseek.com', 'deepseek-flash');
 await configure?.();
 const providersWrite = settingsWrites.find((w) => w.key === 'providers');
 check(
   providersWrite?.value?.default?.baseUrl === 'https://api.deepseek.com' &&
-    providersWrite?.value?.default?.tier1Model === 'deepseek-chat',
+    providersWrite?.value?.default?.tier1Model === 'deepseek-flash',
   '三个输入框的答案真的写进了 providers.default',
   JSON.stringify(providersWrite?.value ?? null),
 );

@@ -231,6 +231,12 @@ export interface StartStatusItem {
 export interface StartModel {
   /** 面板顶部那句「随时按 X 打开这里」用的键；没绑就是 null */
   readonly openChord: string | null;
+  /**
+   * 讲解面板的字号缩放系数（D89）。开始面板跟随同一个系数（`startStyles.ts` 的同一
+   * 条 calc）—— 两个面板的字一起变大变小，比各调各的更符合"字号"这个词的直觉。
+   * 客户端每次收到模型就应用一次，所以系数变了不需要专门的推送通道。
+   */
+  readonly fontScale: number;
   readonly sections: StartSection[];
   readonly status: StartStatusItem[];
 }
@@ -238,6 +244,11 @@ export interface StartModel {
 export interface StartModelInput {
   /** 用户实际绑定（`statusBar.chords()` 的同一份） */
   readonly chords: ResolvedChords;
+  /**
+   * 讲解面板的字号缩放系数（D89）。**可选**：调用方忘了给就按 1 走 ——
+   * 这份模型是纯函数的输出，缺一个系数不该让它的既有调用点（含测试）全部跟着改。
+   */
+  readonly fontScale?: number;
   readonly providerReady: boolean;
   /** `describeConfig(...)` 的结果，原样显示 —— 配置好不好只有用户自己能判 */
   readonly providerSummary: string;
@@ -369,6 +380,10 @@ export function buildStartModel(input: StartModelInput): StartModel {
 
   return {
     openChord: formatOf(input.chords, 'showStart'),
+    fontScale:
+      typeof input.fontScale === 'number' && Number.isFinite(input.fontScale) && input.fontScale > 0
+        ? input.fontScale
+        : 1,
     sections,
     status,
   };

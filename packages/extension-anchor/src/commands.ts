@@ -83,6 +83,9 @@ import {
 } from './vscode/configSource.ts';
 import { createEditorPort } from './vscode/ports/editorPort.ts';
 import { countLines, createFileSystemPort } from './vscode/ports/fileSystemPort.ts';
+import { createProblemsVeil } from './vscode/problemsVeil.ts';
+import { explanationMarkdown, exportFileStem } from './session/exportNotes.ts';
+import { FONT_SCALE_KEY, clampFontScale, stepFontScale } from './sidebar/fontScale.ts';
 
 /** 线2 的扩展 ID（D27 定名，D86 起挂到作者自己的 publisher 下）。对端缺失时必须明确提示，不静默失败。 */
 const PDF_EXTENSION_ID = 'Fish-zjuer.anchor-pdf';
@@ -334,6 +337,19 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    */
   let segmentQueue: AnchorSegment[] = [];
 
+  // ───────────────────────────────────────────────────────────
+  // 讲解期间的「报错遮罩」（D89）
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * 讲解时只留我们自己的高亮：会话开始把官方的错误/警告/提示藏起来，退出时精确还原。
+   * 为什么必须是"切设置开关 + 原值还原"而不是画一层盖上去、为什么有崩溃恢复，
+   * 见 `vscode/problemsVeil.ts` 的文件头。activate（即本函数）先清一次残留 ——
+   * 上一个会话可能没走到 restore 就被杀了。
+   */
+  const veil = createProblemsVeil(context.workspaceState, (message) => note(message));
+  void veil.recover();
+
   /**
    * **上次讲解**的那一份存档（D83）。
    *
@@ -386,7 +402,122 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     } catch (err) {
       note(`上次讲解没能存下来（${describeError(err)}）—— 这一次仍然能重放，只是重启之后会丢`);
     }
+    // D89：同一份存档**自动**落一份 Markdown 进历史文件夹（扩展私有目录，不进工作区）。
+    // 异步、失败只进日志 —— 存历史是"多给一份"的事，没有资格拖住或弄坏讲解本身。
+    void autoSaveRun(run);
     refreshStart();
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // 讲解历史与导出（D89）
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * 历史文件夹：`globalStorage/history`。**刻意不放工作区里**：用户的选择是
+   * "扩展私有目录 + 自动存" —— 每次讲解都写文件，放进工作区会让 git status
+   * 被讲解记录刷屏；扩展私有目录不碰用户的东西，「打开历史文件夹」一条命令就能翻。
+   */
+  function historyDir(): vscode.Uri {
+    return vscode.Uri.joinPath(context.globalStorageUri, 'history');
+  }
+
+  /** 自动存档。与 `rememberRun` 里对 workspaceState 的态度一致：失败说明原因，绝不抛。 */
+  async function autoSaveRun(run: LastRun): Promise<void> {
+    try {
+      const dir = historyDir();
+      await vscode.workspace.fs.createDirectory(dir);
+      const file = vscode.Uri.joinPath(dir, `${exportFileStem(run.savedAt, run.anchor)}.md`);
+      await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(explanationMarkdown(run)));
+    } catch (err) {
+      note(`讲解历史没能存下来（${describeError(err)}）—— 讲解本身不受影响`);
+    }
+  }
+
+  /**
+   * 「导出上次讲解为 Markdown」（D89）。**另存为**而不是悄悄写死一个位置：
+   * 导出的文件用户是要拿去用的（发给同学、贴进笔记），落点该由他定 ——
+   * 默认路径给到历史文件夹，想存别处直接改。
+   */
+  async function exportLast(): Promise<void> {
+    const run = lastRunOf();
+    if (!run) {
+      void vscode.window.showWarningMessage('Anchor：还没有存下任何讲解 —— 先讲一次，之后就能导出。');
+      return;
+    }
+    try {
+      await vscode.workspace.fs.createDirectory(historyDir());
+    } catch (err) {
+      // 历史目录建不出来只影响默认路径，不该挡住另存为
+      note(`历史目录建不出来（${describeError(err)}）—— 另存为仍然可用`);
+    }
+    const suggested = vscode.Uri.joinPath(historyDir(), `${exportFileStem(run.savedAt, run.anchor)}.md`);
+    const target = await vscode.window.showSaveDialog({
+      title: 'Anchor：把上次讲解导出为 Markdown',
+      defaultUri: suggested,
+      filters: { Markdown: ['md'] },
+    });
+    if (!target) return; // 用户取消：不是失败，什么也不说
+    try {
+      await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(explanationMarkdown(run)));
+      note(`导出讲解：${target.fsPath}`);
+      const picked = await vscode.window.showInformationMessage(
+        `Anchor：已导出 ${basenameOf(target.fsPath)}`,
+        '打开文件夹',
+      );
+      if (picked) await openHistoryFolder();
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Anchor：导出失败 —— ${userFacing(err)}`);
+    }
+  }
+
+  /**
+   * 「打开讲解历史文件夹」（D89）。目录不存在就先建 —— "打开一个空文件夹"
+   * 也好过"报错说文件夹不存在"；第一次使用时历史里本来就是空的。
+   */
+  async function openHistoryFolder(): Promise<void> {
+    const dir = historyDir();
+    try {
+      await vscode.workspace.fs.createDirectory(dir);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Anchor：历史文件夹建不出来 —— ${userFacing(err)}`);
+      return;
+    }
+    // openExternal 对目录同样成立：Windows 开资源管理器，mac 开 Finder。
+    // 返回 false = 系统侧没接住，明说（不静默 —— "点了没反应"是最难排查的一类反馈，D63）。
+    const opened = await vscode.env.openExternal(dir);
+    if (opened) {
+      note(`打开历史文件夹：${dir.fsPath}`);
+    } else {
+      void vscode.window.showWarningMessage(`Anchor：没能打开历史文件夹，路径是 ${dir.fsPath}`);
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // 讲解面板的字号（D89）—— 独立于 VS Code 的 Ctrl+= / Ctrl+-
+  // ───────────────────────────────────────────────────────────
+
+  /** 缓存一份系数：`fontScaleOf` 在建面板与每次调整时都要读，Memento 的读也省就省。 */
+  let fontScale: number | undefined;
+
+  function fontScaleOf(): number {
+    if (fontScale === undefined) {
+      fontScale = clampFontScale(context.workspaceState.get(FONT_SCALE_KEY));
+    }
+    return fontScale;
+  }
+
+  function changeFontScale(direction: 'larger' | 'smaller' | 'reset'): void {
+    const next = stepFontScale(fontScaleOf(), direction);
+    fontScale = next;
+    try {
+      void context.workspaceState.update(FONT_SCALE_KEY, next);
+    } catch (err) {
+      note(`字号没能记住（${describeError(err)}）—— 本次会话内仍然生效`);
+    }
+    // 面板开着就立即生效；没开则下次建面板时从 workspaceState 拿到（内联进 HTML）
+    sidebar?.setFontScale(next);
+    refreshStart();
+    void vscode.window.setStatusBarMessage(`Anchor：讲解文字 ${Math.round(next * 100)}%`, 1500);
   }
 
   // 播放器与侧边栏都延迟构造：激活阶段不做任何 vscode 取值/建面板，启动开销为零，
@@ -423,6 +554,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // 所以在面板上也是两颗按钮，我们不替用户选。
     onReplay: () => replayLast(),
     onReExplain: () => void reExplainLast(),
+    // D89：字号、导出与历史文件夹。面板只回传动作 id，全部实现在命令那一侧（§5.5 同构）
+    onFontLarger: () => changeFontScale('larger'),
+    onFontSmaller: () => changeFontScale('smaller'),
+    onExport: () => void exportLast(),
+    onOpenHistory: () => void openHistoryFolder(),
   };
 
   /**
@@ -472,8 +608,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   function sidebarOf(): SidebarPanel {
     if (!sidebar || sidebar.disposed) {
-      // 把用户实际键位一并交给面板：webview 里的按键到不了工作台，得它自己派发（D47）
-      sidebar = SidebarPanel.create(handlers, status.chords());
+      // 把用户实际键位一并交给面板：webview 里的按键到不了工作台，得它自己派发（D47）。
+      // 字号系数同理内联（D89）：建面板那一刻的系数就是初值，之后的变更走消息。
+      sidebar = SidebarPanel.create(handlers, status.chords(), fontScaleOf());
     }
     return sidebar;
   }
@@ -552,6 +689,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     sidebarOf().reveal();
     unsubscribe = fresh.onDidChange(emit);
     setContextKey('anchorExplain.sessionOpen', true);
+    // D89：从这一刻起屏幕上只该有我们的高亮 —— 官方的错误/警告/提示先藏起来
+    //（退出讲解时 restore；若本机本来就看不见 problems，hide 是空操作、也不会还原任何东西）
+    void veil.hide();
     emit(fresh.snapshot);
   }
 
@@ -577,6 +717,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     setActive(false);
     setContextKey('anchorExplain.sessionOpen', false);
     status.hide();
+    // D89：官方的错误/警告/提示在这里回来。放在清框之前/之后无所谓 ——
+    // 它是设置写入，不依赖编辑器；失败只在日志里说话，不许把后面的收尾顶掉
+    void veil.restore();
 
     isolated('清框', () => player?.clear());
     isolated('侧边栏', () => {
@@ -716,6 +859,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
     return buildStartModel({
       chords: status.chords(),
+      // D89：开始面板跟随讲解面板的字号系数（模型每拍都会重推，系数变化自然跟过去）
+      fontScale: fontScaleOf(),
       providerReady: cfg.provider !== null,
       providerSummary: describeConfig(cfg),
       peerInstalled: peer() !== undefined,
@@ -1476,9 +1621,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       title: `Anchor：providers.${id}.baseUrl`,
       // 这里写的是**知识**，不是校验：`checkBaseUrl` 只管形状（协议头、有没有带 /chat/completions），
       // 而"Anthropic 兼容端点不通"是厂商事实 —— 放在看得见的地方，比悄悄拒绝好（真实踩过）。
-      prompt: 'OpenAI 兼容端点，例如 https://api.deepseek.com/v1 —— 不是 Anthropic 兼容那一个',
+      prompt: 'OpenAI 兼容端点，例如 https://api.deepseek.com（DeepSeek 官方文档的 base_url，不带 /v1）—— 不是 Anthropic 兼容那一个',
       value: typeof before?.baseUrl === 'string' ? before.baseUrl : '',
-      placeHolder: 'https://api.deepseek.com/v1',
+      placeHolder: 'https://api.deepseek.com',
       validateInput: (value) => checkBaseUrl(value),
       ignoreFocusOut: true,
     });
@@ -1488,7 +1633,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       title: `Anchor：providers.${id}.tier1Model`,
       prompt: '端点那边认的模型 id',
       value: typeof before?.tier1Model === 'string' ? before.tier1Model : '',
-      placeHolder: 'deepseek-chat',
+      placeHolder: 'deepseek-flash',
       validateInput: (value) => (value.trim() === '' ? '模型名不能为空' : null),
       ignoreFocusOut: true,
     });
@@ -1659,6 +1804,12 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // 在命令面板里执行这条命令走的是同一条路（S8「面板没有可糊的地方」同一条规矩）。
     vscode.commands.registerCommand('anchorExplain.replayLast', replayLast),
     vscode.commands.registerCommand('anchorExplain.reExplain', reExplainLast),
+    // D89：讲解面板的字号（与 VS Code 的窗口缩放互不相干）、导出与历史文件夹
+    vscode.commands.registerCommand('anchorExplain.fontLarger', () => changeFontScale('larger')),
+    vscode.commands.registerCommand('anchorExplain.fontSmaller', () => changeFontScale('smaller')),
+    vscode.commands.registerCommand('anchorExplain.fontReset', () => changeFontScale('reset')),
+    vscode.commands.registerCommand('anchorExplain.exportLast', () => void exportLast()),
+    vscode.commands.registerCommand('anchorExplain.openHistoryFolder', () => void openHistoryFolder()),
 
     // 开始面板显示的四件事里，有两件不经过 emit：模型配置（改设置）与对端（装/卸线2）。
     // 不订阅它们的话，面板会一直显示打开那一刻的旧话。
@@ -1743,6 +1894,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         status.dispose();
         sidebar?.dispose();
         output?.dispose();
+        // D89：扩展被卸载/禁用也算"讲解结束" —— 官方的报错提示必须还回来
+        void veil.restore();
       },
     },
   );

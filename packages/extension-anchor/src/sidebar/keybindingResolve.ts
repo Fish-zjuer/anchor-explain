@@ -25,6 +25,8 @@ export type ChordId =
   | 'goto'
   | 'playPause'
   | 'showStart'
+  | 'fontLarger'
+  | 'fontSmaller'
   | 'selectRegion';
 
 export interface WalkthroughChordSpec {
@@ -34,8 +36,8 @@ export interface WalkthroughChordSpec {
   key: string;
   /** macOS 默认键（§4.1 的默认键列只给了 ctrl 形式，mac 把 ctrl 换成 cmd） */
   mac: string;
-  /** §4.1 的 `when`，与 `contributes.keybindings` 一字不差 */
-  when: string;
+  /** §4.1 的 `when`，与 `contributes.keybindings` 一字不差。没有 `when` 的键（D89 的字号）可省略 */
+  when?: string;
 }
 
 /**
@@ -107,6 +109,23 @@ export const WALKTHROUGH_CHORDS: readonly WalkthroughChordSpec[] = [
     key: 'ctrl+shift+space',
     mac: 'cmd+shift+space',
     when: 'anchorExplain.walkthroughActive',
+  },
+  {
+    // D89：讲解面板自己的字号调节。**刻意不带 when**：它不是推进讲解的动作，
+    // 没有会话时调了也白调（面板没开）—— 但"面板开着回看时把字调大"恰恰是它最常被用的时刻，
+    // 而 done 之后 sessionOpen 已经落 false，绑上去就会有一半时间哑掉。
+    // 不与 VS Code 的 Ctrl+= / Ctrl+- 冲突：那两个键缩放的是整个窗口，这里是面板自己的字号。
+    // 面板获得焦点时这两个键到不了工作台（D47）—— 由面板头部的 A−/A+ 按钮兜底，并走 FORWARDED 转发。
+    id: 'fontLarger',
+    command: 'anchorExplain.fontLarger',
+    key: 'ctrl+alt+=',
+    mac: 'cmd+alt+=',
+  },
+  {
+    id: 'fontSmaller',
+    command: 'anchorExplain.fontSmaller',
+    key: 'ctrl+alt+-',
+    mac: 'cmd+alt+-',
   },
 ];
 

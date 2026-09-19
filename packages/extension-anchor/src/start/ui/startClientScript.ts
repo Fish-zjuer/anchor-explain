@@ -54,6 +54,16 @@ export const START_CLIENT_SCRIPT = `
   function render(model) {
     root.textContent = '';
 
+    // 字号缩放（D89）：与讲解面板同一个系数、同一条 CSS 变量。每次收到模型都应用 ——
+    // 系数变化靠宿主推新模型，不需要单独的消息类型。
+    // documentElement 那层守卫：这份脚本也会被塞进最小 DOM 桩里解析（startUi.test.ts）。
+    if (typeof model.fontScale === 'number' && isFinite(model.fontScale) && model.fontScale > 0) {
+      var de = document.documentElement;
+      if (de && de.style && typeof de.style.setProperty === 'function') {
+        de.style.setProperty('--anchor-font-scale', String(model.fontScale));
+      }
+    }
+
     var head = el('div', 'head');
     head.appendChild(el('div', 'brand', 'Anchor'));
     head.appendChild(

@@ -1,0 +1,130 @@
+/**
+ * 讲解 → Markdown 的**唯一**格式化处。事实源：docs/CONTRACTS.md §4.1（导出与历史）。
+ *
+ * @anchor 用户的原话是"需要能够导出讲解文件，能打开文件夹查看历史文件"。落点有两处：
+ *         每次讲解成功**自动**存进历史文件夹（`commands.ts` 的 `rememberRun`），
+ *         以及「导出讲解」的另存为 —— 两条路写的是**同一个函数**的产物，
+ *         否则"导出的"和"历史里躺着的"早晚长成两种格式。
+ *
+ * 本文件**不 import 'vscode'**：格式化是纯文本的事，`node --test` 直测。
+ * 文件写入由调用方走 `workspace.fs`（remote / 虚拟文件系统只有它读得到，D75）。
+ */
+
+import { basenameOf, isCodeLocation, locationLabel, samePath } from '@anchor/core';
+import type { Anchor, Location } from '@anchor/core';
+import type { LastRun } from './lastRun.ts';
+
+/**
+ * 子高亮的 emphasis → 人话。**与侧边栏客户端那张表说同样的话**
+ * （`sidebar/ui/clientScript.ts` 的 `EMPHASIS_LABEL`）—— 那边 import 不到这边
+ * （webview 脚本是字符串常量），所以两张表各管各的渲染面，改词时两边一起改。
+ */
+const EMPHASIS_LABEL: Record<string, string> = {
+  primary: '重点',
+  context: '上下文',
+  definition: '定义',
+  caveat: '注意',
+};
+
+function pad(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/** `2026-09-19 14:25:30`。文件名用 `exportFileStem`（它不带空格与冒号）。 */
+export function fullStamp(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '时间未知';
+  const d = new Date(ms);
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  );
+}
+
+/** Windows 文件名的禁用字符（保留字不管 —— sourceName 是现成的文件名，几乎不会撞上）。 */
+const INVALID_NAME_CHARS = /[/\\:*?"<>|]/gu;
+
+/**
+ * 存档文件名的主体部分：`20260919-142530-main.c.md`（调用方补扩展名）。
+ *
+ * @anchor 时间戳到**秒**并放在最前：历史文件夹按名字排序就是按时间排序，
+ *         用户"翻历史"的动作就是打开文件夹往下扫。同名锚点同秒导出会撞名 ——
+ *         让调用方处理（VS Code 的另存为对话框自己会问；自动存档撞上就丢这次，
+ *         重放和 workspaceState 里都还有）。
+ */
+export function exportFileStem(savedAt: number, anchor: Anchor): string {
+  const d = Number.isFinite(savedAt) && savedAt > 0 ? new Date(savedAt) : new Date(0);
+  const stamp =
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const name = anchor.sourceName.replace(INVALID_NAME_CHARS, '-').trim();
+  return `${stamp}-${name || 'anchor'}`;
+}
+
+/**
+ * 位置的人话标签。**不在锚点文件里的位置必须带上文件名** —— 与侧边栏同一条纪律（D69）：
+ * 只写「第 16 行」会让读者把它读成锚点文件的第 16 行。
+ */
+function labelOf(loc: Location, anchorPath: string | null): string {
+  const label = locationLabel(loc);
+  if (isCodeLocation(loc) && anchorPath && !samePath(loc.filePath, anchorPath)) {
+    return `${basenameOf(loc.filePath)} ${label}`;
+  }
+  return label;
+}
+
+/**
+ * 一份讲解的完整 Markdown。**只消费 `LastRun`**：导出与自动存档拿到的是同一份存档
+ * （重放用的也是它），所以导出的内容与屏幕上走过的一字不差。
+ */
+export function explanationMarkdown(run: LastRun): string {
+  const { result, anchor, savedAt } = run;
+  const anchorPath = isCodeLocation(anchor.location) ? anchor.location.filePath : null;
+
+  const confidence = Number.isFinite(result.confidence) ? Math.min(Math.max(result.confidence, 0), 1) : 0;
+
+  const lines: string[] = [];
+  lines.push(`# ${result.title?.trim() || 'Anchor 讲解'}`);
+  lines.push('');
+  lines.push(`- 来源：${anchor.sourceName} ${locationLabel(anchor.location)}`);
+  lines.push(`- 讲解时间：${fullStamp(savedAt)}`);
+  lines.push(`- 可信度：${Math.round(confidence * 100)}%`);
+  if (anchor.focus && anchor.focus.trim() !== '') lines.push(`- 想追的线：${anchor.focus.trim()}`);
+  // 多段选择（D80）：外框行号会让人以为"中间的全讲了"，必须把每一段列出来
+  if (anchor.segments !== undefined && anchor.segments.length > 1) {
+    lines.push(`- 多段选择：${anchor.segments.map((s) => `第 ${s.lineStart}-${s.lineEnd} 行`).join('、')}`);
+  }
+  lines.push('');
+  lines.push('## 摘要');
+  lines.push('');
+  lines.push(result.summary);
+  lines.push('');
+  lines.push('## 步骤');
+
+  result.steps.forEach((step, i) => {
+    lines.push('');
+    lines.push(`### ${i + 1}. ${step.title?.trim() || '（无标题）'}`);
+    lines.push('');
+    lines.push(`位置：${labelOf(step.location, anchorPath)}`);
+    if (step.intro && step.intro.trim() !== '') {
+      lines.push('');
+      lines.push(step.intro.trim());
+    }
+    lines.push('');
+    lines.push(step.text);
+
+    const subs = step.highlights ?? [];
+    if (subs.length > 0) {
+      lines.push('');
+      for (const h of subs) {
+        const emphasis = h.emphasis && EMPHASIS_LABEL[h.emphasis] ? EMPHASIS_LABEL[h.emphasis] : h.emphasis ?? '重点';
+        lines.push(`- **${emphasis}** ${h.narration}（${labelOf(h.location, anchorPath)}）`);
+      }
+    }
+  });
+
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+  lines.push('由 Anchor Explain 导出（Fish-zjuer.anchor-explain）。');
+  return `${lines.join('\n')}\n`;
+}

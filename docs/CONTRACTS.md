@@ -417,6 +417,11 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 | `anchorExplain.clearSegments` | 清空队列（**D80 新增**） | — | — |
 | `anchorExplain.replayLast` | **重放**上次那份讲解（从第 1 步再走一遍，**不碰网络**；**D83 新增**） | — | — |
 | `anchorExplain.reExplain` | 拿同一个锚点**再问一次模型**（**D83 新增**） | — | — |
+| `anchorExplain.fontLarger` | 调大讲解面板字号（独立于 VS Code 的窗口缩放；**D89 新增**） | `ctrl+alt+=` / `cmd+alt+=` | — |
+| `anchorExplain.fontSmaller` | 调小讲解面板字号（**D89 新增**） | `ctrl+alt+-` / `cmd+alt+-` | — |
+| `anchorExplain.fontReset` | 重置讲解面板字号（**D89 新增**） | — | — |
+| `anchorExplain.exportLast` | 把上次讲解导出为 Markdown（另存为，默认落历史文件夹；**D89 新增**） | — | — |
+| `anchorExplain.openHistoryFolder` | 打开讲解历史文件夹（`globalStorage/history`，**D89 新增**） | — | — |
 | `anchorExplain.showStart` | 打开开始界面（把活动栏的「开始」视图聚焦出来，**S8 新增**） | `ctrl+alt+a` / `cmd+alt+a` | `!inputFocus` |
 | `anchorExplain.showState` | 显示当前状态（F2 的骨架验证命令） | — | — |
 | `anchorExplain.openSettings` | 打开设置并筛到 `anchorExplain`（**D61**：开始面板里那条"去配端点"的路） | — | — |
@@ -723,15 +728,23 @@ type HostToSidebar =
       anchorPath: string | null }   // ← D69 追加：锚点文件（PDF 为 null），面板据此给别处的行号标文件名
   | { type: 'session:end' }
   | { type: 'tooltrace:reset' }                       // ← D68 追加
-  | { type: 'tooltrace:append'; entry: ContextRequestLogEntry };
+  | { type: 'tooltrace:append'; entry: ContextRequestLogEntry }
+  | { type: 'ui:fontScale'; scale: number };          // ← D89 追加：当前字号系数（面板收到即改 CSS 变量）
 
 // webview → 宿主
 type SidebarToHost =
   | { type: 'ui:ready' }
   | { type: 'ui:next' } | { type: 'ui:prev' } | { type: 'ui:goto'; index: number }
   | { type: 'ui:stop' } | { type: 'ui:revealStep'; index: number }
-  | { type: 'ui:replay' } | { type: 'ui:reExplain' };   // ← D83 追加：讲完之后那两颗按钮
+  | { type: 'ui:replay' } | { type: 'ui:reExplain' }   // ← D83 追加：讲完之后那两颗按钮
+  | { type: 'ui:fontLarger' } | { type: 'ui:fontSmaller' }   // ← D89 追加：字号（只回传动作，系数在宿主）
+  | { type: 'ui:export' } | { type: 'ui:openHistory' };      // ← D89 追加：导出与历史文件夹
 ```
+
+**D89 追加的四条（字号×2 / 导出 / 历史）都是无参动作消息**，与 §5.5「只回传动作 id」同一条立场：
+合法范围、当前值、存档在哪儿，全由宿主决定。`ui:fontScale`（宿主→webview）是唯一带值的新消息；
+`ui:ready` 重放之后宿主**总是补发一条**当前的 `ui:fontScale` —— 重放缓冲只有 50 条，
+字号那条可能被挤出去，重建的面板才不丢样式（`scripts/smoke-walkthrough.mjs` 的重放计数锁钉住了这个 +1）。
 
 **`ui:replay` / `ui:reExplain` 是 D83 追加的**（同样是**追加**，不动已有消息）。
 `done` 之后「下一步」按不动了，而面板上就此**没有任何出口** —— 用户的原话是
@@ -909,7 +922,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 ```jsonc
 {
   "anchorExplain.providers": {
-    "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" }
+    "default": { "baseUrl": "https://api.deepseek.com", "tier1Model": "deepseek-flash" }
   },
   "anchorExplain.activeProvider": "default"
 }

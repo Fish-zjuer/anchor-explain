@@ -168,7 +168,7 @@ test('checkBaseUrl：只挡"明确的错"，其余一律放行', () => {
 
   // 端点长什么样是端点那边决定的，我们没资格替他判
   for (const ok of [
-    'https://api.deepseek.com/v1',
+    'https://api.deepseek.com',
     'http://localhost:11434/v1',
     'https://dashscope.aliyuncs.com/compatible-mode/v1',
     'https://gw.test/anthropic',

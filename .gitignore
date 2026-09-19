@@ -20,6 +20,10 @@ release/
 # 侧边栏排版预览的产物（scripts/preview-sidebar.mjs 生成，随时可重建）
 .tmp-preview/
 
+# 风格实验台的产物（D89：packages/extension-anchor/scripts/style-lab.ts 生成）。
+# 里面是模型回答与盲评稿 —— 评审材料要的是 docs/style-candidates.md（进 git），跑出来的不要。
+.style-lab-out/
+
 # 冒烟脚本在进程内打出来的临时产物（scripts/smoke-file-switch.mjs 等，随时可重建）
 .tmp-smoke/
 .tmp-repro/

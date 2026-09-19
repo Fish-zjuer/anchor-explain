@@ -29,6 +29,9 @@ S8 新增的是一**个入口**，不是一条新链路：活动栏左侧多一�
 | `anchorExplain.explainAnchor` | `Anchor: 讲解外部锚点` | —（跨扩展入口，S6 由线2 调用） |
 | `anchorExplain.showState` | `Anchor: 显示状态` | —（自检：选区 / 上次捕获 / **模型配置** / 状态栏） |
 | `anchorExplain.setApiKey` | `Anchor: 设置 API Key（存进 SecretStorage）` | —（**S3 新增**） |
+| `anchorExplain.fontLarger` / `fontSmaller` / `fontReset` | `Anchor: 调大/调小/重置讲解面板字号` | `Ctrl+Alt+=` / `Ctrl+Alt+-` / —（**D89 新增**） |
+| `anchorExplain.exportLast` | `Anchor: 导出上次讲解为 Markdown` | —（**D89 新增**） |
+| `anchorExplain.openHistoryFolder` | `Anchor: 打开讲解历史文件夹` | —（**D89 新增**） |
 
 mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），键位请自己在
 `keybindings.json` 里改；状态栏提示会读你的实际绑定（读不到才回退默认）。
@@ -44,7 +47,7 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 ```jsonc
 {
   "anchorExplain.providers": {
-    "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" }
+    "default": { "baseUrl": "https://api.deepseek.com", "tier1Model": "deepseek-flash" }
   },
   "anchorExplain.activeProvider": "default",
   "anchorExplain.maxFetchRounds": 3
@@ -54,7 +57,8 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 > **要的是 OpenAI 兼容端点**：我们请求的是 `{baseUrl}/chat/completions`。
 > 有些厂商同时提供**另一套**兼容接口（例如 DeepSeek 给 Claude Code 用的
 > `https://api.deepseek.com/anthropic` 是 **Anthropic 兼容**，形状不一样）——
-> 那个填进来会连不上或 404。DeepSeek 请用 `https://api.deepseek.com/v1`。
+> 那个填进来会连不上或 404。DeepSeek 官方文档的 base_url 是 `https://api.deepseek.com`
+> （不带 `/v1`；`/chat/completions` 由我们自己拼，也别带）。
 >
 > **模型名要填端点那边认的 id**（`tier1Model`）：填错时的症状是调用时报"模型不存在"。
 
@@ -117,9 +121,34 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 而不是从上到下一行行讲。改完不用重载窗口，下一次讲解就生效（`显示状态` 会报当前档位）。
 
 配好之后用 `Anchor: 显示状态` 核对一句：
-`模型：default：deepseek-chat @ https://api.deepseek.com/v1；最多取件 3 次`。
+`模型：default：deepseek-flash @ https://api.deepseek.com；最多取件 3 次`。
 
 **想看 AI 到底取了几次件、被拒的理由是什么** → 输出面板选「**Anchor**」通道。
+
+### 讲解面板的字号、导出与历史（D89）
+
+**字号自己调**：讲解面板头部有 **A− / A+** 两颗小按钮，也有自己的命令与键位
+（`Ctrl+Alt+=` / `Ctrl+Alt+-`，重置走命令面板）。它与 VS Code 的 `Ctrl+=` / `Ctrl+-` 互不相干 ——
+那两个键缩放整个窗口，这里只缩放面板的字；面板内布局是相对单位，字大了结构不会散。
+开始面板跟随同一个系数。系数存在工作区里，重启后还在。
+
+**讲解能带走**：每次讲解成功，都会**自动**把那份讲解存成一份 Markdown 到扩展私有目录
+（不进你的工作区、不碰 git）；「导出讲解」会把同一份内容**另存为**到你指定的地方。
+「打开历史文件夹」（侧边栏按钮或命令面板）直接翻所有历史记录。
+
+**讲解时屏蔽官方报错高亮**：讲解进行中，VS Code 自己的错误/警告/提示（波浪线、概览标尺那些）
+会被临时藏起来，屏幕上只剩 Anchor 的高亮；退出讲解（`Esc` /「退出」）**立即精确还原** ——
+包括"你本来就把 problems 关着"的情况（我们什么都不动）。已知边界：这是窗口级设置，
+讲解期间同机其他 VS Code 窗口的波浪线也会一起消失；讲解中途崩溃也不怕，下次启动会自动补还原。
+
+### 讲解风格实验室（D89，实验性）
+
+觉得讲解"不像人话"？风格现在是**可以系统性对比**的：`docs/style-candidates.md` 里放着六个候选
+风格的指令全文（**直接在上面改**），`scripts/style-lab/exemplar/draft.md` 是一份示范讲解初稿
+（**把它改成你心里的理想讲解**，它会作为 few-shot 示范进 prompt）。改完跑
+`pnpm style:lab`（需要 `ANCHOR_LAB_API_KEY`），产物在 `.style-lab-out/`：
+`blind/` 里是匿名乱序的盲评稿，按"像人话程度/信息量/数据流/位置好懂"打分，
+评完开 `key.md` 对答案，选出最好的风格再固化进扩展。
 
 ### 固定按钮与开始界面（S8）
 
@@ -215,14 +244,14 @@ pnpm build
 
 ```jsonc
 "anchorExplain.providers": {
-  "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" }
+  "default": { "baseUrl": "https://api.deepseek.com", "tier1Model": "deepseek-flash" }
 }
 ```
 
 `baseUrl` 与模型名按你用的服务填。**一个 OpenAI 兼容实现覆盖 OpenAI / DeepSeek / 通义 / Ollama。**
 
 3. 核对：命令面板 → `Anchor: 显示状态` → 应看到
-   `模型：default：deepseek-chat @ https://api.deepseek.com/v1；最多取件 3 次`
+   `模型：default：deepseek-flash @ https://api.deepseek.com；最多取件 3 次`
 
 ### 1. 用 **VS Code（桌面版）** 打开**仓库根目录**
 
@@ -343,7 +372,7 @@ pnpm devhost:pdf      # 线2（PDF 视图）
 | **点「配置模型端点」填完三个框，什么都没发生** | 写设置被拒（`settings.json` 有语法错时 VS Code 不让人改它） | 现在会**明确报出来**并给一颗「打开 settings.json」—— 把标红那几行删掉再试 |
 | **`providers` 少了一层**（`{ baseUrl, tier1Model }` 而不是 `{ default: { … } }`） | 手写时少写了一层，于是永远"没有可用的 provider"，而 baseUrl 明明在文件里 | 跑 `Anchor: 配置模型端点`：它会先问一句"要我整理成 `providers.default` 吗"（D63） |
 | **`settings.json` 报"预期为文件结尾" / "应为属性"** | 手写 `providers` 时多了一层 `{`，或者把整段对象填进了 `anchorExplain.activeProvider`（那是个**字符串**设置） | 把那两行删掉，改用 `Anchor: 配置模型端点` 写一遍（它只会写对）；`activeProvider` 该填的是 provider 的**键名**，如 `"default"` |
-| 弹了「连不上 https://…」 | `baseUrl` 写错，或网络/代理不通 | 核对地址（要带 `/v1` 这类前缀，但不带 `/chat/completions`） |
+| 弹了「连不上 https://…」 | `baseUrl` 写错，或网络/代理不通 | 核对地址（要带 `https://` 协议头，但不带 `/chat/completions`；DeepSeek 官方 base_url 是 `https://api.deepseek.com`，不带 `/v1`） |
 | 弹了「模型端点返回 401 / invalid api key」 | key 没存、存错了 provider、或已过期 | 重跑 `Anchor: 设置 API Key`（选对 provider id） |
 | 弹了「AI 输出未通过校验（重试一次后仍失败）」 | 模型没按 JSON 契约回话 | 换一个更强的 `tier1Model` 试试；具体哪条不合规会写在错误里 |
 | 弹了「取件 N 次之后模型仍未给出讲解」 | 模型一直在要上下文不肯作答 | 调大 `anchorExplain.maxFetchRounds`，或换模型 |
@@ -418,7 +447,7 @@ pnpm smoke:chain      # 单独的链路冒烟
 
 | 层 | 命令 | 覆盖什么 |
 |---|---|---|
-| 单测（182 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）** |
+| 单测（331 条，vscode-free） | `pnpm test` | 校验闸门（§3.3）、取件闸门（§3.2）、编排循环（取件/拒绝/repair/上限）、端点请求映射、配置映射（含 `mergeProvider`/`checkBaseUrl`：它要替用户改设置文件）、会话状态机、配色决策、键位解析、**开始面板的内容模型与 HTML（S8）**、字号钳制 / 讲解导出 / 报错遮罩判据（D89） |
 | 产物冒烟（73 项） | `pnpm smoke` | 产物能 `require`；**声明的命令 == 注册的命令**；**声明的视图 == 注册的 provider**；活动栏图标在不在；演练四步的 markdown 在不在；webview 资源在产物里；**两个替身都已从产物退出**；**S8 起真跑一遍开始面板的宿主侧**（握手 → 模型 → 点动作 → 缺件时明确提示 → 「配置模型端点」「打开设置」都真的落到命令上） |
 | 链路冒烟（118 项） | `pnpm smoke:chain` | `capture` 从真选区跑到 decoration：**跑真编排循环**（只有 `fetch` 是桩）、取件一轮、越界被拒后仍继续、上限收场、确定行数与配色、**文件字节未变** |
 

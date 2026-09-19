@@ -16,6 +16,22 @@ export const SIDEBAR_CLIENT_SCRIPT = `
 (function () {
   var vscode = acquireVsCodeApi();
 
+  /**
+   * 字号缩放（D89）。系数乘在 body 的基准字号上（styles.ts 里那条 calc），
+   * 面板内的字号全是 em，所以整块布局等比例伸缩，列对齐不受影响。
+   * 初值来自宿主内联的 ANCHOR_FONT_SCALE；之后跟着 ui:fontScale 消息变。
+   * documentElement 那层守卫不是多余的：这份脚本会被塞进最小 DOM 桩里跑（sidebarClient.test.ts）。
+   */
+  function applyFontScale(scale) {
+    var value = typeof scale === "number" && isFinite(scale) && scale > 0 ? scale : 1;
+    var de = document.documentElement;
+    if (de && de.style && typeof de.style.setProperty === "function") {
+      de.style.setProperty("--anchor-font-scale", String(value));
+    }
+  }
+
+  applyFontScale(typeof ANCHOR_FONT_SCALE === "number" ? ANCHOR_FONT_SCALE : 1);
+
   var EMPHASIS_LABEL = {
     primary: "重点",
     context: "上下文",
@@ -123,6 +139,19 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var pct = Math.round((typeof result.confidence === "number" ? result.confidence : 0) * 100);
     meta.appendChild(mk("span", "badge", "可信度 " + pct + "%"));
     wrap.appendChild(meta);
+
+    // 字号调节（D89）：独立于 VS Code 的窗口缩放。放在头部而不是工具条 ——
+    // 它是"读"的属性，不是"推进讲解"的动作，混进工具条会被当成同一类按钮。
+    var fontTools = mk("div", "font-tools");
+    var smaller = mk("button", null, "A-");
+    smaller.setAttribute("data-act", "fontSmaller");
+    smaller.title = "调小讲解文字";
+    var bigger = mk("button", null, "A+");
+    bigger.setAttribute("data-act", "fontLarger");
+    bigger.title = "调大讲解文字（独立于 VS Code 的 Ctrl+加减）";
+    fontTools.appendChild(smaller);
+    fontTools.appendChild(bigger);
+    wrap.appendChild(fontTools);
     return wrap;
   }
 
@@ -283,6 +312,27 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return box;
   }
 
+  /**
+   * 导出与历史（D89）。放在工具条**下面**单独一行：工具条那三颗是"这一遍讲解的推进"，
+   * 这两颗是"把成果拿走 / 去翻历史"，混在一起又是"上一步与重放是同类操作"那个误读（D83 同一条教训）。
+   * render() 在没有快照时早就返回了，走到这里说明一定有一份讲解可导 —— 不需要 disabled 逻辑。
+   */
+  function buildTools() {
+    var row = mk("div", "tools");
+
+    var exportBtn = mk("button", null, "导出讲解");
+    exportBtn.setAttribute("data-act", "export");
+    exportBtn.title = "把这份讲解导出成 Markdown 文件（会弹另存为）";
+    row.appendChild(exportBtn);
+
+    var historyBtn = mk("button", null, "历史文件夹");
+    historyBtn.setAttribute("data-act", "openHistory");
+    historyBtn.title = "打开讲解历史文件夹（每次讲解成功都会自动存一份）";
+    row.appendChild(historyBtn);
+
+    return row;
+  }
+
   function render() {
     var root = document.getElementById("root");
     if (!root) return;
@@ -322,6 +372,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       root.appendChild(buildRerun());
     }
     root.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
+    root.appendChild(buildTools());
     root.appendChild(buildTrace());
 
     // render() 每次都重建整个 DOM，容器高度归零后 scrollTop 会被夹回顶部 ——
@@ -344,6 +395,10 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     else if (act === "stop") vscode.postMessage({ type: "ui:stop" });
     else if (act === "replay") vscode.postMessage({ type: "ui:replay" });
     else if (act === "reExplain") vscode.postMessage({ type: "ui:reExplain" });
+    else if (act === "fontLarger") vscode.postMessage({ type: "ui:fontLarger" });
+    else if (act === "fontSmaller") vscode.postMessage({ type: "ui:fontSmaller" });
+    else if (act === "export") vscode.postMessage({ type: "ui:export" });
+    else if (act === "openHistory") vscode.postMessage({ type: "ui:openHistory" });
     else if (act === "reveal") vscode.postMessage({ type: "ui:revealStep", index: index });
     else if (act === "goto") vscode.postMessage({ type: "ui:goto", index: index });
   });
@@ -398,6 +453,10 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     } else if (msg.type === "tooltrace:append") {
       trace.push(msg.entry);
       render();
+    } else if (msg.type === "ui:fontScale") {
+      // 字号变了（D89）。只改 CSS 变量、不重画 DOM —— 重画会把滚动位置弹回顶部，
+      // 而字号这件事对现有内容的唯一影响就是这条变量（styles.ts 的 calc）。
+      applyFontScale(msg.scale);
     }
   }
 
@@ -431,7 +490,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return pressed === want.key;
   }
 
-  var FORWARDED = ["next", "prev", "stop"];
+  // next / prev / stop 是"推进讲解"；fontLarger / fontSmaller 是"调字号"（D89）——
+  // 后者也该在面板有焦点时可用（工作台键位到不了 webview，D47），所以一并转发。
+  var FORWARDED = ["next", "prev", "stop", "fontLarger", "fontSmaller"];
 
   window.addEventListener("keydown", function (ev) {
     // 按住不放会以每秒几十次的速度重复触发：每一次都是一条 ui:next + 一次换拍 + 一次"打开文件"，

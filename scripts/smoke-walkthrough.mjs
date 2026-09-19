@@ -868,14 +868,18 @@ check(webviews[0].webview.posted.at(-1)?.state === 'done', 'done 之后 next 不
 // ---- 4. webview 重新加载 → 握手重放 ----------------------------------------
 const postedBefore = webviews[0].webview.posted.length;
 receiveFromWebview?.({ type: 'ui:ready' });
+// D89：重放之外还会**补发一条 ui:fontScale**（重放缓冲只有 50 条，字号那条可能被挤掉；
+// ready 后总补发一次当前的值，重建的面板才不丢字号）。
 check(
-  webviews[0].webview.posted.length - postedBefore === postedBefore,
-  'ui:ready 触发全量重放（重开面板不会是空白）',
-  `重放 ${webviews[0].webview.posted.length - postedBefore} 条`,
+  webviews[0].webview.posted.length - postedBefore === postedBefore + 1 &&
+    webviews[0].webview.posted.at(-1)?.type === 'ui:fontScale' &&
+    typeof webviews[0].webview.posted.at(-1)?.scale === 'number',
+  'ui:ready 触发全量重放 + 补发当前字号（重开面板不会是空白，字号也不丢）',
+  `重放 ${webviews[0].webview.posted.length - postedBefore - 1} 条 + 字号 1 条`,
 );
 receiveFromWebview?.({ type: 'ui:evil' });
 check(
-  webviews[0].webview.posted.length === postedBefore * 2,
+  webviews[0].webview.posted.length === postedBefore * 2 + 1,
   '未知消息类型被挡下，不触发任何重放',
 );
 

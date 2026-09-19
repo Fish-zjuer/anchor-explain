@@ -79,7 +79,13 @@ export type HostToSidebar =
    * 宿主因此把它们暂存下来，面板一建好就 `reset` + 逐条 `append` 灌进去（见 `commands.ts` 的 `explain`）。
    */
   | { type: 'tooltrace:reset' }
-  | { type: 'tooltrace:append'; entry: ContextRequestLogEntry };
+  | { type: 'tooltrace:append'; entry: ContextRequestLogEntry }
+  /**
+   * 【D89 新增】当前的字号缩放系数。**为什么走消息而不是只内联**：系数可以在面板活着的时候
+   * 被 A−/A+ 或快捷键改掉 —— 面板收到就更新 `--anchor-font-scale`。`ui:ready` 重放之后
+   * 宿主会补发一条当前的值（`SidebarPanel` 存着它），重建的面板因此不会丢样式。
+   */
+  | { type: 'ui:fontScale'; scale: number };
 
 /**
  * 【新增，非追加之外无改动】`ui:ready` 是 S1 加的握手消息。
@@ -108,7 +114,20 @@ export type SidebarToHost =
    * 能指定行为的面板就多一个能指错的地方（与 §5.5「只回传动作 id」同一条立场）。
    */
   | { type: 'ui:replay' }
-  | { type: 'ui:reExplain' };
+  | { type: 'ui:reExplain' }
+  /**
+   * 【D89 新增】字号调节（A−/A+ 按钮，以及转发用户给 fontLarger / fontSmaller 绑的键）。
+   * 只回传**动作**，不回传"调到多少" —— 系数的合法范围与持久化都在宿主一侧，
+   * webview 是外部输入，能指定行为的面板就少一个能指错的地方（§5.5 同一条立场）。
+   */
+  | { type: 'ui:fontLarger' }
+  | { type: 'ui:fontSmaller' }
+  /**
+   * 【D89 新增】导出与历史文件夹。与字号同理只回传动作 id；
+   * "上次讲解存不存在"由宿主判断（面板上的导出按钮已经在无快照时禁用，双保险）。
+   */
+  | { type: 'ui:export' }
+  | { type: 'ui:openHistory' };
 
 // ─────────────────────────────────────────────────────────────
 // §5.2 ext-B 内部：宿主 ↔ 注入脚本（S5/S6 落地）
@@ -213,6 +232,10 @@ export function parseSidebarMessage(raw: unknown): SidebarToHost | null {
     case 'ui:stop':
     case 'ui:replay':
     case 'ui:reExplain':
+    case 'ui:fontLarger':
+    case 'ui:fontSmaller':
+    case 'ui:export':
+    case 'ui:openHistory':
       return { type: raw.type };
     case 'ui:goto':
     case 'ui:revealStep': {

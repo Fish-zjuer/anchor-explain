@@ -35,6 +35,11 @@
     "onCommand:anchorExplain.setApiKey",
     "onCommand:anchorExplain.replayLast",
     "onCommand:anchorExplain.reExplain",
+    "onCommand:anchorExplain.fontLarger",
+    "onCommand:anchorExplain.fontSmaller",
+    "onCommand:anchorExplain.fontReset",
+    "onCommand:anchorExplain.exportLast",
+    "onCommand:anchorExplain.openHistoryFolder",
     "onView:anchorExplain.start"
   ],
   "contributes": {
@@ -187,12 +192,37 @@
         "title": "打开设置（配模型端点）",
         "category": "Anchor"
       },
-      {
-        "command": "anchorExplain.setApiKey",
-        "title": "设置 API Key（存进 SecretStorage）",
-        "category": "Anchor"
-      }
-    ],
+    {
+      "command": "anchorExplain.setApiKey",
+      "title": "设置 API Key（存进 SecretStorage）",
+      "category": "Anchor"
+    },
+    {
+      "command": "anchorExplain.fontLarger",
+      "title": "调大讲解面板字号",
+      "category": "Anchor"
+    },
+    {
+      "command": "anchorExplain.fontSmaller",
+      "title": "调小讲解面板字号",
+      "category": "Anchor"
+    },
+    {
+      "command": "anchorExplain.fontReset",
+      "title": "重置讲解面板字号",
+      "category": "Anchor"
+    },
+    {
+      "command": "anchorExplain.exportLast",
+      "title": "导出上次讲解为 Markdown",
+      "category": "Anchor"
+    },
+    {
+      "command": "anchorExplain.openHistoryFolder",
+      "title": "打开讲解历史文件夹",
+      "category": "Anchor"
+    }
+  ],
     "keybindings": [
       {
         "command": "anchorExplain.capture",
@@ -241,6 +271,16 @@
         "key": "ctrl+shift+space",
         "mac": "cmd+shift+space",
         "when": "anchorExplain.walkthroughActive"
+      },
+      {
+        "command": "anchorExplain.fontLarger",
+        "key": "ctrl+alt+=",
+        "mac": "cmd+alt+="
+      },
+      {
+        "command": "anchorExplain.fontSmaller",
+        "key": "ctrl+alt+-",
+        "mac": "cmd+alt+-"
       }
     ],
     "configuration": {
@@ -249,7 +289,7 @@
         "anchorExplain.providers": {
           "type": "object",
           "default": {},
-          "markdownDescription": "模型端点。键是 provider id，值是 `{ baseUrl, tier1Model, tier2Model?, apiKey?, extraHeaders?, extraBody? }`。\n\n例：`{ \"default\": { \"baseUrl\": \"https://api.deepseek.com/v1\", \"tier1Model\": \"deepseek-chat\" } }`\n\n**`apiKey` 建议留空**，改用命令 `Anchor: 设置 API Key` 存进 SecretStorage —— 那个位置不进 settings.json，也就不会被同步、被截图、被提交。",
+          "markdownDescription": "模型端点。键是 provider id，值是 `{ baseUrl, tier1Model, tier2Model?, apiKey?, extraHeaders?, extraBody? }`。\n\n例：`{ \"default\": { \"baseUrl\": \"https://api.deepseek.com\", \"tier1Model\": \"deepseek-flash\" } }`（DeepSeek 官方文档的 base_url 不带 `/v1`，`/chat/completions` 由我们自己拼）\n\n**`apiKey` 建议留空**，改用命令 `Anchor: 设置 API Key` 存进 SecretStorage —— 那个位置不进 settings.json，也就不会被同步、被截图、被提交。",
           "additionalProperties": {
             "type": "object",
             "properties": {

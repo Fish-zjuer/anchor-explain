@@ -22,7 +22,7 @@ function inlineChords(chords: ResolvedChords): string {
   return `var ANCHOR_CHORDS = ${json};`;
 }
 
-export function renderSidebarHtml(cspSource: string, chords: ResolvedChords): string {
+export function renderSidebarHtml(cspSource: string, chords: ResolvedChords, fontScale: number): string {
   const nonce = randomBytes(16).toString('base64');
 
   const csp = [
@@ -43,6 +43,7 @@ export function renderSidebarHtml(cspSource: string, chords: ResolvedChords): st
 <body>
 <div id="root"></div>
 <script nonce="${nonce}">${inlineChords(chords)}
+var ANCHOR_FONT_SCALE = ${JSON.stringify(fontScale)};
 ${SIDEBAR_CLIENT_SCRIPT}</script>
 </body>
 </html>`;

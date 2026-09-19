@@ -137,6 +137,8 @@ test('耦合锁：状态栏用的默认键位与 §4.1 冻结值一致', () => {
     stop: 'escape',
     goto: 'ctrl+alt+w',
     playPause: 'ctrl+shift+space',
+    fontLarger: 'ctrl+alt+=',
+    fontSmaller: 'ctrl+alt+-',
     selectRegion: 'ctrl+alt+s',
   });
 });

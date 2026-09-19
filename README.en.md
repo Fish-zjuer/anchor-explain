@@ -57,7 +57,7 @@ launch a one-off Extension Development Host. Pressing `F5` in VS Code works too 
    ```jsonc
    {
      "anchorExplain.providers": {
-       "default": { "baseUrl": "https://api.deepseek.com/v1", "tier1Model": "deepseek-chat" }
+       "default": { "baseUrl": "https://api.deepseek.com", "tier1Model": "deepseek-flash" }
      },
      "anchorExplain.activeProvider": "default",
      "anchorExplain.maxFetchRounds": 3
@@ -66,7 +66,8 @@ launch a one-off Extension Development Host. Pressing `F5` in VS Code works too 
 
    **It must be an OpenAI-compatible endpoint** — we call `{baseUrl}/chat/completions`. Some vendors
    expose a second, differently-shaped compatible API (e.g. DeepSeek's Anthropic-compatible
-   `https://api.deepseek.com/anthropic`); that one will 404 here. `activeProvider` is a **string**
+   `https://api.deepseek.com/anthropic`); that one will 404 here. DeepSeek's official base URL is
+   `https://api.deepseek.com` (no `/v1` needed). `activeProvider` is a **string**
    (the provider's key), not the provider object.
 
 2. Command Palette → **`Anchor: 设置 API Key`** (Set API key). The key goes into VS Code's

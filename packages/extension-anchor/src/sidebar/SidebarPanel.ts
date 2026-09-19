@@ -24,6 +24,13 @@ export interface SidebarHandlers {
   onReplay(): void;
   /** D83：拿同一个锚点再问一次模型（贵，但会得到另一种讲法） */
   onReExplain(): void;
+  /** D89：字号调节。合法范围与持久化都在宿主（commands.ts），面板只管喊一声 */
+  onFontLarger(): void;
+  onFontSmaller(): void;
+  /** D89：把上次那份讲解导出成 Markdown 文件 */
+  onExport(): void;
+  /** D89：打开讲解历史文件夹 */
+  onOpenHistory(): void;
 }
 
 /** 重放缓冲上限：侧边栏的消息量很小，50 条足够覆盖一次会话 */
@@ -34,12 +41,20 @@ export class SidebarPanel {
   readonly #handlers: SidebarHandlers;
   readonly #replay: HostToSidebar[] = [];
   #disposed = false;
+  /** 当前的字号缩放系数（D89）。`ui:ready` 重放完补发它 —— 重建的面板不丢样式。 */
+  #fontScale: number;
 
-  private constructor(panel: vscode.WebviewPanel, handlers: SidebarHandlers, chords: ResolvedChords) {
+  private constructor(
+    panel: vscode.WebviewPanel,
+    handlers: SidebarHandlers,
+    chords: ResolvedChords,
+    fontScale: number,
+  ) {
     this.#panel = panel;
     this.#handlers = handlers;
+    this.#fontScale = fontScale;
 
-    panel.webview.html = renderSidebarHtml(panel.webview.cspSource, chords);
+    panel.webview.html = renderSidebarHtml(panel.webview.cspSource, chords, fontScale);
 
     panel.webview.onDidReceiveMessage((raw: unknown) => {
       // webview 发来的东西一样当外部输入：形状不对直接丢，不让坏数据进链路
@@ -49,6 +64,9 @@ export class SidebarPanel {
       switch (msg.type) {
         case 'ui:ready':
           for (const m of this.#replay) void this.#panel.webview.postMessage(m);
+          // 重放里那条 ui:fontScale 可能已经被挤出去（缓冲只有 50 条），
+          // 所以 ready 之后**总是**补发一次当前的值 —— 面板不需要自己持久化任何状态
+          void this.#panel.webview.postMessage({ type: 'ui:fontScale', scale: this.#fontScale });
           break;
         case 'ui:next':
           this.#handlers.onNext();
@@ -71,6 +89,18 @@ export class SidebarPanel {
         case 'ui:reExplain':
           this.#handlers.onReExplain();
           break;
+        case 'ui:fontLarger':
+          this.#handlers.onFontLarger();
+          break;
+        case 'ui:fontSmaller':
+          this.#handlers.onFontSmaller();
+          break;
+        case 'ui:export':
+          this.#handlers.onExport();
+          break;
+        case 'ui:openHistory':
+          this.#handlers.onOpenHistory();
+          break;
       }
     });
 
@@ -81,9 +111,10 @@ export class SidebarPanel {
 
   /**
    * `chords` 是**用户实际绑定**解析后的键位，会被内联进 webview，好让面板有焦点时
-   * 客户端能自己派发 next / prev / stop（见 D47）。
+   * 客户端能自己派发 next / prev / stop（见 D47）。`fontScale` 同理内联（D89）：
+   * 建面板那一刻的系数就是初值，之后的变更走 `setFontScale`。
    */
-  static create(handlers: SidebarHandlers, chords: ResolvedChords): SidebarPanel {
+  static create(handlers: SidebarHandlers, chords: ResolvedChords, fontScale: number): SidebarPanel {
     const panel = vscode.window.createWebviewPanel(
       'anchorExplain.sidebar',
       'Anchor 讲解',
@@ -96,7 +127,7 @@ export class SidebarPanel {
         localResourceRoots: [],
       },
     );
-    return new SidebarPanel(panel, handlers, chords);
+    return new SidebarPanel(panel, handlers, chords, fontScale);
   }
 
   get disposed(): boolean {
@@ -108,6 +139,15 @@ export class SidebarPanel {
     this.#replay.push(message);
     while (this.#replay.length > REPLAY_LIMIT) this.#replay.shift();
     void this.#panel.webview.postMessage(message);
+  }
+
+  /**
+   * 字号变了（D89）。**存一份再发**：发的这条进重放缓冲（面板重建时照常收到），
+   * 而这份字段保证 `ui:ready` 之后补发的那个值永远是最新的。
+   */
+  setFontScale(scale: number): void {
+    this.#fontScale = scale;
+    this.post({ type: 'ui:fontScale', scale });
   }
 
   reveal(): void {

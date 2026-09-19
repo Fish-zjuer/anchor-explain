@@ -82,6 +82,24 @@ export function buildSystemPrompt(
   style: ExplainStyle = DEFAULT_STYLE,
   options: { crossFile?: boolean; maxFetchLines?: number } = {},
 ): string {
+  return buildSystemPromptWithStyleSection(styleSection(style), options);
+}
+
+/**
+ * 骨架不变、"说话的方式"可注入的版本（D89 风格实验台的落点）。
+ *
+ * @anchor 为什么非有不可：风格对比实验（`scripts/style-lab.ts`）要把**候选风格全文**
+ *         塞进同一条骨架里跑，否则变体之间差的就不只是风格。骨架（数据流切步、
+ *         取件规则、输出契约）留在这里单源维护，实验台的变体只提供这一节 ——
+ *         两边不会长成两套 prompt。`buildSystemPrompt` 现在就是它的两档特例。
+ *
+ * `styleText` 是"## 说话的方式"一节的**正文**（不含标题）；HTML 注释会被剥掉，
+ * 所以候选文档里写给评审看的"设计意图"注解不会漏进 prompt。
+ */
+export function buildSystemPromptWithStyleSection(
+  styleText: string,
+  options: { crossFile?: boolean; maxFetchLines?: number } = {},
+): string {
   const crossFile = options.crossFile === true;
   return [
     '你是一个代码与技术文档讲解助手。用户会给你一个"锚点"：文档里的一段位置，可能还带着那段的原文。',
@@ -105,7 +123,7 @@ export function buildSystemPrompt(
     '',
     '## 说话的方式',
     '',
-    styleSection(style),
+    stripHtmlComments(styleText).trim(),
     '',
     '## 什么时候该取件',
     '',
@@ -121,6 +139,11 @@ export function buildSystemPrompt(
     '',
     explainOutputContract(crossFile),
   ].join('\n');
+}
+
+/** 剥掉 `<!-- … -->`：候选文档里给评审看的注解不属于 prompt。不跨行递归，够用。 */
+function stripHtmlComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/gu, '');
 }
 
 /**
@@ -153,7 +176,14 @@ function fetchSourceRule(crossFile: boolean, maxFetchLines?: number): string {
 /**
  * 两档风格的具体指令。**都要被"少讲废话"这条约束管住**（D65）——
  * 用户对第一版的原话是"不要那么多名词什么的，要不还不如读代码本身了"。
+ *
+ * D89：实验台也需要这两档的**原文**（变体A 是现行简约档的对照组），
+ * 所以从这里导出一份只读入口 —— 变体的措辞改在这里，实验室自动跟上。
  */
+export function builtinStyleSection(style: ExplainStyle): string {
+  return styleSection(style);
+}
+
 function styleSection(style: ExplainStyle): string {
   const shared = [
     '- `summary` 一句话说清**这块在干什么、数据从哪到哪**，不要写成摘要式套话。',
