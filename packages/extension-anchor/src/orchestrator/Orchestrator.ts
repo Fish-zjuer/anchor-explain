@@ -9,13 +9,18 @@
  * 三段结构，各自的"错"性质不同，所以分开处理：
  *   1. **取件循环**：模型要上下文 → 校验（§3.2）→ 合法就取、不合法就回灌拒绝原因。
  *      **拒绝不抛错**（D29）—— 模型的一次越界不该等于整次讲解失败。
+ *      D96 补上了这条纪律漏掉的半边：**读取失败也不抛**。闸门只做字符串解析
+ *      （`resolveCandidatePaths` 解析得出 ≠ 文件存在），模型把构建目录当前缀拼进 path 时
+ *      `fetchContext` 会以 ENOENT 炸穿整个循环 —— 用户实测的
+ *      `Anchor：Error: ENOENT: … transport_uart.c` 就是这么来的。现在读取失败回灌
+ *      一条「取件失败」+ 候选清单的工具结果，模型还有机会改用正确的名字。
  *   2. **输出闸门**：拿到候答后过 §3.3。
  *   3. **修复重试**：闸门不过 → 带问题清单重试**一次**；仍不过 → `SCHEMA_VIOLATION`。
  *
  * 本文件属 orchestrator/，**禁止 import 'vscode'**。
  */
 
-import { AnchorError, createContextRequestLogger } from '@anchor/core';
+import { AnchorError, createContextRequestLogger, isCodeLocation } from '@anchor/core';
 import type {
   AdapterCapabilities,
   Anchor,
@@ -37,6 +42,39 @@ import type { ChatMessage, ChatProvider, ToolCall } from './providers/types.ts';
 
 /** 工具被拒时回灌的固定前缀（§3.2 明确要求这条文案的形状）。 */
 const REJECT_PREFIX = '请求被拒绝：';
+
+/**
+ * 取件读取失败时回灌给模型的说明（D96）。
+ *
+ * @anchor 要点不是道歉，是**给活路**：光说"打不开"，模型只会再猜一个路径，猜一次烧一轮。
+ *         把候选清单原样列进来（名字照抄即可），它才能一步走到正确的取件；
+ *         清单为空（扫描失败/没有工作区）时也把"别猜路径"说死，并给它"基于现有信息作答"的台阶。
+ */
+export function fetchFailureText(
+  req: ContextRequest,
+  detail: string,
+  candidates: readonly string[],
+  anchorFile: string | null,
+): string {
+  if (req.type !== 'file' || typeof req.params.path !== 'string') {
+    return `取件失败：这份文档读不出来（${detail.slice(0, 200)}）。请基于现有信息直接作答。`;
+  }
+  // ENOENT / FileNotFound 是"路径不存在"，值得单独点破 —— 与"读不出来"（权限/编码）的下一步动作不同
+  const gone = /ENOENT|FileNotFound|no such file/iu.test(detail);
+  const lines = [
+    `取件失败：${req.params.path} 打不开（${gone ? '这个文件不存在 —— 不要猜路径' : '读不出来'}）。`,
+    '',
+    '`path` 的可靠写法只有两种：「可能相关的文件」清单里的名字照抄；或你在读过的内容里亲眼见过的路径。不要自己拼目录。',
+  ];
+  if (candidates.length > 0) {
+    lines.push('', '可以选的文件（照抄这些名字）：', ...candidates.map((name) => `- ${name}`));
+  }
+  if (anchorFile !== null) {
+    lines.push('', `（锚点文件 ${anchorFile} 本身不用取件。）`);
+  }
+  lines.push('', '改用上面的名字重新取件，或者基于现有信息直接作答。');
+  return lines.join('\n');
+}
 
 export interface OrchestratorAdapter {
   readonly capabilities: AdapterCapabilities;
@@ -132,6 +170,10 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
     let roundsUsed = 0;
     /** 被拒的取件次数与最后一次的原因。**报错时要说实话**：见下面 MAX_ROUNDS_EXCEEDED */
     let rejectedCount = 0;
+    /** 取件轮数之外的一类失败：放行了但文件读不出来（D96）。报错时同样要说实话 */
+    let failedFetchCount = 0;
+    /** "最后一次"是哪种账（被拒 / 打不开）—— 收场报错的措辞跟着它走 */
+    let lastFeedbackWasFailure = false;
     let lastRejectReason: string | undefined;
     // 初次 + 每轮取件后都还要有一次机会给答案，所以是 取件上限 + 1；
     // 再多留一轮，是为了让"被拒之后模型仍然只想着取件"这种情况也能收场（届时抛 MAX_ROUNDS_EXCEEDED）
@@ -167,12 +209,14 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
       );
     }
 
-    /** 处理单次 `fetch_context`。**永远返回一段文本**，绝不抛（§3.2 的"拒绝不抛错"）。 */
+    /** 处理单次 `fetch_context`。**永远返回一段文本**，绝不抛（§3.2 的"拒绝不抛错"；
+     *  D96 起连适配器的读取失败也在这里被接住 —— 放行过的请求同样可能读不出来）。 */
     async function handleToolCall(call: ToolCall, state: ContextFetchState): Promise<{ accepted: boolean; text: string }> {
       const started = now();
       const rejected = (request: ContextRequest, reason: string): { accepted: false; text: string } => {
         rejectedCount += 1;
         lastRejectReason = reason;
+        lastFeedbackWasFailure = false;
         logger.record({
           at: started,
           round: state.roundsUsed + 1,
@@ -205,7 +249,35 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
           : { accepted: false, text: `${base.text}，请基于现有信息作答。` };
       }
 
-      const content = await deps.adapter.fetchContext(decision.request);
+      // 放行 ≠ 读得到：路径是**字符串解析**出来的，文件可能根本不存在（模型把构建目录
+      // 拼进 path 时就是这么炸的，D96）。失败必须留在这个函数里变成一条工具结果，
+      // 否则它一路炸穿编排循环，整次讲解以 `Anchor：Error: ENOENT…` 收场。
+      let content: string;
+      try {
+        content = await deps.adapter.fetchContext(decision.request);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        failedFetchCount += 1;
+        lastRejectReason = detail;
+        lastFeedbackWasFailure = true;
+        logger.record({
+          at: started,
+          round: state.roundsUsed + 1,
+          request: decision.request,
+          accepted: false,
+          rejectReason: `文件打不开：${detail}`,
+          durationMs: now() - started,
+        });
+        return {
+          accepted: false,
+          text: fetchFailureText(
+            decision.request,
+            detail,
+            deps.candidateFiles ?? [],
+            isCodeLocation(anchor.location) ? anchor.location.filePath : null,
+          ),
+        };
+      }
       const span = spanOf(decision.request);
       if (span) fetched.push({ ...span, content });
       logger.record({
@@ -254,15 +326,21 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
 
     // 报错要说实话（D67）：原来无论发生什么都说"取件 N 次之后模型仍未给出讲解"，
     // 而实际上可能**一次都没取成**（每次都当场被拒，`roundsUsed` 不涨，循环却照样烧完）。
-    // 那样这句话是假的，用户拿着它没法判断该调什么。
+    // 那样这句话是假的，用户拿着它没法判断该调什么。D96 起失败统计里还有第三类：
+    // 放行了但文件打不开 —— 它不该被算进"被拒"，也不该被算进"成功"。
     const reasonTail =
-      rejectedCount === 0
-        ? '它可能一直在请求上下文。'
-        : `其中取件成功 ${roundsUsed} 次、被拒 ${rejectedCount} 次 —— ` +
-          `最后一次被拒的原因是：${lastRejectReason ?? '（没记下来）'}`;
+      rejectedCount === 0 && failedFetchCount === 0
+        ? '它可能一直在请求上下文'
+        : `其中取件成功 ${roundsUsed} 次` +
+          (rejectedCount > 0 ? `、被拒 ${rejectedCount} 次` : '') +
+          (failedFetchCount > 0 ? `、打不开 ${failedFetchCount} 次` : '') +
+          // "最后一次"是哪种账，措辞就跟着是哪种：被拒后又打不开时，"被拒的原因"就成了假话
+          (lastFeedbackWasFailure
+            ? ` —— 最后一次的失败说明是：${lastRejectReason ?? '（没记下来）'}`
+            : ` —— 最后一次被拒的原因是：${lastRejectReason ?? '（没记下来）'}`);
     throw new AnchorError(
       'MAX_ROUNDS_EXCEEDED',
-      `模型连续 ${turnLimit} 轮都在请求上下文：${reasonTail}` +
+      `模型连续 ${turnLimit} 轮都在请求上下文：${reasonTail}。` +
         '试试把「一次最多取几轮」（`anchorExplain.maxFetchRounds`）调大，或者把一个更大的选区作为锚点。',
       { roundsUsed, rejectedCount, turnLimit, lastRejectReason: lastRejectReason ?? null },
     );

@@ -74,6 +74,8 @@ function harness(
     maxFetchRounds?: number;
     fetchPolicy?: ContextFetchPolicy;
     candidates?: readonly string[];
+    /** 换掉适配器的取件实现（D96：模拟"文件不存在"这类读取失败） */
+    fetchImpl?: (req: ContextRequest) => Promise<string>;
   } = {},
 ): Harness {
   const requests: ChatRequest[] = [];
@@ -93,7 +95,9 @@ function harness(
     capabilities: { contextTypes: ['file'], maxSpan: 5 },
     fetchContext(req) {
       fetches.push(req);
-      return Promise.resolve(`文件：${FILE}\n行 1-10：\n 1\t#include <stdio.h>`);
+      return opts.fetchImpl
+        ? opts.fetchImpl(req)
+        : Promise.resolve(`文件：${FILE}\n行 1-10：\n 1\t#include <stdio.h>`);
     },
   };
 
@@ -163,6 +167,67 @@ test('取件被拒（漫游到别的文件）：**不抛错**，回灌拒绝原�
   assert.match(toolMsg?.content ?? '', /请求被拒绝/, '回灌的文案带固定前缀（§3.2）');
   assert.match(toolMsg?.content ?? '', /只允许取锚点所在的文件/);
   assert.match(toolMsg?.content ?? '', /请基于现有信息作答/);
+});
+
+test('D96：取件的文件不存在（ENOENT）→ 不中止，回灌失败说明 + 候选清单，模型改用正确名字后照常出讲解', async () => {
+  // 用户实测的形状：模型把构建目录当前缀拼进 path，字符串解析能过闸门，文件却在磁盘上不存在
+  const MISSING = 'C:\\repo\\test\\_build_tmp\\transport_uart.c';
+  let call = 0;
+  const h = harness(
+    [
+      toolTurn({ request_type: 'file', start: 1, end: 30, reason: '看发送函数', path: MISSING }, 'call_bad'),
+      toolTurn({ request_type: 'file', start: 1, end: 10, reason: '再看头文件', path: 'uart.h' }, 'call_good'),
+      { content: validJson(), toolCalls: [] },
+    ],
+    {
+      fetchPolicy: { scope: 'related', roots: ['C:\\repo\\test'], maxLines: 400 },
+      candidates: ['ring_buffer.h', 'uart.h'],
+      fetchImpl: (req) => {
+        call += 1;
+        if (call === 1) {
+          return Promise.reject(new Error(`ENOENT: no such file or directory, open '${req.params.path}'`));
+        }
+        return Promise.resolve(`文件：${req.params.path}\n行 1-10：\n 1\tvoid uart_send(uint8_t b);`);
+      },
+    },
+  );
+  const result = await h.run();
+
+  assert.equal(result.summary, '这是一段出队逻辑。', '读取失败绝不等于整次讲解失败（D96 之前就是 ENOENT 炸穿）');
+  const feedback = (h.requests[1]?.messages ?? []).find((m: ChatMessage) => m.role === 'tool');
+  assert.ok(feedback, '失败也要以 role=tool 回灌，不能抛出循环');
+  assert.match(feedback?.content ?? '', /取件失败/);
+  assert.match(feedback?.content ?? '', /_build_tmp.transport_uart\.c/, '要点名解析出来的那个路径');
+  assert.match(feedback?.content ?? '', /不要猜路径/);
+  assert.match(feedback?.content ?? '', /- uart\.h/, '候选清单原样列出（模型才有活路）');
+  assert.match(feedback?.content ?? '', /- ring_buffer\.h/);
+
+  // 失败的那次**不消耗**取件预算：第二次取件照常放行（失败没有内容可回灌，不该罚它）
+  assert.equal(h.fetches.length, 2);
+  // 日志里必须留得住这次失败（§7：每次取件都要落日志，包括没读成的）
+  const failed = h.logger.entries().find((e) => e.accepted === false && (e.rejectReason ?? '').includes('文件打不开'));
+  assert.ok(failed, '读取失败要进取件日志');
+});
+
+test('D96：取件连续打不开也会收场，报错里说清"打不开 N 次"（不是假话）', async () => {
+  const forever = Array.from({ length: 8 }, (_, i) =>
+    toolTurn({ request_type: 'file', start: 1, end: 5, reason: '再试一次', path: `nope_${i}.h` }, `call_${i}`),
+  );
+  const h = harness(forever, {
+    maxFetchRounds: 1,
+    fetchPolicy: { scope: 'related', roots: ['C:\\repo\\test'], maxLines: 400 },
+    fetchImpl: () => Promise.reject(new Error('ENOENT: no such file or directory, open \'C:\\repo\\test\\nope.h\'')),
+  });
+
+  await assert.rejects(
+    () => h.run(),
+    (err: unknown) => {
+      assert.ok(err instanceof AnchorError);
+      assert.equal(err.code, 'MAX_ROUNDS_EXCEEDED');
+      assert.match(err.message, /打不开 \d+ 次/, '失败的取件既不是"成功"也不是"被拒"，报错里要有它自己的账');
+      return true;
+    },
+  );
 });
 
 test('重复取件：第二次命中去重，不再读文件，并把上次内容再给一遍', async () => {
