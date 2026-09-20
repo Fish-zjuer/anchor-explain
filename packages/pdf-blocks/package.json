@@ -1,0 +1,18 @@
+{
+  "name": "@anchor/pdf-blocks",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PDF 拆块引擎：文字项 -> 逻辑块流（分栏/成段/标题/跨页缝合/阅读序）+ 手修操作 + 块身份与问答线程模型。零 vscode / pdfjs 运行时依赖，输入是归一化坐标的纯数据。",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.2"
+  }
+}

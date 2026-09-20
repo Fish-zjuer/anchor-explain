@@ -65,6 +65,15 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/pdf-blocks:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.2
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
 packages:
 
   '@azure/abort-controller@2.2.0':

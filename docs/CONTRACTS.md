@@ -1291,3 +1291,36 @@ function describeError(e: unknown): string;   // 给用户看的一行，不含�
 
 > 注意：`ContextRequest` 被拒**不走这里**——非法取件请求回灌成工具结果让模型自我纠正
 > （`DECISIONS.md` D29）。`AnchorError` 只承载真正中断流程的错误。
+
+---
+
+## §11 PDF 拆块引擎（D99）
+
+**包**：`packages/pdf-blocks`（`@anchor/pdf-blocks`）—— **零 vscode / pdfjs 运行时依赖**的纯函数引擎，
+node --test 直测。谁抽文字项、怎么抽（webview 里的 pdf.js、线1 的无头 pdfjs-dist），引擎不关心：
+输入是**归一化坐标的纯数据**（与 core 的 bbox 同一约定：x/y 左上角、y 向下、[0,1]）。
+
+**管线**：文字项 → 行（`linesOf`：垂直中心 + **水平邻接**判据 —— 双栏版面左右栏共享 y，
+只看 y 会把两栏并成一条横线）→ 分栏判定（`detectColumns`：x 向投影的**行数**剖面，
+中段找贯穿空白沟；跨沟的行是 spanner，按 y 插回阅读流）→ 成块（`blocksOfColumn`：段距阈值 =
+**1.5 倍中位字高**（不是行距中位数 —— 稀疏栏两行页的中位行距就是空隙本身）；字高 > 1.25×中位数
+且无句末标点 → 标题块）→ 页内阅读序（`orderPage`：左栏读完读右栏，通栏/图块按 y 插入）→
+跨页缝合（`stitchPages`：前块末尾无句末标点 + 后块以小写/CJK 开头 + 都不是标题/列表 → 合并，
+**保守优先**，`unstitch` 一键拆回）。
+
+**块身份（解答附着在块上的地基）**：`blockId = docId | 首 part 页码与 bbox（三位小数）
+| 文字长度 | 开头 24 字指纹`。同一份 PDF 重拆两次 ID 不变；**手修（合并/拆开）改变内容 →
+ID 随内容变，这是刻意的** —— 合并块是"另一个块"，旧 ID 不许被冒用。
+
+**页眉页脚**：简单页码样式在行级过滤（`isPageFurniture`：页面上下边缘 + 整行是页码）；
+**带文字的模板页脚/书眉**（"XX Press — PAGE 12"）需要全文档视野 —— 同一签名（数字掩成 #）
+在 ≥3 页边缘重复 → 整批剔除（`dropFurniture`）。**必须发生在缝合之前**：页脚在页末，
+先缝后剔会把下一页的正文一起扔掉。
+
+**问答线程**：`Thread { blockIds, question, answer, createdAt, model?, followUps[] }` +
+`ThreadStore`，纯操作在 `threads.ts`（挂块/按块查/组线程归末块/追问/上下文拼装 ——
+追问上下文 = 块原文 + 线程本身，有界）。落盘是调用方的事。
+
+**诚实边界**：对**有文字层**的教材/论文（单栏/双栏）好用；启发式不承诺 100% 准 ——
+手修（`mergeBlocks`/`unstitch`/`setKind`/`fillImageText`）与框选兜底是设计的一部分。
+扫描件（无文字层）V1 不进块流；公式/复杂表格按普通文本块处理，不保证语义完整。
