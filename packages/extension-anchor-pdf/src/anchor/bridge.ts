@@ -26,7 +26,21 @@ export type HostToSelect =
    * 任何高亮框）因此收窄为：**不许常驻/自动的框，只允许"用户点击触发、会自动消失"的位置提示**。
    * 这条消息只由宿主在"用户点了某一步"时发出（`revealStep`），自动播放永远不发。
    */
-  | { type: 'anchor:flashRegion'; page: number; bbox: BBox };
+  | { type: 'anchor:flashRegion'; page: number; bbox: BBox }
+  // ── D104（拆块活页）：以下四条不在 §5.2 的冻结集合里，是加法扩展 ──
+  // （编号说明：这几条原先写在注释里的号是 `D100`，而 `D100` 是另一件"块身份冻结"。
+  //   见 DECISIONS.md 的 D100 末尾与 D104。CONTRACTS §5.2 已同步。）
+  /** 页模式：pdf.js 切成"整页翻看"（不允许连续滚动），并开始观测停稳的页 */
+  | { type: 'anchor:pageMode' }
+  /** 让注入脚本抽取某一页的文字项（归一化坐标）—— 拆块的原料 */
+  | { type: 'anchor:requestPageText'; page: number }
+  /**
+   * 在第 page 页上显示块覆盖层（空白暗下去 + 圆角细框）。
+   * **注入脚本收到后清掉旧块再画新的** —— 翻页即散、不持久（约束 1 的 D104 版：
+   * 覆盖层是显式新交互、瞬时、绝不改文档）。
+   */
+  | { type: 'anchor:showBlocks'; page: number; blocks: { id: string; bbox: BBox; kind: 'text' | 'heading' | 'image'; selected: boolean }[] }
+  | { type: 'anchor:clearBlocks' };
 
 // ── §5.2 注入脚本 → 宿主 ────────────────────────────────────────────────────
 
@@ -56,7 +70,14 @@ export type SelectToHost =
       extractedText?: string;
       geometry?: CapturedGeometry;
     }
-  | { type: 'anchor:cancelled' };
+  | { type: 'anchor:cancelled' }
+  // ── D104（拆块活页）：以下三条同样是加法扩展 ──
+  /** 某页停稳了（切页后约 0.9 秒没有新的翻页动作）—— 宿主据此开始处理该页 */
+  | { type: 'anchor:pageSettled'; page: number }
+  /** `anchor:requestPageText` 的回答：该页的文字项（归一化坐标，y 向下）。可能为空（无文字层） */
+  | { type: 'anchor:pageText'; page: number; items: { str: string; x: number; y: number; w: number; h: number }[] }
+  /** 用户点了覆盖层里的某一块（选中/取消由宿主维护，脚本只报事实） */
+  | { type: 'anchor:blockClick'; id: string };
 
 // ── 守卫 ────────────────────────────────────────────────────────────────────
 
@@ -102,6 +123,24 @@ export function parseSelectMessage(raw: unknown): SelectToHost | null {
   if (!isRecord(raw) || typeof raw.type !== 'string') return null;
 
   if (raw.type === 'anchor:ready' || raw.type === 'anchor:cancelled') return { type: raw.type };
+
+  // ── D104 的三条加法消息（同样不可信，逐条守卫） ──
+  if (raw.type === 'anchor:pageSettled') {
+    return isPositiveInt(raw.page) ? { type: 'anchor:pageSettled', page: raw.page } : null;
+  }
+  if (raw.type === 'anchor:blockClick') {
+    return typeof raw.id === 'string' && raw.id !== '' ? { type: 'anchor:blockClick', id: raw.id } : null;
+  }
+  if (raw.type === 'anchor:pageText') {
+    if (!isPositiveInt(raw.page) || !Array.isArray(raw.items)) return null;
+    const items: { str: string; x: number; y: number; w: number; h: number }[] = [];
+    for (const it of raw.items) {
+      if (!isRecord(it) || typeof it.str !== 'string') continue;
+      if (!isFiniteNumber(it.x) || !isFiniteNumber(it.y) || !isFiniteNumber(it.w) || !isFiniteNumber(it.h)) continue;
+      items.push({ str: it.str, x: it.x, y: it.y, w: it.w, h: it.h });
+    }
+    return { type: 'anchor:pageText', page: raw.page, items };
+  }
 
   if (raw.type !== 'anchor:captured') return null;
   if (!isPositiveInt(raw.page)) return null;

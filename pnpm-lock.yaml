@@ -35,6 +35,9 @@ importers:
       '@anchor/core':
         specifier: workspace:*
         version: link:../core
+      '@anchor/pdf-blocks':
+        specifier: workspace:*
+        version: link:../pdf-blocks
       pdfjs-dist:
         specifier: ^6.3.289
         version: 6.3.289

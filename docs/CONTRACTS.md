@@ -51,6 +51,7 @@ interface Anchor {
   neighborHint?: string;     // 如 "第 23 页附近"
   focus?: string;            // D79：用户写的"这段想重点讲什么"（可选）
   segments?: Location[];     // D80：多段锚点 —— 用户实际选中的那几段；D98 起放宽为 Location[]（PDF 拆块器的多块锚点也走它），**必须与 location 同源**（代码锚点配代码段 / PDF 锚点配 PDF 段）
+  blockIds?: string[];       // D104：这根锚点由哪些**块**组成（拆块器的挂载模型）。**可选** —— 框选兜底的锚点没有它，读它的地方一律要能退化
 }
 
 > **D80：多段时 `location` 只是「并集的外框」，不是用户选了什么。**
@@ -675,7 +676,14 @@ type HostToSelect =
   | { type: 'anchor:enterSelectMode' }
   | { type: 'anchor:exitSelectMode' }
   | { type: 'anchor:gotoPage'; page: number }
-  | { type: 'anchor:flashRegion'; page: number; bbox: [number,number,number,number] };  // ← S6 补（D76）
+  | { type: 'anchor:flashRegion'; page: number; bbox: [number,number,number,number] }  // ← S6 补（D76）
+  // ── D104 拆块活页：加法扩展（四条）────────────────────────────────────────
+  | { type: 'anchor:pageMode' }                       // pdf.js 切成"整页翻看"（不许连续滚动）+ 开始观测停稳的页
+  | { type: 'anchor:requestPageText'; page: number }  // 抽某一页的文字项（归一化坐标）—— 拆块的原料
+  | { type: 'anchor:showBlocks'; page: number;        // 画块覆盖层（空白暗下去 + 圆角细框）
+      blocks: { id: string; bbox: [number,number,number,number];
+                kind: 'text' | 'heading' | 'image'; selected: boolean }[] }
+  | { type: 'anchor:clearBlocks' };                   // 撤掉覆盖层
 
 // 注入脚本 → 宿主
 type SelectToHost =
@@ -683,7 +691,29 @@ type SelectToHost =
   | { type: 'anchor:captured'; page: number; bbox: [number,number,number,number];
       capturedImage?: string; extractedText?: string;
       geometry?: CapturedGeometry }          // ← S5 追加，可选
-  | { type: 'anchor:cancelled' };
+  | { type: 'anchor:cancelled' }
+  // ── D104 拆块活页：加法扩展（三条）────────────────────────────────────────
+  | { type: 'anchor:pageSettled'; page: number }      // 某页停稳（切页后约 0.9s 无新的翻页动作）→ 宿主开始处理该页
+  | { type: 'anchor:pageText'; page: number;          // requestPageText 的回答；items 可能为空（无文字层）
+      items: { str: string; x: number; y: number; w: number; h: number }[] }
+  | { type: 'anchor:blockClick'; id: string };        // 用户点了覆盖层里的某一块（脚本只报事实，选中态归宿主）
+```
+
+**D104 的四条边界约定**（这四条是"加法"而不是"改已有"，理由同 D76 第 1 条）：
+
+1. **覆盖层不持久**：注入脚本收到 `showBlocks` **先清旧块再画新的**，翻页即散，绝不改文档。
+   这是约束 1 在 D104 下的形态（"显式、瞬时、绝不改文档"），与 D103 的注释写入正好成一对：
+   屏幕上的瞬时 vs 文件里的常驻。
+2. **脚本只报事实**：`blockClick` 只说"哪一块被点了"，选中/取消由宿主维护 ——
+   与 §5.3 同一条纪律（"谁发命令谁承担能不能发的判断"）。
+3. **停稳是脚本观测、宿主处置**：`pageSettled` 的 0.9s 只写在脚本里（它是唯一知道用户翻页动作的地方），
+   宿主不重复计时，也不把"没收到停稳"当成"这一页没问题"。
+4. **三条上行消息逐条守卫**（`parseSelectMessage`）：与 `anchor:captured` 同一立场 ——
+   注入脚本的输出对宿主而言和 AI 的输出一样不可信，坏的**一律返回 null 让调用方忽略**，
+   绝不让一个 `page: "三"` 流进 `PDFLocation`。
+
+**⚠ 未完成**（做"页面上就地显示块"之前先读 `DECISIONS.md` D104）：注入脚本侧的四条处理分支
+与停稳计时、宿主侧的消费者（`pageSettled`/`pageText`/`blockClick` → 拆块 → `showBlocks`）尚未实现。
 
 // 【S5 追加，非规范原文】原始像素几何。加它是为了让"归一化"这件事由**有单测的宿主代码**定案：
 // 注入脚本不参与类型检查、也没法被单测，让它独自承担唯一有对错的那门换算等于让它失去覆盖。
@@ -1327,9 +1357,10 @@ node --test 直测。谁抽文字项、怎么抽（webview 里的 pdf.js、线1 
 7. **跨页缝合**（`stitchPages`）：前块末尾无句末标点 + 后块以小写/CJK 开头 + 都不是标题/列表
    → 合并，保守优先，`unstitch` 一键拆回。
 
-**块身份（解答附着在块上的地基）**：`blockId = docId | 首 part 页码与 bbox（三位小数）
-| 文字长度 | 开头 24 字指纹`。同一份 PDF 重拆两次 ID 不变；**手修（合并/拆开）改变内容 →
-ID 随内容变，这是刻意的** —— 合并块是"另一个块"，旧 ID 不许被冒用。
+**块身份（解答附着在块上的地基）**：**D100 起身份由 `registry.ts` 冻结**（见 §12.1）。
+`blockId` 降级为**内容指纹**，只当别名用。D99 那版"ID 由内容算出来"在"块的内容会被陆续补出来"
+这件事上不成立 —— OCR 回填（`fillImageText`）、缝合（`stitchPages`）、手修（`mergeBlocks`/`unstitch`）、
+引擎升级都会换掉它，用户问过的问答就**静默**失去落点。
 
 **页眉页脚**：主防线是第 3 步的行级掩码；`dropFurniture`（块级）保留为兜底，带**安全护栏**：
 只动单行且 ≤60 字的边缘块 —— 页脚被并进正文段落时，删块就是删正文。
@@ -1344,5 +1375,165 @@ ID 随内容变，这是刻意的** —— 合并块是"另一个块"，旧 ID �
 手修（`mergeBlocks`/`unstitch`/`setKind`/`fillImageText`）与框选兜底是设计的一部分。
 扫描件（无文字层）V1 不进块流；公式/复杂表格按普通文本块处理，不保证语义完整。
 **已知未做**：图内文字（坐标轴标签、图例、代码标识符，多为 1–8 字）目前各自成块 ——
-它们是**图的一部分**，要等图块/图注区域检测（D102）把它们归到图那一块里；
+它们是**图的一部分**，要等图块/图注区域检测（D102 第 5 条）把它们归到图那一块里；
 实测这类块占块数 8.6%（TraceMonkey）/ 20.2%（arXiv）/ 35.0%（Cadence），占字数 ≤4.9%。
+
+---
+
+## §12 块流 → 问出去（D100/D101）
+
+三件：**身份冻结**（`registry.ts`）→ **队列与编号**（`queue.ts`）→ **重排稿**（`reflow.ts`）。
+都在 `@anchor/pdf-blocks` 里，零依赖、node --test 直测。视图侧（卡片流）在 `extension-anchor`
+的 `src/blocks/ui/`。
+
+### §12.1 身份冻结 `registry.ts`（D100）
+
+```ts
+interface RegistryEntry { id: string; partsKey: string; parts: BlockPart[]; aliases: string[] }
+interface BlockRegistry {
+  version: 1; docId?: string; nextSeq: number;
+  entries: RegistryEntry[];   // 当前有效
+  retired: RegistryEntry[];   // 被并掉的（墓园）—— 取消缝合要把原块认回来，所以必须留
+}
+
+emptyRegistry(docId?): BlockRegistry
+registryFrom(blocks, docId?): ResolveResult          // 首次处理一份文档
+resolveIds(registry, blocks): ResolveResult          // 幂等；只动 block.id，不动顺序/内容/parts
+resolveAlias(registry, id): string                   // 历史 ID → 当前 ID；查不到**原样返回、绝不抛**
+isKnownId(registry, id): boolean
+aliasesOf(registry, id): readonly string[]           // 迁移问答时把旧键一起搬过去
+
+interface ResolveResult { registry; blocks; minted: readonly string[]; reclaimed: readonly string[] }
+PART_EPS = 0.002      // parts 视为"同一块"的坐标容差（抽取抖动实测 < 0.0005）
+partKeyOf / partsKeyOf / partsNearlyEqual / isSubset
+```
+
+**匹配优先级**：近邻精确 → 长大了（本块 parts 包含某些项 = 缝合，复用最靠前那一个的 ID，
+其余退休并改嫁）→ 变小了（被包含 = 取消缝合，**先去 `retired` 认回原块**；认不回来则
+**第一个碎片继承容器的身份**）→ 铸新 ID。每次都把传入的 `block.id`（内容指纹）记成别名。
+
+**ID 只增不减**；退休的 ID 进 `aliases`，`resolveAlias` 一路查得回去。
+
+### §12.2 队列与编号 `queue.ts`（D101）
+
+```ts
+type OrderMode = 'reading' | 'pick'
+interface BlockQueue { mode: OrderMode; picked: readonly string[] }   // picked 永远是**点选先后**
+type BlockIndex = ReadonlyMap<string, Block>
+
+EMPTY_QUEUE
+enqueue(queue, id): { queue; added: boolean }   // 幂等；**必须**回报"这次加没加进去"（D81）
+dequeue / clearQueue / hasBlock / setMode / toggleMode
+orderKeyOf(block): [page, y]                    // 排序键 = (页码, y)，**不用数组下标**
+readingComparable(queue, index): boolean        // 每一块都在索引里才排得了阅读序
+effectiveMode(queue, index): OrderMode          // 选了 reading 但排不了 → 实际用 pick
+orderedIds(queue, index): readonly string[]     // **位次的唯一来源**
+orderedBlocks(queue, index): readonly Block[]   // 重排器吃这个
+badgeNumbers(queue, index): ReadonlyMap<string, number>   // 块 ID → 发送位次（1-based）
+positionOf(queue, index, id): number            // 不在队列给 0
+previewPosition(queue, index, candidateId): number        // 悬停预览，纯计算，不改队列
+describeOrder(queue, index): string             // 说**实际生效**的那一种（D68：不许说反话）
+```
+
+**不变量**：`badgeNumbers` 的位次 ≡ `orderedIds` 的序号 ≡ 重排稿里的 `[N]`（约束 107）。
+
+### §12.3 重排稿 `reflow.ts`（D101）
+
+```ts
+interface BlockUnit { block: Block; caption?: Block }
+unitsOf(blocks): BlockUnit[]              // 图注归并**唯一判据**（视图与稿子共用）
+captionTextOf(unit): string | undefined
+
+interface ReflowImage { index; blockId; caption?; parts; captionParts? }
+interface ReflowBlockRef { index; blockId; kind; as: 'text' | 'image' }
+interface Reflow {
+  text: string; images: readonly ReflowImage[]; blocks: readonly ReflowBlockRef[];
+  chars: number; approxTokens: number; truncated: boolean; droppedBlockIds: readonly string[];
+}
+reflow(blocks, opts?): Reflow
+// opts: { docLabel?, maxChars?, includeImages?=true, askForRefs?=true }
+densify(text) / approxTokens(text) / CAPTION_START
+```
+
+**纪律**：① 文字用文字发、图只发**那一块的裁剪**（`images` 只出清单，栅格是调用方的事）；
+② 超预算**如实汇报**（`truncated` + `droppedBlockIds` + 抬头写明），截断以**块**为单位，不发半块；
+③ `includeImages: false` 时图注仍在正文里（模型不至于看不见那里有张图），本地可退化成纯文本小模；
+④ `askForRefs` 是**答案自动附着**的前提（模型按块号引用，程序才能挂回去）。
+
+### §12.4 卡片视图 `extension-anchor/src/blocks/ui/`（D101）
+
+```ts
+// model.ts —— 纯函数，不 import 'vscode'
+interface BlockCard { blockId; kind; text; partTexts; imageUrl?; empty; pageLabel;
+                      multiPage; badge?; preview?; grouped; stitched; captionId? }
+interface BlockView { cards: readonly BlockCard[]; folded: ReadonlyMap<string,string>; orphans: readonly string[] }
+blockViewOf(blocks, queue, index, opts?: { images?: ReadonlyMap<string,string> }): BlockView
+cardsSummary(view, queued, orderText): string
+
+// html.ts —— 纯函数（cspSource 由调用方传）
+interface BlockStreamView { docLabel; summary; view: BlockView; orderText; queued }
+renderBlockStreamHtml(cspSource, view: BlockStreamView, fontScale?, language?): string
+esc(text): string                         // 块正文是不可信内容，一律转义
+
+// 每块的 DOM（D115：**相册** —— 一层内容 + 一条底栏 + 一颗数字，砖上没有任何 3D）：
+//   .card[data-block]  >  .thumb       （缩略图：文字块是正文片段 + 底部渐隐；图块是裁剪图）
+//                      >  .card-bar    （页码 / 属性，悬停或选中才显）
+//                      >  .card-action （右上角那颗灰半透明粗体数字）
+//   版面三条（用户给的相册参照："每个块等大、密集…应该稍微密一点，方一点"）：
+//     等大 aspect-ratio: 1/1 + 网格列宽一致 / 密集 --anchor-gap: 4px / 方 --anchor-radius: 3px
+//   **缩略图不必完整，但全文拿得到**：.thumb-text 底部渐隐（mask-image 到 100%），
+//   整块卡的 title 是"页码 + 位次 + 正文（截 600 字）"——"不完整"不等于"看不到"。
+//   ⚠ D106~D114 那七轮立体**在 D115 全删了**：`.window`（孔口）/ `.plane`（会转的底面）/
+//     `.wall-*`（孔沿）/ `.glass`（玻璃）四层、视线 `--eye-x/--eye-y` 与它的 `@property`、
+//     五个几何旋钮（depth/far/tilt/plane/rim）、`cqh` 与 `container-type`。
+//     用户的原话："去掉后面的所有设计吧，你根本实现不了我的想法，那都去掉吧，只留相册设计"。
+//     **删干净比留着调参重要** —— 留着就会有人再去调它（七轮都是这么来的）。
+//   ⚠ 那七轮里压在内容之上的那两片（底面暗角 `.plane::after`、玻璃反光 `.glass`）
+//     就是用户说的"有一个固定遮罩在影响我看底面"；它们跟着一起没了。
+//     现在一格的最上面永远是 `.thumb` 本身（实装里用 elementFromPoint 量过）。
+//
+// styles.ts / clientScript.ts —— 字符串常量，内联进 HTML（同 sidebar 的做法）
+//
+// ⚠ styles.ts / clientScript.ts 是**模板字符串的子串**：内部一个字都不许出现反引号
+//   （会当场把 CSS 截断），也不许出现未求值的 ${（会**静默**留在产物里，
+//   只有 test/blockView.test.ts 那条断言挡得住）。踩过三次，都记在案
+//   （D112 那次是 check-inline-strings.mjs 当场拦下的）。
+```
+
+**§12.4.0 手感纪律（D105 立、D115 收敛到两条，用户实测骂出来的）**：**静止是默认** —— 块与块内元素在
+任何"用户没在操作"的状态下没有动画；**外框绝对不动**：砖的位置、角度、大小在任何状态下都不许变
+（悬停位移被骂过"很吸引视线，又让人很难受"；整块砖转也被骂过"晃动很累、只能向下歪"）。
+整份 CSS 里**不许出现 `perspective` / `rotate` / `matrix3d` / `preserve-3d` / `cqh`**
+（D115：一个 3D 都没有），卡片 `transition` 里不许出现 `transform`（`.pop` 那一下是 keyframes，不是 transition）。
+**不许整屏扫光**（做过一版 `.cone`，被否）；**不许有暖黄光**（`rgba(255,209,128)` 与 `--anchor-warm` 已删）；
+**模糊与遮罩不许回来**（D113 删掉对焦那两层，D115 删掉暗角与玻璃反光）；`--tx/--ty/--px/--py/--shade`
+那套跟随变量不许回来。唯一会动的是**指针的回执**，而且只动指针正指着的那一块：
+① **按下去弹一下**（`.pop`，过冲，幅度 3%）；② **悬停只换边框色**（`--vscode-focusBorder`）——
+不位移、不缩放、不倾斜。`prefers-reduced-motion` 下过渡与那一下弹都摘掉（去掉的是"动"，版面一条都不动）。
+锁在 `test/blockView.test.ts` 的断言里（含"砖上没有变换""孔口/底面/孔沿/玻璃四层不许回来"
+"视线那两个变量与 @property 不许回来""五个几何旋钮不许回来""暗角与玻璃反光不许回来"
+"模糊与第二层内容不许回来""跟随变量不许回来""不许有黄光""扫光不许回来"），
+另有相册那条"等大、密集、方"与"缩略图不必完整但 title 里有全文"。
+另有 `scripts/check-inline-strings.mjs` 守着"内联字符串里不许有反引号"（挂在 `pnpm check` 最前）。
+
+**§12.4.1 CSP（与侧边栏的唯一差别）**：多放行 `img-src ${cspSource} data:`。
+**不放行的话所有图块会静默变空白**（CSP 违规不抛错，只在控制台里躺着）。
+
+**§12.4.2 面板纪律**：面板只做两件事 —— 把模型画出来 + 把用户动作发回去。
+**不维护任何选中状态**，真相只在宿主那边（同侧边栏："谁发命令谁承担能不能发的判断"）。
+
+**§12.4.3 徽标的两个取值渲染进 DOM、由 CSS 切换**：
+`data-pos`（已入队 = 发送位次）/ `data-preview`（未入队 = 加进去会是第几），
+CSS `content: attr()` 在"悬停 / 选中"下切显。**不给徽标留第二份真相**。
+数字样式照用户原话：**灰色、半透明、粗体**（选中态也不把按钮染蓝，否则它就不灰了）。
+
+**§12.4.4 三种鼠标动作**（`blocks:range` 的语义）：
+
+| 动作 | 消息 |
+|---|---|
+| 点一下 | `blocks:toggle`（再点移出） |
+| Shift + 点 | `blocks:range {from, to}`（从上一次点到的连选到这块） |
+| 按住拖过几块 | `blocks:range {from, to}`（起点到当前，滑选） |
+
+底部按钮：`blocks:mode` / `blocks:clear` / `blocks:ask`。
+**`blocks:ask` 已声明、宿主尚未接线**（S-P2 接）。

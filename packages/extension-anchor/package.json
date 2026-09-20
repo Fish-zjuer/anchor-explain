@@ -75,7 +75,9 @@
             "media": {
               "markdown": "media/walkthrough/setup.md"
             },
-            "completionEvents": ["onCommand:anchorExplain.setApiKey"]
+            "completionEvents": [
+              "onCommand:anchorExplain.setApiKey"
+            ]
           },
           {
             "id": "capture",
@@ -84,7 +86,9 @@
             "media": {
               "markdown": "media/walkthrough/capture.md"
             },
-            "completionEvents": ["onCommand:anchorExplain.capture"]
+            "completionEvents": [
+              "onCommand:anchorExplain.capture"
+            ]
           },
           {
             "id": "flow",
@@ -93,7 +97,9 @@
             "media": {
               "markdown": "media/walkthrough/flow.md"
             },
-            "completionEvents": ["onCommand:anchorExplain.next"]
+            "completionEvents": [
+              "onCommand:anchorExplain.next"
+            ]
           },
           {
             "id": "pdf",
@@ -102,7 +108,9 @@
             "media": {
               "markdown": "media/walkthrough/pdf.md"
             },
-            "completionEvents": ["onCommand:anchorPdf.selectRegion"]
+            "completionEvents": [
+              "onCommand:anchorPdf.selectRegion"
+            ]
           }
         ]
       }
@@ -193,42 +201,42 @@
         "title": "打开设置（配模型端点）",
         "category": "Anchor"
       },
-    {
-      "command": "anchorExplain.setApiKey",
-      "title": "设置 API Key（存进 SecretStorage）",
-      "category": "Anchor"
-    },
-    {
-      "command": "anchorExplain.fontLarger",
-      "title": "调大讲解面板字号",
-      "category": "Anchor"
-    },
-    {
-      "command": "anchorExplain.fontSmaller",
-      "title": "调小讲解面板字号",
-      "category": "Anchor"
-    },
-    {
-      "command": "anchorExplain.fontReset",
-      "title": "重置讲解面板字号",
-      "category": "Anchor"
-    },
-    {
-      "command": "anchorExplain.exportLast",
-      "title": "导出上次讲解为 Markdown",
-      "category": "Anchor"
-    },
-    {
-      "command": "anchorExplain.openHistoryFolder",
-      "title": "打开讲解历史文件夹",
-      "category": "Anchor"
-    },
-    {
-      "command": "anchorExplain.toggleLanguage",
-      "title": "切换讲解语言（中文 / English）",
-      "category": "Anchor"
-    }
-  ],
+      {
+        "command": "anchorExplain.setApiKey",
+        "title": "设置 API Key（存进 SecretStorage）",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.fontLarger",
+        "title": "调大讲解面板字号",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.fontSmaller",
+        "title": "调小讲解面板字号",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.fontReset",
+        "title": "重置讲解面板字号",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.exportLast",
+        "title": "导出上次讲解为 Markdown",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.openHistoryFolder",
+        "title": "打开讲解历史文件夹",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.toggleLanguage",
+        "title": "切换讲解语言（中文 / English）",
+        "category": "Anchor"
+      }
+    ],
     "keybindings": [
       {
         "command": "anchorExplain.capture",
@@ -404,6 +412,7 @@
   },
   "dependencies": {
     "@anchor/core": "workspace:*",
+    "@anchor/pdf-blocks": "workspace:*",
     "pdfjs-dist": "^6.3.289"
   },
   "devDependencies": {

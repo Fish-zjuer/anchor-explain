@@ -232,6 +232,8 @@ detailed.md → `detailed` 档；线上常量有耦合锁，改 .md 后重新生
 | `src/sidebar/statusBar.ts` | 状态栏提示（键位读用户实际绑定、staleness 提示） |
 | `src/sidebar/keybindingResolve.ts` | 键位表（**S8 起两张：线1 + 线2**，各有各的镜像锁）+ JSONC 解析 + 显示格式化（vscode-free） |
 | `src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**内联进产物**；客户端脚本不参与类型检查 |
+| `src/blocks/ui/model.ts` | **S-P1 新增**。块流视图的**视图模型**：块流 + 队列 → 卡片（页码标签含跨页、徽标=发送位次、悬停预览位次、图注折进图卡、孤儿 ID 报出）。零 vscode 依赖，有单测 |
+| `src/blocks/ui/{styles,html,clientScript}.ts` | **S-P1 新增**。相册卡片的 webview 资源（同样内联，同样只用 `--vscode-*` 主题变量）；CSP 比侧边栏多放行 `img-src … data:`（图块裁剪图是 dataURL，不放行会**静默**空白）。客户端脚本只渲染与派发，**不维护任何选中状态** |
 | `src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（五个方法全部是真的，没有覆盖层） |
 | `src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` |
 

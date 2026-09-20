@@ -83,6 +83,14 @@ export interface Anchor {
    *         两者等价，不值得再造一个长度为 1 的数组。
    */
   segments?: Location[];
+  /**
+   * 【D104 加法扩展】PDF 拆块器给的多块身份：这根锚点由哪些**块**组成。
+   *
+   * @anchor 问答要附着在块上（拆块器的挂载模型），而块的身份只在拆块那一刻的
+   *         BlockStream 里 —— 把它随锚点带过来，讲解成功后才能把问答挂回正确的块。
+   * **可选**：框选兜底的锚点没有它（挂载与它无关），所有读它的地方都必须能退化。
+   */
+  blockIds?: string[];
 }
 
 export interface ContextRequest {
