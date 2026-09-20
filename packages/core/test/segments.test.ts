@@ -39,8 +39,9 @@ test('多段：按行号排序，location 是**并集外框**，且每段都在 
   const merged = mergeSegments([seg(80, 90), seg(10, 14), seg(40, 48)], META);
 
   assert.deepEqual(merged.location, { filePath: FILE, lineStart: 10, lineEnd: 90 });
+  // D98 起 `Anchor.segments` 放宽为 `Location[]`；代码锚点经 `segmentsOf` 收窄回代码段
   assert.deepEqual(
-    merged.segments?.map((s) => [s.lineStart, s.lineEnd]),
+    segmentsOf(merged)?.map((s) => [s.lineStart, s.lineEnd]),
     [
       [10, 14],
       [40, 48],

@@ -62,6 +62,16 @@ export function pageHeader(page: number): string {
   return `--- 第 ${page} 页 ---`;
 }
 
+/**
+ * 单次取件的字符上限（D98，与 `CodeAdapter` 的 `MAX_TEXT_CHARS` 同一条纪律）。
+ *
+ * @anchor 为什么必须有：闸门只拦"超过 5 页"，不拦"5 页里塞了多少字"——
+ *         教材一页正文轻松上万字符，5 页就是十几万，一次取件就能把上下文撑爆
+ *         （或把用户的账单撑爆）。截断不会误导模型：截断说明就写在结果末尾，
+ *         它知道该改取更小的页范围。
+ */
+export const MAX_FETCH_CHARS = 64 * 1024;
+
 /** 一页的文字；空页给一句明确的话，而不是一片空白 */
 function pageBody(page: PDFPageText | null): string {
   if (!page || page.text.trim() === '') return '（这一页没有文字层）';
@@ -92,7 +102,15 @@ export function createPdfAdapter(deps: PDFAdapterDeps): PDFAdapter {
         // 空白页也给出页头：模型要靠页头对齐页号，缺一页会让它把后面的内容整体错位
         blocks.push(pageHeader(page), pageBody(await source.page(page)));
       }
-      return blocks.join('\n');
+      const text = blocks.join('\n');
+      // 字符护栏（D98）：截断说明写在末尾，模型看得见自己拿到的是哪一段
+      if (text.length > MAX_FETCH_CHARS) {
+        return (
+          text.slice(0, MAX_FETCH_CHARS) +
+          `\n……（取件内容过长，已截断到前 ${MAX_FETCH_CHARS} 字符。要读后面的部分，请改取更小的页范围。）`
+        );
+      }
+      return text;
     },
 
     async pageCount(filePath: string): Promise<number | null> {

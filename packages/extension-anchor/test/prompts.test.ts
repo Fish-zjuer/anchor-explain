@@ -316,3 +316,109 @@ test('英文 user prompt：锚点描述与标题换成英文，候选清单照�
   assert.match(prompt, /- ring_buffer\.h/);
   assert.match(prompt, /Now produce the explanation JSON as required by the system prompt\./);
 });
+
+// ── D98：PDF 释义面与锚点描述 ─────────────────────────────────────────────
+
+const PDF_ANCHOR: Anchor = {
+  sourceType: 'pdf',
+  sourceId: 'sha1:pdf',
+  sourceName: 'sample.pdf',
+  location: { page: 23, bbox: [0.1, 0.2, 0.9, 0.35], filePath: 'C:/repo/docs/sample.pdf' },
+  extractedText: '第 23 页框选区域的文字。',
+};
+
+test('describeAnchor PDF：页码/框选范围之外必须给文件路径（page_range 的 path 只有这里能抄）', () => {
+  const text = describeAnchor(PDF_ANCHOR);
+  assert.match(text, /来源类型：pdf/);
+  assert.match(text, /文档名：sample\.pdf/);
+  assert.match(text, /页码：第 23 页/);
+  assert.match(text, /框选范围（归一化）：0\.1, 0\.2, 0\.9, 0\.35/);
+  assert.match(text, /文件路径：C:\/repo\/docs\/sample\.pdf/);
+
+  // 老锚点（S5 之前）没有 filePath：缺了就缺了，但不许报错
+  const oldAnchor = {
+    ...PDF_ANCHOR,
+    location: { page: 23, bbox: [0.1, 0.2, 0.9, 0.35] as [number, number, number, number] },
+  };
+  assert.doesNotMatch(describeAnchor(oldAnchor), /文件路径/);
+});
+
+test('describeAnchor PDF 多块：披露每一块 + 说明 location 要落在对应块上', () => {
+  const multi: Anchor = {
+    ...PDF_ANCHOR,
+    location: { page: 22, bbox: [0.1, 0.1, 0.9, 0.3], filePath: 'C:/repo/docs/sample.pdf' },
+    segments: [
+      { page: 22, bbox: [0.1, 0.1, 0.9, 0.3] },
+      { page: 23, bbox: [0.1, 0.2, 0.9, 0.35] },
+    ],
+  };
+  const text = describeAnchor(multi);
+  assert.match(text, /非连续的多块选择/);
+  assert.match(text, /共 2 块/);
+  assert.match(text, /第 1 块：第 22 页/);
+  assert.match(text, /第 2 块：第 23 页/);
+  assert.match(text, /照抄那一块的页码与框选范围/);
+
+  // 单块（segments 缺席或只有一块）不披露 —— 与代码线"长度为 1 不造数组"同一立场
+  assert.doesNotMatch(describeAnchor(PDF_ANCHOR), /多块选择/);
+});
+
+test('PDF 释义面：角色/输出形状/通用规则/取件四节全换，档位与示范不进', () => {
+  const prompt = buildSystemPrompt('standard', { sourceType: 'pdf' });
+  assert.match(prompt, /^# 角色/m);
+  assert.match(prompt, /文档讲解生成器/);
+  assert.match(prompt, /把它\*\*讲成人话\*\*/);
+  assert.match(prompt, /^# 输出形状/m);
+  assert.match(prompt, /步骤按\*\*逻辑\*\*切/);
+  assert.match(prompt, /^# 通用规则/m);
+  assert.match(prompt, /^# 取件（扩展环境的工具）/m);
+  assert.match(prompt, /`page_range`/);
+  assert.match(prompt, /省略即可/);
+
+  // 代码特有的东西一个都不该出现
+  assert.doesNotMatch(prompt, /代码讲解生成器/);
+  assert.doesNotMatch(prompt, /写入方 \/ 读取方/);
+  assert.doesNotMatch(prompt, /档位规则/);
+  assert.doesNotMatch(prompt, /# 示例/);
+  assert.doesNotMatch(prompt, /可能相关的文件/, 'PDF 取件只认锚点文档，没有候选清单');
+});
+
+test('PDF 输出契约：page/bbox 照抄锚点，禁止发明坐标与行号', () => {
+  const prompt = buildSystemPrompt('standard', { sourceType: 'pdf' });
+  assert.match(prompt, /"page": 23/);
+  assert.match(prompt, /"bbox": \[0\.10, 0\.20, 0\.90, 0\.35\]/);
+  assert.match(prompt, /照抄/);
+  assert.match(prompt, /不要自己发明坐标/);
+  assert.match(prompt, /也不要写 filePath 或行号/);
+});
+
+test('PDF repair 与 PDF system 同一份契约（D67 的规矩两种来源都成立）', () => {
+  const repair = buildRepairPrompt('{"summary": ""}', '- summary 为空', { sourceType: 'pdf' });
+  assert.match(repair, /"page": 23/);
+  assert.match(repair, /不要自己发明坐标/);
+  // 代码 repair 仍是行号契约
+  const codeRepair = buildRepairPrompt('{"summary": ""}', '- summary 为空', {});
+  assert.match(codeRepair, /lineStart/);
+  assert.doesNotMatch(codeRepair, /"page": 23/);
+});
+
+test('英文 PDF 释义面：与中文四节一一对应', () => {
+  const prompt = buildSystemPrompt('standard', { language: 'en', sourceType: 'pdf' });
+  assert.match(prompt, /^# Role/m);
+  assert.match(prompt, /document-explanation generator/);
+  assert.match(prompt, /^# Output shape/m);
+  assert.match(prompt, /^# General rules/m);
+  assert.match(prompt, /^# Fetching context/m);
+  assert.match(prompt, /Omitting `path` is fine/);
+  assert.match(prompt, /"page": 23/);
+  assert.doesNotMatch(prompt, /code-explanation generator/);
+  assert.doesNotMatch(prompt, /# Tier rules/);
+  assert.doesNotMatch(prompt, /# Examples/);
+});
+
+test('英文 describeAnchor PDF：文件路径与多块披露都有', async () => {
+  const { describeAnchorEn } = await import('../src/prompts/en.ts');
+  const text = describeAnchorEn(PDF_ANCHOR);
+  assert.match(text, /File path: C:\/repo\/docs\/sample\.pdf/);
+  assert.match(text, /Page: 23/);
+});

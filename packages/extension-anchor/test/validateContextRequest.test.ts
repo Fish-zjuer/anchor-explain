@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AdapterCapabilities, Anchor, ContextRequest } from '@anchor/core';
-import { validateContextRequest } from '../src/orchestrator/validateContextRequest.ts';
+import { validateContextRequest, describeFetched } from '../src/orchestrator/validateContextRequest.ts';
 import type {
   ContextFetchPolicy,
   ContextFetchState,
@@ -33,12 +33,12 @@ function codeAnchor(filePath = CODE_FILE): Anchor {
   };
 }
 
-function pdfAnchor(): Anchor {
+function pdfAnchor(filePath: string = 'C:/repo/docs/sample.pdf'): Anchor {
   return {
     sourceType: 'pdf',
     sourceId: 'sha1:y',
     sourceName: 'sample.pdf',
-    location: { page: 23, bbox: [0.1, 0.1, 0.5, 0.5] },
+    location: { page: 23, bbox: [0.1, 0.1, 0.5, 0.5], filePath },
   };
 }
 
@@ -361,4 +361,55 @@ test('D68 去重文案：PDF 用页码指认，不用文件名', () => {
   );
   assert.equal(again.accepted, false);
   assert.match(again.accepted === false ? again.reason : '', /第 3-5 页/);
+});
+
+// ── D98：page_range 的 path 口径（省略兜底 / 只认锚点文档 / 老锚点明说） ──────────
+
+test('D98 page_range：path 省略 = 兜底成锚点文档（放行请求里 materialize 成绝对路径）', () => {
+  const r = validateContextRequest(
+    { type: 'page_range', params: { start: 3, end: 5 }, reason: 'x' },
+    pdfAnchor(),
+    state({ capabilities: PDF_CAPS, pageCount: 30 }),
+  );
+  assert.equal(r.accepted, true);
+  if (r.accepted) {
+    assert.equal(r.request.params.path, 'C:/repo/docs/sample.pdf', '适配器拿到的必须是完整的绝对路径');
+  }
+});
+
+test('D98 page_range：path 写对（大小写/分隔符差异）也放行，同样归一', () => {
+  const r = validateContextRequest(
+    { type: 'page_range', params: { path: 'c:\\repo\\docs\\sample.pdf', start: 3, end: 5 }, reason: 'x' },
+    pdfAnchor(),
+    state({ capabilities: PDF_CAPS, pageCount: 30 }),
+  );
+  assert.equal(r.accepted, true, 'samePath 判等后应放行');
+});
+
+test('D98 page_range：path 指向别的文件 → 拒绝并给正确写法（只认锚点文档）', () => {
+  const r = validateContextRequest(
+    { type: 'page_range', params: { path: 'C:/repo/docs/other.pdf', start: 3, end: 5 }, reason: 'x' },
+    pdfAnchor(),
+    state({ capabilities: PDF_CAPS, pageCount: 30 }),
+  );
+  assert.equal(r.accepted, false);
+  assert.match(r.accepted === false ? r.reason : '', /只认锚点这一份文档/);
+  assert.match(r.accepted === false ? r.reason : '', /sample\.pdf/);
+});
+
+test('D98 page_range：老锚点没有 filePath → 明说拒绝，不再漏到适配器炸"参数不完整"', () => {
+  // 注意不能靠 pdfAnchor(undefined) 造老锚点 —— JS 默认参数对显式 undefined 一样生效。
+  const old: Anchor = { ...pdfAnchor(), location: { page: 23, bbox: [0.1, 0.1, 0.5, 0.5] } };
+  const r = validateContextRequest(
+    { type: 'page_range', params: { start: 3, end: 5 }, reason: 'x' },
+    old,
+    state({ capabilities: PDF_CAPS, pageCount: 30 }),
+  );
+  assert.equal(r.accepted, false);
+  assert.match(r.accepted === false ? r.reason : '', /没有携带 PDF 的文件路径/);
+});
+
+test('D98 describeFetched：page_range 带路径时说"文件名 的第 X-Y 页"，不说成行码', () => {
+  assert.equal(describeFetched({ type: 'page_range', path: 'C:/repo/docs/sample.pdf', start: 3, end: 5 }), 'sample.pdf 的第 3-5 页');
+  assert.equal(describeFetched({ type: 'page_range', path: null, start: 3, end: 5 }), '第 3-5 页');
 });

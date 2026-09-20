@@ -16,9 +16,9 @@
  * 本文件属 prompts/，**禁止 import 'vscode'**。
  */
 
-import { dirnameOf, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
+import { dirnameOf, isCodeLocation, isPDFLocation, locationLabel, pdfSegmentsOf, segmentsOf } from '@anchor/core';
 import type { Anchor } from '@anchor/core';
-import { EXPLANATION_JSON_SHAPE_EN, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
+import { EXPLANATION_JSON_SHAPE_EN, EXPLANATION_JSON_SHAPE_PDF_EN, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
 import type { ExplainStyle } from './index.ts';
 import { CONCISE_EXEMPLAR_EN, DETAILED_EXEMPLAR_EN, STANDARD_EXEMPLAR_EN } from './exemplars.ts';
 
@@ -72,6 +72,30 @@ export function explainOutputContractEn(crossFile: boolean): string {
       : '- Every `location.filePath` must be **the anchor file itself** (character-for-character; do not rewrite paths).',
     '- Line numbers are always **1-based counted from the first line of the file**, not from the start of the selection.',
     '- A range must fit inside the file, and `lineStart <= lineEnd`.',
+    '- `emphasis` must be one of `primary` / `context` / `definition` / `caveat` (optional).',
+    '- Do not write prose outside the JSON — prose outside is ignored, but if the JSON itself is invalid, the whole explanation fails.',
+  ].join('\n');
+}
+
+/**
+ * PDF 来源的输出契约（D98，`explainOutputContractPdf` 的英文面）。
+ * 核心口径同一条：page 与 bbox **照抄**锚点信息 —— the model cannot see page geometry;
+ * asking it to invent coordinates is rewarding hallucination, same discipline as "do not guess paths".
+ */
+export function explainOutputContractPdfEn(): string {
+  return [
+    'Your final answer must be **a single JSON object** (a ```json fence is fine), shaped like this:',
+    EXPLANATION_JSON_SHAPE_PDF_EN,
+    '',
+    'Hard requirements:',
+    '- `summary` is non-empty; `confidence` is a number between 0 and 1.',
+    '- `steps` has at least one entry; every step has a non-empty `text`.',
+    '- Every location in `steps` is `{"page": N, "bbox": [x1, y1, x2, y2]}`: **copy both `page` and `bbox` ' +
+      'verbatim** from the "Page" and "Selected box (normalized)" given in the Anchor section ' +
+      '(with a multi-block selection, copy the block your step is about). ' +
+      '**Never invent coordinates, never alter the numbers, and never write filePath or line numbers.**',
+    '- Locations in `highlights` follow the same rule.',
+    '- Do not paste the source text into `text`: the explanation must say what the passage says, not repeat it.',
     '- `emphasis` must be one of `primary` / `context` / `definition` / `caveat` (optional).',
     '- Do not write prose outside the JSON — prose outside is ignored, but if the JSON itself is invalid, the whole explanation fails.',
   ].join('\n');
@@ -227,6 +251,89 @@ export function fetchSectionEn(crossFile: boolean, maxFetchLines?: number): stri
   ].join('\n');
 }
 
+// ─────────────────────────────────────────────────────────────
+// PDF 释义面（D98，`index.ts` 四个 PDF 节的英文版）：textbooks and papers are not code —
+// the explanation persona is swapped wholesale. Same discipline, natural English.
+// ─────────────────────────────────────────────────────────────
+
+function roleSectionPdfEn(): string {
+  return [
+    '# Role',
+    '',
+    'You are a document-explanation generator. The user is reading a textbook, a paper, or technical ' +
+      'documentation, and hands you one small block of its text. Your task is to **explain it in plain ' +
+      'language**: what the passage says, what the key terms mean, how claims relate to their evidence, ' +
+      'and how it connects to the surrounding text.',
+    'You write the explanation in English, base it only on the given source text and what you fetch, ' +
+      'and never invent claims the text does not make. Do not rewrite the source text.',
+    'In this extension the passage arrives as an "anchor": the document name, the page, the selected box, ' +
+      'and the source text at that location.',
+  ].join('\n');
+}
+
+function outputShapeSectionPdfEn(): string {
+  return [
+    '# Output shape',
+    '',
+    'Write the explanation in this shape:',
+    '',
+    'summary: <one paragraph: what this passage is about, its central claim>',
+    '',
+    'Step N: <short title> (page N)',
+    '',
+    '- <bullet point>',
+    '- <bullet point>',
+    '',
+    'Split steps by **logic**: one claim, one concept, or one turn of the argument ≈ one step. ' +
+      'Do not shred by line breaks, and do not cram the whole block into one step; a block of text is ' +
+      'usually 2-5 steps. Every step\'s text must say what it says, why, and how it connects.',
+    '',
+    'If the upstream expects JSON (this extension does), the fields are summary, confidence, steps; inside steps: ' +
+      'title, location (page and box: page / bbox), intro, text, highlights (location + narration, emphasis optional). ' +
+      'The prose still follows the rules below.',
+    '',
+    'A program reads this JSON: `location` decides which page and box the PDF jumps to when the reader clicks a step, ' +
+      '`narration` is shown in the sidebar, `title` is the step heading.',
+    '',
+    explainOutputContractPdfEn(),
+    '',
+    '(`emphasis` only picks the highlight color and the sidebar tag; never write the words "Key point / Context / Definition / Caveat" into the explanation text.)',
+  ].join('\n');
+}
+
+/** PDF 通用规则（D98）：同一条纪律，对一段散文有意义的说法。 */
+export const GENERAL_RULES_PDF_SECTION_EN = [
+  '# General rules',
+  '',
+  '1. When a term, proper noun, or symbol appears for the first time, state in one sentence what it is before using it.',
+  '2. No colloquialisms, no anthropomorphism, no metaphors. Write "equals", "denotes", "implies", "therefore" — plain, direct statements.',
+  '3. Every claim gets three things: what is being claimed, where the text supports it, and how it relates to the surrounding text.',
+  '4. Never invent what the text does not say. If the text leaves something unstated, say "the text does not specify" — do not fill the gap.',
+  '5. The summary states only the core of the passage; details and reasoning go into the steps below.',
+  '6. Expand formulas, symbols, and abbreviations: what they stand for and what role they play in the sentence.',
+  '7. Do not force every step into the same sentence pattern. Avoid template flavor and AI smell.',
+].join('\n');
+
+/**
+ * PDF 的「取件」一节（D98，英文面）。与代码取件分开：`path` 的口径相反 ——
+ * code encourages naming other files with `path`; PDF only ever reads the anchor document, and omitting is safest.
+ */
+function fetchSectionPdfEn(): string {
+  return [
+    '# Fetching context (tool available in this environment)',
+    '',
+    'If the information you have is not enough for an accurate explanation (say, this block is only a small part ' +
+      'of the document and the context is incomplete, or a term is defined elsewhere), you may call the tool `' +
+      FETCH_CONTEXT_TOOL.name +
+      '` to request more context. Rules:',
+    '- Use `page_range`; `start` / `end` are **page numbers** (1-based, always give both).',
+    '- **Omitting `path` is fine** — it defaults to the anchor PDF; if you do write it, it must match the anchor document\'s path character-for-character.',
+    '- At most 5 pages per fetch; take only the pages you actually need; a range you already fetched will not be given twice.',
+    '- A page without a text layer will be told to you explicitly (that is not an error) — try another page, or answer with what you have.',
+    '- The number of fetches is limited. After you receive a fetch result, produce the final JSON — do not keep fetching.',
+  ].join('\n');
+}
+
 export function examplesSectionEn(style: ExplainStyle): string {
   const headings: Record<ExplainStyle, string> = {
     standard: '## Standard tier example',
@@ -247,8 +354,17 @@ export function examplesSectionEn(style: ExplainStyle): string {
 
 export function buildSystemPromptEn(
   style: ExplainStyle,
-  options: { crossFile?: boolean; maxFetchLines?: number; examples?: boolean } = {},
+  options: { crossFile?: boolean; maxFetchLines?: number; examples?: boolean; sourceType?: 'code' | 'pdf' } = {},
 ): string {
+  // PDF 释义面（D98）：角色/输出形状/通用规则/取件换成 PDF 版；档位与示范不进（代码特有）。
+  if (options.sourceType === 'pdf') {
+    return [
+      roleSectionPdfEn(),
+      outputShapeSectionPdfEn(),
+      GENERAL_RULES_PDF_SECTION_EN,
+      fetchSectionPdfEn(),
+    ].join('\n\n');
+  }
   const crossFile = options.crossFile === true;
   const withExamples = options.examples !== false;
   const parts = [
@@ -275,9 +391,10 @@ export function describeAnchorEn(anchor: Anchor): string {
   if (isCodeLocation(loc)) {
     lines.push(`File path: ${loc.filePath}`, `Location: ${lineRangeEn(loc.lineStart, loc.lineEnd)}`);
     if (anchor.segments !== undefined && anchor.segments.length > 1) {
+      const codeSegs = segmentsOf(anchor) ?? [];
       lines.push(
-        `**This is a non-contiguous multi-segment selection**, ${anchor.segments.length} segments in total:`,
-        anchor.segments.map((s, i) => `  Segment ${i + 1}: lines ${s.lineStart}-${s.lineEnd}`).join('\n'),
+        `**This is a non-contiguous multi-segment selection**, ${codeSegs.length} segments in total:`,
+        codeSegs.map((s, i) => `  Segment ${i + 1}: lines ${s.lineStart}-${s.lineEnd}`).join('\n'),
         'The "lines X-Y" above is only the outer frame of these segments; lines inside the frame that are not listed ' +
           '**were not selected** — explain only the listed segments.',
       );
@@ -286,6 +403,19 @@ export function describeAnchorEn(anchor: Anchor): string {
     if (dir !== '' && dir !== '/' && !/^[A-Za-z]:$/u.test(dir)) lines.push(`Directory: ${dir}`);
   } else if (isPDFLocation(loc)) {
     lines.push(`Page: ${loc.page}`, `Selected box (normalized): ${loc.bbox.join(', ')}`);
+    // 文件路径（D98）：page_range 取件的 `path` 只有这里能抄；老锚点没有它，缺了就缺了。
+    if (typeof loc.filePath === 'string') lines.push(`File path: ${loc.filePath}`);
+    // 多块披露（D98）：`location` is only the first block; without this the model
+    // assumes the whole explanation must orbit that single block.
+    const blocks = pdfSegmentsOf(anchor);
+    if (blocks !== undefined && blocks.length > 1) {
+      lines.push(
+        `**This is a non-contiguous multi-block selection**, ${blocks.length} blocks in reading order:`,
+        blocks.map((s, i) => `  Block ${i + 1}: page ${s.page}, selected box (normalized) ${s.bbox.join(', ')}`).join('\n'),
+        'The "Page / Selected box" above is only block 1. Every step\'s location must land on **the block its ' +
+          'content belongs to** (copy that block\'s page and box), and the explanation connects the blocks in reading order.',
+      );
+    }
   } else {
     lines.push(`Location: ${locationLabel(loc)}`);
   }
@@ -335,7 +465,11 @@ export function buildUserPromptEn(
 }
 
 /** repair 提示的英文面（口径与 `explainOutputContractEn` 一致 —— D67 的规矩两种语言都成立）。 */
-export function buildRepairPromptEn(rawPrevious: string, issues: string, options: { crossFile?: boolean } = {}): string {
+export function buildRepairPromptEn(
+  rawPrevious: string,
+  issues: string,
+  options: { crossFile?: boolean; sourceType?: 'code' | 'pdf' } = {},
+): string {
   return [
     'Your previous output did not pass validation.',
     '',
@@ -348,6 +482,6 @@ export function buildRepairPromptEn(rawPrevious: string, issues: string, options
     '```',
     '',
     'Output **only the corrected JSON** — do not explain what you changed, and do not repeat the problem list.',
-    explainOutputContractEn(options.crossFile === true),
+    options.sourceType === 'pdf' ? explainOutputContractPdfEn() : explainOutputContractEn(options.crossFile === true),
   ].join('\n');
 }

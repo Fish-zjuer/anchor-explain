@@ -76,6 +76,8 @@ function harness(
     candidates?: readonly string[];
     /** 换掉适配器的取件实现（D96：模拟"文件不存在"这类读取失败） */
     fetchImpl?: (req: ContextRequest) => Promise<string>;
+    /** PDF 形态（D98）：能力矩阵换 page_range、outline 给 pageCount、PDF 位置才合法 */
+    pdf?: boolean;
   } = {},
 ): Harness {
   const requests: ChatRequest[] = [];
@@ -92,7 +94,7 @@ function harness(
   };
 
   const adapter: OrchestratorAdapter = {
-    capabilities: { contextTypes: ['file'], maxSpan: 5 },
+    capabilities: opts.pdf ? { contextTypes: ['page_range'], maxSpan: 5 } : { contextTypes: ['file'], maxSpan: 5 },
     fetchContext(req) {
       fetches.push(req);
       return opts.fetchImpl
@@ -106,7 +108,10 @@ function harness(
       chat: provider,
       routeModel: createModelRouter({ tier1Model: 'cheap' }),
       adapter,
-      makeOutline: () => Promise.resolve({ documentLineCount: DOC_LINES, pageCount: null }),
+      makeOutline: () =>
+        Promise.resolve(
+          opts.pdf ? { documentLineCount: null, pageCount: 30 } : { documentLineCount: DOC_LINES, pageCount: null },
+        ),
       maxFetchRounds: opts.maxFetchRounds ?? 3,
       logger,
       ...(opts.fetchPolicy ? { fetchPolicy: opts.fetchPolicy } : {}),
@@ -114,6 +119,40 @@ function harness(
     })(anchor);
 
   return { provider, requests, fetches, adapter, run, logger };
+}
+
+// ── D98：PDF 锚点的取件链路（path 兜底 / 只认锚点文档 / 打不开的回灌 / 释义面） ──
+
+const PDF_FILE = 'C:/repo/docs/sample.pdf';
+
+function pdfAnchorWith(over: Partial<Anchor> = {}): Anchor {
+  return {
+    sourceType: 'pdf',
+    sourceId: 'sha1:pdf',
+    sourceName: 'sample.pdf',
+    location: { page: 23, bbox: [0.1, 0.2, 0.9, 0.35], filePath: PDF_FILE },
+    extractedText: '第 23 页框选区域的文字。',
+    ...over,
+  };
+}
+
+function validPdfJson(): string {
+  return JSON.stringify({
+    summary: '这一块讲的是采样保持电路的作用。',
+    confidence: 0.8,
+    steps: [
+      {
+        location: { page: 23, bbox: [0.1, 0.2, 0.9, 0.35] },
+        text: '先说这段文字的主张：采样保持是量化之前的关键环节。',
+        highlights: [{ location: { page: 23, bbox: [0.1, 0.2, 0.9, 0.35] }, narration: '核心论点', emphasis: 'primary' }],
+      },
+    ],
+  });
+}
+
+function toolMessageOf(req: ChatRequest): string {
+  const tool = req.messages.find((m) => m.role === 'tool');
+  return tool && 'content' in tool ? String(tool.content) : '';
 }
 
 // ── 主路径 ────────────────────────────────────────────────────────────────
@@ -539,4 +578,94 @@ test('deps.language = en：system / user prompt 都换英文面（中文一个�
   assert.match(user, /^## Anchor/m);
   assert.doesNotMatch(system, /代码讲解生成器/);
   assert.doesNotMatch(user, /锚点/);
+});
+
+// ── D98：PDF 锚点的取件链路 ───────────────────────────────────────────────
+
+test('D98 PDF：page_range 不带 path → 闸门兜底成锚点文档，适配器拿到绝对路径', async () => {
+  const h = harness(
+    [
+      toolTurn({ request_type: 'page_range', start: 22, end: 24, reason: '前因后果不完整' }),
+      { content: validPdfJson(), toolCalls: [] },
+    ],
+    { pdf: true },
+  );
+  const result = await h.run(pdfAnchorWith());
+
+  assert.equal(result.summary, '这一块讲的是采样保持电路的作用。');
+  assert.equal(h.fetches.length, 1);
+  // 关键断言：模型根本没给 path，适配器拿到的却是完整的锚点文档路径 ——
+  // 过去这一路会以"取件参数不完整"炸出来，PDF 的"多读几页"实际上不可用
+  assert.equal(h.fetches[0]?.params.path, PDF_FILE);
+  assert.equal(h.fetches[0]?.type, 'page_range');
+  // 取件结果回灌给模型（页头格式由适配器负责，这里只验内容到了）
+  assert.match(toolMessageOf(h.requests[1]!), /22-24|第 2[234] 页|文件：/);
+});
+
+test('D98 PDF：path 指向别的文档 → 拒绝回灌"只认锚点这一份文档"', async () => {
+  const h = harness(
+    [
+      toolTurn({ request_type: 'page_range', path: 'C:/elsewhere/other.pdf', start: 1, end: 2, reason: 'x' }),
+      { content: validPdfJson(), toolCalls: [] },
+    ],
+    { pdf: true },
+  );
+  await h.run(pdfAnchorWith());
+
+  const toolText = toolMessageOf(h.requests[1]!);
+  assert.match(toolText, /请求被拒绝：/);
+  assert.match(toolText, /只认锚点这一份文档/);
+  assert.match(toolText, /sample\.pdf/, '拒绝文案要指出正确的文档名');
+  assert.equal(h.fetches.length, 0, '被拒的请求不许到适配器');
+});
+
+test('D98 PDF：老锚点没有 filePath → 拒绝并明说，不再漏成"取件参数不完整"', async () => {
+  const h = harness(
+    [
+      toolTurn({ request_type: 'page_range', start: 1, end: 2, reason: 'x' }),
+      { content: validPdfJson(), toolCalls: [] },
+    ],
+    { pdf: true },
+  );
+  await h.run(pdfAnchorWith({ location: { page: 23, bbox: [0.1, 0.2, 0.9, 0.35] } }));
+
+  const toolText = toolMessageOf(h.requests[1]!);
+  assert.match(toolText, /没有携带 PDF 的文件路径/);
+  assert.equal(h.fetches.length, 0);
+});
+
+test('D98 PDF：取件打不开 → 回灌失败说明（给 path 的正确写法），不中止', async () => {
+  const h = harness(
+    [
+      toolTurn({ request_type: 'page_range', path: PDF_FILE, start: 22, end: 24, reason: 'x' }),
+      { content: validPdfJson(), toolCalls: [] },
+    ],
+    {
+      pdf: true,
+      fetchImpl: () => Promise.reject(new Error(`ENOENT: no such file or directory, open '${PDF_FILE}'`)),
+    },
+  );
+  const result = await h.run(pdfAnchorWith());
+
+  assert.equal(result.summary, '这一块讲的是采样保持电路的作用。', '读取失败不中止整次讲解（D96 纪律在 PDF 下同样成立）');
+  const toolText = toolMessageOf(h.requests[1]!);
+  assert.match(toolText, /取件失败/);
+  assert.match(toolText, /不要猜路径/);
+  assert.match(toolText, /省略/, 'PDF 的活路是"path 省略"，与代码线的候选清单不同');
+});
+
+test('D98 PDF：system prompt 换释义面（文档讲解生成器），user prompt 带文件路径', async () => {
+  const h = harness([{ content: validPdfJson(), toolCalls: [] }], { pdf: true });
+  await h.run(pdfAnchorWith());
+
+  const system = String(h.requests[0]?.messages[0]?.content ?? '');
+  const user = String(h.requests[0]?.messages[1]?.content ?? '');
+  assert.match(system, /文档讲解生成器/);
+  assert.doesNotMatch(system, /代码讲解生成器/, 'PDF 不该再收到代码人格');
+  assert.doesNotMatch(system, /写入方 \/ 读取方/, '代码通用规则不进 PDF prompt');
+  assert.doesNotMatch(system, /档位规则/, '档位是代码特有的，PDF 不进');
+  assert.doesNotMatch(system, /# 示例/, '代码示范不进 PDF prompt');
+  assert.match(system, /"page"/, '输出契约教的是 PDF 位置形状');
+  assert.match(system, /照抄/);
+  assert.match(user, /文件路径：C:\/repo\/docs\/sample\.pdf/, 'page_range 的 path 只有这里能抄');
 });

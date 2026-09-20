@@ -20,7 +20,7 @@
  * 本文件属 orchestrator/，**禁止 import 'vscode'**。
  */
 
-import { AnchorError, createContextRequestLogger, isCodeLocation } from '@anchor/core';
+import { AnchorError, createContextRequestLogger, isCodeLocation, isPDFLocation } from '@anchor/core';
 import type {
   AdapterCapabilities,
   Anchor,
@@ -49,13 +49,28 @@ const REJECT_PREFIX = '请求被拒绝：';
  * @anchor 要点不是道歉，是**给活路**：光说"打不开"，模型只会再猜一个路径，猜一次烧一轮。
  *         把候选清单原样列进来（名字照抄即可），它才能一步走到正确的取件；
  *         清单为空（扫描失败/没有工作区）时也把"别猜路径"说死，并给它"基于现有信息作答"的台阶。
+ *
+ * `anchorDoc` 是锚点文档的路径（D98）：代码锚点 = `location.filePath`；PDF 锚点 = `filePath`（老锚点为 null）。
+ * 两种来源的"活路"不一样：代码给候选清单，PDF 告诉它 path 用锚点文档（或干脆省略）。
  */
 export function fetchFailureText(
   req: ContextRequest,
   detail: string,
   candidates: readonly string[],
-  anchorFile: string | null,
+  anchorDoc: string | null,
 ): string {
+  if (req.type === 'page_range') {
+    const gone = /ENOENT|FileNotFound|no such file/iu.test(detail);
+    const lines = [
+      `取件失败：这份 PDF 打不开（${gone ? '文件不存在或路径不对 —— 不要猜路径' : '读不出来'}）。`,
+      '',
+      anchorDoc === null
+        ? '这根锚点没有携带 PDF 的文件路径，无法按页取件。'
+        : `\`path\` 的正确写法只有一种：照抄锚点文档的路径 \`${anchorDoc}\`，或者干脆**省略**（我们会自动用锚点文档）。`,
+    ];
+    lines.push('', '改用上面的写法重新取件，或者基于现有信息直接作答。');
+    return lines.join('\n');
+  }
   if (req.type !== 'file' || typeof req.params.path !== 'string') {
     return `取件失败：这份文档读不出来（${detail.slice(0, 200)}）。请基于现有信息直接作答。`;
   }
@@ -69,8 +84,8 @@ export function fetchFailureText(
   if (candidates.length > 0) {
     lines.push('', '可以选的文件（照抄这些名字）：', ...candidates.map((name) => `- ${name}`));
   }
-  if (anchorFile !== null) {
-    lines.push('', `（锚点文件 ${anchorFile} 本身不用取件。）`);
+  if (anchorDoc !== null) {
+    lines.push('', `（锚点文件 ${anchorDoc} 本身不用取件。）`);
   }
   lines.push('', '改用上面的名字重新取件，或者基于现有信息直接作答。');
   return lines.join('\n');
@@ -153,11 +168,13 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        // 行数上限跟着**策略**走（同一个数既管闸门也管这句提示，避免两处说法不一致 —— D71）
+        // 行数上限跟着**策略**走（同一个数既管闸门也管这句提示，避免两处说法不一致 —— D71）。
+        // sourceType（D98）决定整套人格：pdf 走释义面，code 走代码面。
         content: buildSystemPrompt(deps.style, {
           language: deps.language,
           crossFile,
           maxFetchLines: deps.fetchPolicy?.maxLines,
+          sourceType: anchor.sourceType === 'pdf' ? 'pdf' : 'code',
         }),
       },
       {
@@ -201,6 +218,7 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
           content: buildRepairPrompt(candidate, describeIssues(first.issues), {
             language: deps.language,
             crossFile,
+            sourceType: anchor.sourceType === 'pdf' ? 'pdf' : 'code',
           }),
         },
       ]);
@@ -284,7 +302,12 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
             decision.request,
             detail,
             deps.candidateFiles ?? [],
-            isCodeLocation(anchor.location) ? anchor.location.filePath : null,
+            // 锚点文档路径（D98）：代码与 PDF 两种来源都给 —— 各自的失败文案都靠它指路
+            isCodeLocation(anchor.location)
+              ? anchor.location.filePath
+              : isPDFLocation(anchor.location)
+                ? (anchor.location.filePath ?? null)
+                : null,
           ),
         };
       }

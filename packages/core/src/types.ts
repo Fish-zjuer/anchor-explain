@@ -64,19 +64,25 @@ export interface Anchor {
    */
   focus?: string;
   /**
-   * 【新增，非规范原文】多段选择时，**每一段**的行区间（D80）。
+   * 【新增，非规范原文】多段/多块选择时，**每一段**的位置（D80；D98 起放宽到 PDF）。
    *
    * @anchor 为什么 `location` 之外还要它：`location` 是各段的**并集外框**，
    *         合并之后模型已经看不出"中间那 20 行其实没被选中"，于是会去讲它们。
    *         这一段列表是唯一能说清"用户选的就是这几块"的东西。
    *
-   *         顺序**按行号升序**（由 `mergeSegments` 保证）——
+   *         顺序**按阅读序升序**（由各自的 merge 保证）——
    *         模型从上往下读，读者也从上往下读，两边一致才对得上。
+   *
+   *         D98 放宽：代码线仍是 `CodeLocation[]`；PDF 线（拆块器）进来的是 `PDFLocation[]`。
+   *         **约束：一个锚点里的 segments 必须与 `location` 同一种来源**（代码锚点配代码段、
+   *         PDF 锚点配 PDF 段）—— 混合来源没有消费方，merge 层负责拒绝。
+   *         取值不要直接读这个字段：用 `segmentsOf`（代码）或 `pdfSegmentsOf`（PDF），
+   *         它们做了收窄，调用方不必各自判一遍。
    *
    *         **可选**：老锚点（只有一段）没有它 —— 那时 `location` 本身就是那一段，
    *         两者等价，不值得再造一个长度为 1 的数组。
    */
-  segments?: CodeLocation[];
+  segments?: Location[];
 }
 
 export interface ContextRequest {

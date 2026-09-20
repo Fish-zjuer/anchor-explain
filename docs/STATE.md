@@ -340,6 +340,28 @@ S8 之后再补一句：**入口有四处（活动栏图标 / 面板 / 演练卡
   `evaluateSessionEnd()`。红→绿实测：注释掉两条分支后链式冒烟 6 条 FAIL（`session:end 10 → 11`），
   恢复即绿。顺带修掉一个"假的绿"：冒烟桩把 `openTextDocument` 放在 `window` 下，而真实 API 在
   `workspace` 上 —— 跨文件那条路一直没被跑到过（与约束 111 / 112 同一类陷阱）。
+- **D98（PDF 讲解地基：契约/取件/释义人格，2026-09-20）**PDF 大改的第一片。核实出两个真窟窿：
+  ①输出契约只教 `{filePath, lineStart, lineEnd}`，而校验闸门对 PDF 锚点**只认** `{page, bbox}`
+  （validateExplanation 按 `anchor.sourceType` 分支）—— 真实模型照契约写代码位置，必进修复循环；
+  ②page_range 取件要求 `params.path`（PDFAdapter 直接用），但锚点描述只给 basename，模型永远填不出
+  —— PDF 的"多读几页"实际上不可用，此前全靠 `withPdfText` 预填的框选原文撑着。
+  - 契约：`EXPLANATION_JSON_SHAPE_PDF`（zh/en）—— location 写 `{page, bbox}`，**照抄锚点信息、
+    不发明坐标**（模型看不见页面几何，与"不要猜路径"同一条纪律）；`buildSystemPrompt` 增
+    `sourceType` 入参，`'pdf'` 时整套换**释义面**（角色=文档讲解生成器 / 输出形状=按逻辑切步 /
+    通用规则=术语先行·不编造 / 取件=只认锚点文档）；**档位与代码示范不进 PDF prompt**（代码特有）。
+    repair 与 system 同一份契约（D67 规矩两种来源都成立）。
+  - 取件：page_range 分支镜像 file 规则 3 的 `resolvedFile` 机制 —— `path` 省略兜底成锚点文档
+    （放行请求 materialize 成绝对路径）；写了必须与锚点文档一致，否则拒"只认锚点这一份文档"；
+    老锚点没有 filePath → 明说拒绝（过去漏到适配器炸"取件参数不完整"）。`describeFetched` 先看类型
+    再看路径（page_range 带路径后不能把页码说成行码）；去重比对兼容 D98 前的 null-path 记录。
+    `fetchFailureText` 增 page_range 分支（PDF 的活路是"path 照抄锚点或省略"，与代码线的候选清单不同）。
+    `PDFAdapter` 取件加 64K 字符上限 + 末尾截断说明（闸门只拦页数不拦字数）。
+  - 类型：core 的 `Anchor.segments` 从 `CodeLocation[]` 放宽为 `Location[]`（运行时同源约束，
+    为拆块器的多块锚点铺路）；`segmentsOf` 收窄过滤 + 新增 `pdfSegmentsOf`；describeAnchor（zh/en）
+    PDF 分支补**文件路径**与**多块披露**（对齐 D80 的"外框≠全选"机制）。
+  - 测试：编排循环补 page_range 用例（此前为零）——path 兜底/错误 path 拒绝/老锚点拒绝/打不开回灌/
+    释义面断言；validateContextRequest 补 path 矩阵与 describeFetched；prompts 补 describeAnchor PDF
+    分支、释义面四节、PDF repair、英文面。
 - **D97（讲解语言英文选项，2026-09-19）**「增加英语选项，可以一键切换为英文适配的版本（默认还是中文）」：
   - `anchorExplain.language`（`zh` 默认 / `en`）+ 命令 `Anchor: 切换讲解语言`（一键翻转，Global 落点、
     写后验读 —— D63 的纪律）。`显示状态` 在非默认语言时多报一句「输出语言 English」。

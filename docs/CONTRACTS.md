@@ -50,7 +50,7 @@ interface Anchor {
   extractedText?: string;    // 第一层优先
   neighborHint?: string;     // 如 "第 23 页附近"
   focus?: string;            // D79：用户写的"这段想重点讲什么"（可选）
-  segments?: CodeLocation[]; // D80：多段锚点 —— **用户实际选中的那几段**
+  segments?: Location[];     // D80：多段锚点 —— 用户实际选中的那几段；D98 起放宽为 Location[]（PDF 拆块器的多块锚点也走它），**必须与 location 同源**（代码锚点配代码段 / PDF 锚点配 PDF 段）
 }
 
 > **D80：多段时 `location` 只是「并集的外框」，不是用户选了什么。**
@@ -58,6 +58,12 @@ interface Anchor {
 > 都按一个位置写的）。段之间那些没被选中的行**确实在框里**，所以"哪些是用户选的"由 `segments`
 > 说出来。模型据此不会去讲那些空隙 —— 给模型的原文同样不能含糊：每一段都标了号，
 > 并写明"段与段之间的行没有被选中"（见 `core/src/segments.ts` 的 `composeText`）。
+>
+> **D98：`segments` 放宽为 `Location[]`**，PDF 拆块器（多块锚点）走同一字段：
+> 一个锚点里的段必须与 `location` **同一种来源**；PDF 锚点的 `location` 是**第 1 块**（阅读序最前），
+> 全部块在 `segments` 里（取值用 `pdfSegmentsOf`，代码用 `segmentsOf` —— 两者都做收窄）。
+> 多块披露的口径与 D80 同构：describeAnchor（zh/en）列出每一块，并说明步骤的 location 要落在
+> 内容对应的那一块上。
 >
 > **D79：`focus` 是用户额外写的那句话**，不是从代码里算出来的。
 
@@ -284,10 +290,14 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 `validateContextRequest(req, anchor, state)` 必须全部满足，否则**拒绝**：
 
 1. `req.type` ∈ `adapter.capabilities.contextTypes`
-2. `page_range`：`start`/`end` 为整数，`1 ≤ start ≤ end ≤ pageCount`，`end - start + 1 ≤ maxSpan`
+2. `page_range`：`start`/`end` 为整数，`1 ≤ start ≤ end ≤ pageCount`，`end - start + 1 ≤ maxSpan`；
+   **`params.path` 缺省 = 锚点这份 PDF（D98 兜底，放行请求里 materialize 成绝对路径）**；
+   写了则必须与锚点文档的路径一致（samePath），指向别的文档一律拒 —— PDF 没有"相关文件"一说；
+   锚点自己没有 `filePath`（S5 之前的老锚点）→ 明说拒绝，不再漏到适配器炸"取件参数不完整"
 3. `file`：`params.path` **缺省 = 锚点文件**；给了路径则必须落在**允许范围**内（S9a 改写，见下），
    且 `end - start + 1 ≤ maxLines`（S9a 新增，默认 60 行）
-4. 去重：与已取件区间重叠 → 不重复取，回灌「该区间已取过」+ 已有内容
+4. 去重：与已取件区间重叠 → 不重复取，回灌「该区间已取过」+ 已有内容（D98 起 page_range 也带路径，
+   比对用解析后的路径；D98 前的记录 path 为 null，按同源处理）
 5. 频率：总取件次数 `≤ maxFetchRounds`（默认 3）
 
 **单次行数超上限 → 截断，不拒绝（D71 修订）**：`end - start + 1 > maxFetchLines` 时把 `end` 收到
@@ -995,7 +1005,7 @@ function createContextRequestLogger(opts?: {
       },
       "start": { "type": "number", "description": "起始页/行（1-based，必须给）" },
       "end": { "type": "number", "description": "结束页/行（1-based，必须给）" },
-      "path": { "type": "string", "description": "request_type 为 file 时要读的文件；省略 = 锚点所在的文件。写相对路径时按锚点文件所在目录算，例如 ring_buffer.h" },
+      "path": { "type": "string", "description": "request_type 为 file 时要读的文件；省略 = 锚点所在的文件。写相对路径时按锚点文件所在目录算，例如 ring_buffer.h。page_range 时可省略（默认就是锚点这份 PDF）；写了必须与锚点文档的路径逐字相同" },
       "reason": { "type": "string", "description": "为什么需要这段上下文" }
     },
     "required": ["request_type", "start", "end", "reason"]
@@ -1015,8 +1025,17 @@ function createContextRequestLogger(opts?: {
    §3.2 的规则 3 只会回一句"start / end 必须是 ≥1 的整数"，白烧一轮取件预算，
    而这两个参数**每一次取件都必然要有**（`dom_subtree` 本次不实现，不受影响）。
 
+**D98 修订**：`path` 的 description 补 page_range 的口径（可省略 = 锚点这份 PDF；写了必须逐字一致）——
+同一份 schema 服务两种来源，两种来源的 `path` 语义都在 schema 里说清，不靠模型猜。
+
 实现侧两条约定（S3 起就有，没变）：解析侧把自定义键**原样带过去**（不丢 `path`），
-校验侧把"没给 `path`"当成"就要锚点这个文件"。见 §3.2 的实现约定表。
+校验侧把"没给 `path`"当成"就要锚点这个文件"（file）。见 §3.2 的实现约定表。
+
+**PDF 来源的输出契约（D98）**：`steps[].location` 是 `{page, bbox}`（照抄锚点信息，不发明坐标），
+`EXPLANATION_JSON_SHAPE_PDF`（zh/en 两份，`toolSchema.ts`）。system（`buildSystemPrompt` 的
+`sourceType: 'pdf'`）与 repair（`buildRepairPrompt` 的 `sourceType`）在 PDF 锚点时都贴这份契约 ——
+初学与修复必须同口径（D67）。PDF 的 system prompt 是**释义面**（角色/输出形状/通用规则/取件四节全换；
+档位规则与代码示范不进 —— 它们是代码特有的纪律）。
 
 ---
 

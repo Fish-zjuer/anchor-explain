@@ -23,8 +23,8 @@
  */
 
 import type { Anchor } from '@anchor/core';
-import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel } from '@anchor/core';
-import { EXPLANATION_JSON_SHAPE, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
+import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel, pdfSegmentsOf, segmentsOf } from '@anchor/core';
+import { EXPLANATION_JSON_SHAPE, EXPLANATION_JSON_SHAPE_PDF, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
 import { CONCISE_EXEMPLAR, DETAILED_EXEMPLAR, STANDARD_EXEMPLAR } from './exemplars.ts';
 import {
   buildRepairPromptEn,
@@ -32,6 +32,7 @@ import {
   buildUserPromptEn,
   describeAnchorEn,
   explainOutputContractEn,
+  explainOutputContractPdfEn,
 } from './en.ts';
 
 /**
@@ -113,6 +114,33 @@ export function explainOutputContract(crossFile = false, language: ExplainLangua
       : '- 每个 location 的 `filePath` 必须与锚点**同一个文件**（逐字相同，别改写路径）。',
     '- 行号一律是**从文件第一行开始数的 1-based 行号**，不是从选区开始数。',
     '- 行区间必须落在文件范围内，且 `lineStart <= lineEnd`。',
+    '- `emphasis` 只能取 `primary` / `context` / `definition` / `caveat` 之一（可省略）。',
+    '- 不要把解释写在 JSON 外面 —— JSON 之外的散文会被忽略，但如果 JSON 本身不合法，整次讲解就失败了。',
+  ].join('\n');
+}
+
+/**
+ * PDF 来源的输出契约（D98）。`crossFile` 对 PDF 无意义 —— 取件闸门只允许锚点这份文档，
+ * 所以这份契约不收那个参数。
+ *
+ * @anchor 核心口径是**照抄**：模型看不见页面几何，页码与 bbox 只有一个可靠来源
+ *         （锚点信息里给的那一份），让它"按内容估一个框"就是在奖励幻觉 ——
+ *         与"不要猜路径"是同一条纪律。
+ */
+export function explainOutputContractPdf(language: ExplainLanguage = DEFAULT_LANGUAGE): string {
+  if (language === 'en') return explainOutputContractPdfEn();
+  return [
+    '最终回答必须是**一个 JSON 对象**（可以放在 ```json 围栏里），形状如下：',
+    EXPLANATION_JSON_SHAPE_PDF,
+    '',
+    '硬性要求：',
+    '- `summary` 非空；`confidence` 是 0 到 1 之间的数字。',
+    '- `steps` 至少一个；每个 step 的 `text` 非空。',
+    '- steps 里每个 location 写 `{"page": 页码, "bbox": [x1, y1, x2, y2]}`：**page 与 bbox 都照抄**' +
+      '「锚点」一节给的「页码」与「框选范围（归一化）」—— 多块选择时照抄内容对应的那一块。' +
+      '**不要自己发明坐标、不要改动数值，也不要写 filePath 或行号**。',
+    '- highlights 的 location 同上，同样照抄。',
+    '- 不要把原文整段抄进 text：讲解要说清"这段在说什么"，不是复述。',
     '- `emphasis` 只能取 `primary` / `context` / `definition` / `caveat` 之一（可省略）。',
     '- 不要把解释写在 JSON 外面 —— JSON 之外的散文会被忽略，但如果 JSON 本身不合法，整次讲解就失败了。',
   ].join('\n');
@@ -296,6 +324,94 @@ function fetchSection(crossFile: boolean, maxFetchLines?: number): string {
   ].join('\n');
 }
 
+// ─────────────────────────────────────────────────────────────
+// PDF 释义面（D98）：教材/论文不是代码，讲解人格整体换掉。
+//
+// @anchor 为什么换三节而不是加一节：角色（"代码讲解生成器"）、输出形状（数据流、行号粒度）、
+//         档位规则（True/False 推演、head/tail）都是**代码特有的纪律**，对一段教材原文
+//         只会把模型往"逐行念版面"的方向带。通用规则里能留下的（直接表述、不拟人、
+//         信息密度、不套模板句）在 PDF 通用规则里用同一条纪律重说了一遍。
+//         取件一节仍必须保留 —— 没有它模型不会正确使用 `fetch_context`（两种来源同理）。
+// ─────────────────────────────────────────────────────────────
+
+function roleSectionPdf(): string {
+  return [
+    '# 角色',
+    '',
+    '你是文档讲解生成器。用户在读教材、论文、技术文档，会给你其中一小块文字，' +
+      '任务是把它**讲成人话**：这段在说什么、关键术语是什么意思、论点和论据的关系、' +
+      '它和前后文怎么衔接。',
+    '你输出中文讲解，只依据给到的原文与取件读到的内容，不编造原文里没有的主张。不要改写原文。',
+    // 扩展适配：原文以"锚点"的形式给出（文档名、页码、框选范围与该处的原文）。
+    '在本扩展里，这块文字以"锚点"的形式给出：文档名、页码、框选范围，以及该处的原文。',
+  ].join('\n');
+}
+
+function outputShapeSectionPdf(): string {
+  return [
+    '# 输出形状',
+    '',
+    '按以下形状输出：',
+    '',
+    'summary：<一段话，概括这块文字的核心内容或主张>',
+    '',
+    '第 N 步：<短标题>（第 N 页）',
+    '',
+    '- <子点>',
+    '- <子点>',
+    '',
+    '步骤按**逻辑**切：一个论点、一个概念、一次论证的转折 ≈ 一步。' +
+      '不要按版面换行硬拆，也不要把整块塞成一步；一块文字通常 2-5 步。' +
+      '每步的 text 要说清"它在说什么、为什么这么说、和前后文什么关系"。',
+    '',
+    // 扩展适配：真实 schema（line_range ↔ location 的对应物是 page/bbox）。
+    '若上游要求 JSON（本扩展就是），字段为 summary、confidence、steps；steps 内放 title、' +
+      'location（页码与框：page / bbox）、intro、text、highlights（location + narration，emphasis 可选）。' +
+      '文本内容仍遵守下面的规则。',
+    '',
+    // 扩展适配：把"程序怎么读你的输出"明说 —— 模型知道位置的后果，才不会随手编。
+    '程序会读取这份 JSON：`location` 决定点击这一步时 PDF 跳到哪一页哪一块，' +
+      '`narration` 显示在侧边栏，`title` 是步骤标题。',
+    '',
+    explainOutputContractPdf(),
+    '',
+    '（`emphasis` 只决定高亮颜色与侧边栏的小标签；不要把「重点 / 上下文 / 定义 / 注意」这类词写进讲解文字里。）',
+  ].join('\n');
+}
+
+/** PDF 通用规则（D98）：与代码通用规则同一条纪律，换成对一段散文有意义的说法。 */
+const GENERAL_RULES_PDF_SECTION = [
+  '# 通用规则',
+  '',
+  '1. 术语、专有名词、符号第一次出现时，先用一句话说清它是什么，再往下使用。',
+  '2. 不口语化，不拟人，不比喻。用“等于”“表示”“意味着”“因此”这类直接表述。',
+  '3. 每个论点说清三件事：主张是什么、原文依据在哪、和前后文什么关系。',
+  '4. 原文里没有的不编。原文没说清的，明说“原文未给出”，不要脑补。',
+  '5. summary 只概括这块文字的核心内容；细节与推演放到下面的步骤里。',
+  '6. 公式、符号、缩写要展开：它代表什么、在这句话里起什么作用。',
+  '7. 不要每步都套同一个句式。避免模板腔和 AI 味。',
+].join('\n');
+
+/**
+ * PDF 的「取件」一节（D98）。与代码取件分开写的理由：`path` 的口径相反 ——
+ * 代码鼓励用 `path` 点名别的文件，PDF **只认锚点这一份文档**（且省略最稳）。
+ */
+function fetchSectionPdf(): string {
+  return [
+    '# 取件（扩展环境的工具）',
+    '',
+    '如果你手里的信息不足以准确讲解（比如这一块只是文档的一小部分，前因后果不完整，' +
+      '或术语的定义在别处），可以调用工具 `' +
+      FETCH_CONTEXT_TOOL.name +
+      '` 请求额外上下文。规则：',
+    '- 请求类型用 `page_range`，`start` / `end` 是**页码**（1-based，都要给）。',
+    '- `path` **省略即可** —— 默认就是锚点这份 PDF；写了也必须与锚点文档的路径逐字相同。',
+    '- 一次最多 5 页；只取你真的需要的那几页；已经取过的区间不会重复给你。',
+    '- 没有文字层的页会明确告诉你（那不是出错）—— 换一页，或基于现有信息作答。',
+    '- 取件次数有上限。收到取件结果后就该给出最终 JSON，不要反复取件。',
+  ].join('\n');
+}
+
 function examplesSection(style: ExplainStyle): string {
   // 小节标题沿用用户模板原文：「精简档示例 / 标准档示例 / 详细档示例」。
   const headings: Record<ExplainStyle, string> = {
@@ -308,11 +424,24 @@ function examplesSection(style: ExplainStyle): string {
 
 export function buildSystemPrompt(
   style: ExplainStyle = DEFAULT_STYLE,
-  options: { language?: ExplainLanguage; crossFile?: boolean; maxFetchLines?: number; examples?: boolean } = {},
+  options: {
+    language?: ExplainLanguage;
+    crossFile?: boolean;
+    maxFetchLines?: number;
+    examples?: boolean;
+    /** 锚点来源（D98）。`'pdf'` 时整套换成释义面：教材/论文不是代码，档位与示范都不适用 */
+    sourceType?: 'code' | 'pdf';
+  } = {},
 ): string {
   // 英文面（D97）：整套段落与示范都换成 en.ts 的版本，骨架（五节 + 只实例化当前档）不变。
   if (options.language === 'en') {
     return buildSystemPromptEn(style, options);
+  }
+  // PDF 释义面（D98）：角色/输出形状/通用规则/取件四节全部换成 PDF 版。
+  // **没有**档位规则与示例 —— 档位（True/False 推演、逐行讲法）与示范（代码）都是代码特有的，
+  // 硬塞给散文只会把讲解往"逐行念版面"的方向带（本节顶部的注释）。
+  if (options.sourceType === 'pdf') {
+    return [roleSectionPdf(), outputShapeSectionPdf(), GENERAL_RULES_PDF_SECTION, fetchSectionPdf()].join('\n\n');
   }
   const crossFile = options.crossFile === true;
   const withExamples = options.examples !== false;
@@ -349,9 +478,10 @@ export function describeAnchor(anchor: Anchor, language: ExplainLanguage = DEFAU
      *         "只想快速定位某功能"，讲一堆没选的东西正好是反面。
      */
     if (anchor.segments !== undefined && anchor.segments.length > 1) {
+      const codeSegs = segmentsOf(anchor) ?? [];
       lines.push(
-        `**这一段是非连续的多段选择**，共 ${anchor.segments.length} 段：`,
-        anchor.segments.map((s, i) => `  第 ${i + 1} 段：第 ${s.lineStart}-${s.lineEnd} 行`).join('\n'),
+        `**这一段是非连续的多段选择**，共 ${codeSegs.length} 段：`,
+        codeSegs.map((s, i) => `  第 ${i + 1} 段：第 ${s.lineStart}-${s.lineEnd} 行`).join('\n'),
         '上面那个「第几行-第几行」只是这些段的**外框**，框内未被列举的行**没有**被选中 —— 只讲列举出来的那几段。',
       );
     }
@@ -360,6 +490,23 @@ export function describeAnchor(anchor: Anchor, language: ExplainLanguage = DEFAU
     if (dir !== '' && dir !== '/' && !/^[A-Za-z]:$/u.test(dir)) lines.push(`所在目录：${dir}`);
   } else if (isPDFLocation(loc)) {
     lines.push(`页码：第 ${loc.page} 页`, `框选范围（归一化）：${loc.bbox.join(', ')}`);
+    /**
+     * 文件路径（D98）：**必须给**。page_range 取件的 `params.path` 只有这里能抄 ——
+     * 不给的话模型永远填不出取件路径（第一版只给 basename，模型试一次烧一轮）。
+     * 老锚点没有 filePath，缺了就缺了（所有读它的地方都要能退化 —— §1 的约定）。
+     */
+    if (typeof loc.filePath === 'string') lines.push(`文件路径：${loc.filePath}`);
+    // 多块披露（D98，对齐代码线 D80 的"外框≠全选"机制）：
+    // `location` 只是第 1 块，不额外交代的话，模型会以为整份讲解只能围着那一块转。
+    const blocks = pdfSegmentsOf(anchor);
+    if (blocks !== undefined && blocks.length > 1) {
+      lines.push(
+        `**这是一次非连续的多块选择**，共 ${blocks.length} 块，按阅读序排列：`,
+        blocks.map((s, i) => `  第 ${i + 1} 块：第 ${s.page} 页，框选范围（归一化）${s.bbox.join(', ')}`).join('\n'),
+        '上面那个「页码/框选范围」只是第 1 块。每一步的 location 要落在**内容对应的那一块**上' +
+          '（照抄那一块的页码与框选范围），整次讲解按阅读序把这些块连起来讲。',
+      );
+    }
   } else {
     lines.push(`位置：${locationLabel(loc)}`);
   }
@@ -420,13 +567,19 @@ export function buildUserPrompt(
  *
  * @anchor `crossFile` 必须与 system 那一遍**同口径**：否则模型因为"引用了读过的文件"被判失败，
  *         拿到的修复提示却又说"必须与锚点同一个文件" —— 第二次照旧失败（D67）。
+ *         D98 起同理：`sourceType` 为 pdf 时修复提示必须贴 PDF 契约 ——
+ *         模型若因写了行号位置被判失败，修复提示还在教行号，第二次照旧失败。
  */
 export function buildRepairPrompt(
   rawPrevious: string,
   issues: string,
-  options: { language?: ExplainLanguage; crossFile?: boolean } = {},
+  options: { language?: ExplainLanguage; crossFile?: boolean; sourceType?: 'code' | 'pdf' } = {},
 ): string {
   if (options.language === 'en') return buildRepairPromptEn(rawPrevious, issues, options);
+  const contract =
+    options.sourceType === 'pdf'
+      ? explainOutputContractPdf(options.language ?? DEFAULT_LANGUAGE)
+      : explainOutputContract(options.crossFile === true);
   return [
     '你上一次的输出没有通过校验。',
     '',
@@ -439,6 +592,6 @@ export function buildRepairPrompt(
     '```',
     '',
     '请**只输出修正后的 JSON**，不要解释你改了什么，也不要重复上面的问题清单。',
-    explainOutputContract(options.crossFile === true),
+    contract,
   ].join('\n');
 }

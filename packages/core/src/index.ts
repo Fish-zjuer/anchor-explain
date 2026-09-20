@@ -53,6 +53,7 @@ export type { AnchorErrorCode } from './errors.ts';
 export { AnchorError, isAnchorError, describeError } from './errors.ts';
 
 // 多段锚点（D80）：把一次一次选出来的几段合成一个去讲
+// D98：segments 放宽到 PDF（拆块器），pdfSegmentsOf 与 segmentsOf 同一立场
 export type { AnchorSegment } from './segments.ts';
 export {
   EmptyQueueError,
@@ -60,6 +61,7 @@ export {
   compareSegments,
   mergeSegments,
   segmentsOf,
+  pdfSegmentsOf,
   describeSegments,
 } from './segments.ts';
 

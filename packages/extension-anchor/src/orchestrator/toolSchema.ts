@@ -35,7 +35,8 @@ export const FETCH_CONTEXT_TOOL = {
         type: 'string',
         description:
           'request_type 为 file 时要读的文件；省略 = 锚点所在的文件。' +
-          '写相对路径时按锚点文件所在目录算，例如 ring_buffer.h',
+          '写相对路径时按锚点文件所在目录算，例如 ring_buffer.h。' +
+          'page_range 时可省略（默认就是锚点这份 PDF）；写了必须与锚点文档的路径逐字相同',
       },
       reason: { type: 'string', description: '为什么需要这段上下文' },
     },
@@ -88,6 +89,59 @@ export const EXPLANATION_JSON_SHAPE_EN = `{
         {
           "location": { "filePath": "<same as above>", "lineStart": 1, "lineEnd": 1 },
           "narration": "the explanation for this line",
+          "emphasis": "primary | context | definition | caveat"
+        }
+      ]
+    }
+  ]
+}`;
+
+/**
+ * PDF 来源的输出契约（D98）：steps 的 location 是 `{page, bbox}`，不再是行区间。
+ *
+ * @anchor 为什么必须单独一份：校验闸门（§3.3）对 PDF 锚点**只认** `{page, bbox}` ——
+ *         而原契约从头到尾只在教 `{filePath, lineStart, lineEnd}`。真实模型照契约写
+ *         代码位置，就会和闸门打架进修复循环。教训与 S9a 的 `path` 同一条：
+ *         **模型唯一能看见的形状清单就是这份契约**，闸门认什么就必须教什么。
+ *         页码与 bbox 都让它**照抄锚点信息** —— 模型看不见页面几何，
+ *         让它编坐标就是在奖励幻觉（与"不要猜路径"同一条纪律）。
+ */
+export const EXPLANATION_JSON_SHAPE_PDF = `{
+  "title": "整段讲解的标题（可省）",
+  "summary": "一到两句总述，必须非空",
+  "confidence": 0.0,
+  "steps": [
+    {
+      "location": { "page": 23, "bbox": [0.10, 0.20, 0.90, 0.35] },
+      "title": "这一步的标题",
+      "intro": "这一步要讲清什么",
+      "text": "这一步的解释正文，必须非空",
+      "highlights": [
+        {
+          "location": { "page": 23, "bbox": [0.10, 0.20, 0.90, 0.35] },
+          "narration": "这一点的讲解",
+          "emphasis": "primary | context | definition | caveat"
+        }
+      ]
+    }
+  ]
+}`;
+
+/** PDF 输出契约的英文版（D98，与 D97 同一立场：形状一字不差，只换说明文字）。 */
+export const EXPLANATION_JSON_SHAPE_PDF_EN = `{
+  "title": "title of the whole explanation (optional)",
+  "summary": "one or two sentences, must be non-empty",
+  "confidence": 0.0,
+  "steps": [
+    {
+      "location": { "page": 23, "bbox": [0.10, 0.20, 0.90, 0.35] },
+      "title": "title of this step",
+      "intro": "what this step is about to clarify",
+      "text": "explanation body of this step, must be non-empty",
+      "highlights": [
+        {
+          "location": { "page": 23, "bbox": [0.10, 0.20, 0.90, 0.35] },
+          "narration": "the explanation for this point",
           "emphasis": "primary | context | definition | caveat"
         }
       ]

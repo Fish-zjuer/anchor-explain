@@ -93,7 +93,10 @@ function isDeniedPath(filePath: string): boolean {
 /** 已经取过的区间。用于规则 4 的去重 —— 连同**内容**一起存，好回灌给模型。 */
 export interface FetchedSpan {
   type: ContextRequest['type'];
-  /** `file` 用路径；`page_range` 为 null */
+  /**
+   * `file` 用路径；`page_range` D98 起也带（闸门兜底成的锚点 PDF 路径）——
+   * 去重与 `describeFetched` 的指认都要靠它。极老代码路径上仍可能为 null。
+   */
   path: string | null;
   start: number;
   end: number;
@@ -109,6 +112,12 @@ export interface FetchedSpan {
  *         **导出给命令层复用**：进度通知要说同一句话，两处各写一遍早晚会说得不一样。
  */
 export function describeFetched(span: { type: ContextRequest['type']; path: string | null; start: number; end: number }): string {
+  // D98：page_range 现在也带路径（闸门兜底的锚点 PDF），指认必须**先看类型**再看路径 ——
+  // 否则"sample.pdf 的 23-25 行"会把页码说成行码，模型和看日志的人一起被带偏。
+  if (span.type === 'page_range') {
+    const pages = `第 ${span.start}-${span.end} 页`;
+    return span.path !== null ? `${basenameOf(span.path)} 的${pages}` : pages;
+  }
   if (span.path !== null) return `${basenameOf(span.path)} 的 ${span.start}-${span.end} 行`;
   return `第 ${span.start}-${span.end} 页`;
 }
@@ -206,6 +215,30 @@ export function validateContextRequest(
     if (!isPDFLocation(anchor.location)) {
       return reject('锚点不是 PDF 位置，不能按页取件');
     }
+    /**
+     * path 的兜底与校验（D98）。与 file 分支的规则 3 同构，但口径相反：
+     * PDF **只认锚点这一份文档**（没有"相关文件"一说），所以：
+     *   - 省略 = 最常见的正确写法（§8 的 schema 也这么教），兜底成锚点文档；
+     *   - 写了 = 必须与锚点文档路径相同（samePath 后归一成绝对路径）；
+     *   - 锚点自己都没有 filePath（S5 之前的老锚点）= 没有可兜底的东西，明说拒绝 ——
+     *     过去这一路会漏到适配器再以"取件参数不完整"炸出来，模型和用户都拿不到方向。
+     */
+    const anchorPdf = anchor.location.filePath;
+    if (typeof anchorPdf !== 'string') {
+      return reject(
+        '这根锚点没有携带 PDF 的文件路径（老版本锚点），无法按页取件 —— 请基于现有信息直接作答。',
+      );
+    }
+    if (span.path === null) {
+      resolvedFile = anchorPdf;
+    } else if (samePath(span.path, anchorPdf)) {
+      resolvedFile = anchorPdf;
+    } else {
+      return reject(
+        `PDF 取件只认锚点这一份文档（${basenameOf(anchorPdf)}），收到 ${JSON.stringify(span.path)}。` +
+          '`path` 省略即可，或照抄「锚点」一节里的文件路径。',
+      );
+    }
     if (state.pageCount === null) {
       // 第二句是留给"读不到页数"这条路的（D74）：它过去只说前半句，而那半句把线索全引向
       // **那份 PDF 本身**（用户就是这么被引偏的）—— 真正的原因在线1 自己的输出通道里
@@ -284,8 +317,16 @@ export function validateContextRequest(
   // 规则 4：去重。区间重叠就不重复取，改把已有内容回灌。
   // 比对用**解析后的文件**（`resolvedFile`），否则同一个文件换个写法就绕过去重了。
   // 区间用**真正要读的那个**（截断后的）—— 否则"截到 400 行"会被当成"你刚读过 1-900"。
-  const sameFile = (f: FetchedSpan): boolean =>
-    resolvedFile !== undefined ? f.path !== null && samePath(f.path, resolvedFile) : f.path === span.path;
+  const sameFile = (f: FetchedSpan): boolean => {
+    if (resolvedFile !== undefined) {
+      // D98 起 page_range 的记录也带路径；但**旧记录**（D98 之前写下的）path 为 null ——
+      // 那时 page_range 只有一种来源（锚点文档），与现在兜底出的锚点文档必然同一份，按同源处理。
+      // `file` 的记录 path 从来不为 null，不受影响。
+      if (f.path === null) return f.type === 'page_range';
+      return samePath(f.path, resolvedFile);
+    }
+    return f.path === span.path;
+  };
   const overlap = state.fetched.find(
     (f) => f.type === req.type && sameFile(f) && f.start <= endForRead && span.start <= f.end,
   );

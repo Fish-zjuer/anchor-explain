@@ -157,9 +157,13 @@ export function explanationMarkdown(run: LastRun): string {
   lines.push(`- ${labels.explainedAt}${labels.sep}${fullStamp(savedAt)}`);
   lines.push(`- ${labels.confidence}${labels.sep}${Math.round(confidence * 100)}%`);
   if (anchor.focus && anchor.focus.trim() !== '') lines.push(`- ${labels.focus}${labels.sep}${anchor.focus.trim()}`);
-  // 多段选择（D80）：外框行号会让人以为"中间的全讲了"，必须把每一段列出来
-  if (anchor.segments !== undefined && anchor.segments.length > 1) {
-    lines.push(`- ${labels.segments}${labels.sep}${anchor.segments.map((s) => labels.lines(s.lineStart, s.lineEnd)).join(labels.listSep)}`);
+  // 多段选择（D80）：外框行号会让人以为"中间的全讲了"，必须把每一段列出来。
+  // D98 起 segments 放宽为 Location[]；导出的行号列表只对代码锚点成立（PDF 走 labels.page）
+  if (isCodeLocation(anchor.location) && anchor.segments !== undefined && anchor.segments.length > 1) {
+    const codeSegs = anchor.segments.filter(isCodeLocation);
+    if (codeSegs.length > 1) {
+      lines.push(`- ${labels.segments}${labels.sep}${codeSegs.map((s) => labels.lines(s.lineStart, s.lineEnd)).join(labels.listSep)}`);
+    }
   }
   lines.push('');
   lines.push(labels.summary);

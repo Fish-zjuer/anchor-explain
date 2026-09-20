@@ -9,8 +9,8 @@
  * 本文件属 core，**禁止 import 'vscode'**。
  */
 
-import type { Anchor, CodeLocation } from './types.ts';
-import { isCodeLocation } from './types.ts';
+import type { Anchor, CodeLocation, PDFLocation } from './types.ts';
+import { isCodeLocation, isPDFLocation } from './types.ts';
 import { samePath } from './paths.ts';
 
 /**
@@ -143,10 +143,29 @@ function composeText(ordered: readonly AnchorSegment[]): string {
  * 为什么单独一个取值函数：`Anchor.segments` 是可选的，且 PDF 锚点没有它 ——
  * 调用方各自去判 `isCodeLocation(anchor.location) && Array.isArray(anchor.segments)`，
  * 迟早有一处漏判。集中一处，语义也就只有一个。
+ *
+ * D98 起 `Anchor.segments` 放宽为 `Location[]`（PDF 拆块器也走它），所以这里
+ * 顺手按 `isCodeLocation` 过滤：代码锚点的段永远是代码段（`mergeSegments` 保证），
+ * 过滤只是把类型收窄做掉，不改语义。
  */
 export function segmentsOf(anchor: Anchor): readonly CodeLocation[] | undefined {
   if (!isCodeLocation(anchor.location)) return undefined;
-  return anchor.segments;
+  const segs = anchor.segments;
+  if (segs === undefined) return undefined;
+  return segs.filter(isCodeLocation);
+}
+
+/**
+ * PDF 锚点的块列表（D98，拆块器/多块披露共用）。
+ *
+ * 与 `segmentsOf` 同一条立场：集中一处收窄，调用方不必各自判。
+ * PDF 锚点的 `location` 是**第 1 块**（阅读序最前的），全部块在这里。
+ */
+export function pdfSegmentsOf(anchor: Anchor): readonly PDFLocation[] | undefined {
+  if (!isPDFLocation(anchor.location)) return undefined;
+  const segs = anchor.segments;
+  if (segs === undefined) return undefined;
+  return segs.filter(isPDFLocation);
 }
 
 /** 一句话说清"讲了哪几段"，给开始面板与「显示状态」共用（与 `captureSummary` 同一条立场）。 */
