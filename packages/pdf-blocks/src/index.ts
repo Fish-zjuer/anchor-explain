@@ -22,13 +22,24 @@ export type {
   ThreadStore,
 } from './types.ts';
 
-export { linesOf, isCjkChar } from './lines.ts';
+export { formLines, linesOf, isCjkChar, COLUMN_GAP_FACTOR, LINE_GAP_FACTOR } from './lines.ts';
 export type { Line } from './lines.ts';
 
-export { detectColumns } from './columns.ts';
-export type { PageLayout } from './columns.ts';
+export { detectColumns, partitionItems } from './columns.ts';
+export type { PageLayout, ItemColumns } from './columns.ts';
 
-export { blocksOfColumn, makeBlock, joinBlockText, isPageFurniture, dropFurniture, TERMINAL, BULLET_START } from './blocks.ts';
+export {
+  blocksOfColumn,
+  makeBlock,
+  joinBlockText,
+  isPageFurniture,
+  markFurnitureLines,
+  dropFurniture,
+  groupRuns,
+  estimateLineHeight,
+  TERMINAL,
+  BULLET_START,
+} from './blocks.ts';
 
 export { orderPage, topOf } from './order.ts';
 export { canStitch, stitchPages, stitchPair } from './stitch.ts';

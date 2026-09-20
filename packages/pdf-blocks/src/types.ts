@@ -65,6 +65,11 @@ export interface Block {
   partTexts?: readonly string[];
   /** 由跨页缝合而来（`unstitch` 可拆开） */
   stitched?: boolean;
+  /**
+   * 由"连续短行归并"而来（P1）：表格 / 清单 / 代码段被聚成一块。
+   * 它们在版面上本来就是一个整体，切成几十张卡片既难读也难用。
+   */
+  grouped?: boolean;
   /** 标题层级猜测（1 最大）；只对 `heading` 有意义 */
   headingLevel?: number;
 }

@@ -250,5 +250,10 @@ test('书眉/页脚模板：同一条线每页重复、只有数字在变 → �
       page(2, [line('正文二。', 0.1, 0.4, 0.8), line('特例说明 B-2。', 0.1, 0.96, 0.8)]),
     ],
   });
-  assert.equal(few.blocks.length, 4, '不同文字的边缘行不是模板');
+  // 断言"没被当成模板删掉"（这条测试守的是这个），同时页底说明行与正文相距很远，
+  // 段落归并不会把它们并起来 —— 2 页各 2 块。
+  const fewText = few.blocks.map((b) => b.text).join('\n');
+  assert.match(fewText, /特例说明 A-1/, '只在第 1 页出现的边缘行不是模板，不许删');
+  assert.match(fewText, /特例说明 B-2/, '只在第 2 页出现的边缘行不是模板，不许删');
+  assert.equal(few.blocks.length, 4, '每页两块：正文 + 页底的说明行');
 });

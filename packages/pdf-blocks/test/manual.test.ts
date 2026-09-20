@@ -36,8 +36,9 @@ function stitchedFixture() {
     pages: [
       page(1, [
         line('第一段：捕获噪声主要来自开关的导通电阻，这一段说完就结束。', 0.1, 0.2, 0.8),
-        // 页面**最后**一块没有句末标点 → 与下页缝合（stitch 只发生在页边界上）
-        line('第二段：保持电容的取值需要在 droop 与噪声之间折中，结论是', 0.1, 0.4, 0.8),
+        // 第二段用**首行缩进**起头（中文段落的真实信号）—— 段落归并靠它断段，
+        // 而这一段的末尾刻意不给句末标点，于是会与下页缝合
+        line('第二段：保持电容的取值需要在 droop 与噪声之间折中，结论是', 0.13, 0.4, 0.77),
       ]),
       page(2, [line('电容越大 droop 越小，但捕获时间常数随之变长。', 0.1, 0.1, 0.8)]),
     ],
@@ -46,7 +47,7 @@ function stitchedFixture() {
 
 test('mergeBlocks：两个块并成一块，文本按块拼接、parts 合并、ID 重算', () => {
   const stream = stitchedFixture();
-  assert.equal(stream.blocks.length, 2, '第一段一块 + 跨页缝合一块');
+  assert.equal(stream.blocks.length, 2, `第一段一块 + 跨页缝合一块（实际 ${JSON.stringify(stream.blocks.map((b) => b.text.slice(0, 12)))}）`);
 
   const [a, b] = stream.blocks as [typeof stream.blocks[number], typeof stream.blocks[number]];
   const merged = mergeBlocks(stream, [a.id, b.id]);
