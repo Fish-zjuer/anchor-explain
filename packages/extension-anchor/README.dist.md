@@ -13,7 +13,7 @@
 ## 安装
 
 在 VS Code 里：扩展面板右上角 `…` → **从 VSIX 安装…** → 选中 `.vsix` 文件，装完重启 VS Code。
-命令行等价：`code --install-extension anchor-explain-0.1.0.vsix`。
+命令行等价：`code --install-extension anchor-explain-0.1.1.vsix`。
 
 （如果双击 `.vsix` 弹出的是 "Microsoft VSIX Installer"，那是 Visual Studio 抢走了文件关联 ——
 用上面两种方式装即可。）

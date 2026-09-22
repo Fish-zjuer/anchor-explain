@@ -17,7 +17,7 @@
 ## 安装
 
 VS Code → 扩展面板 `…` → **从 VSIX 安装…** → 选中 `.vsix`；
-或命令行 `code --install-extension anchor-pdf-0.1.0.vsix`。装完重启 VS Code。
+或命令行 `code --install-extension anchor-pdf-0.1.1.vsix`。装完重启 VS Code。
 
 ## 许可与来源
 

@@ -16,11 +16,11 @@ pnpm package:vsix line2  # 只打线2
 产物落在 **`release/`**（已被 `.gitignore` 忽略，不会混进 git）：
 
 ```
-release/anchor-explain-0.1.0.vsix   线1：代码讲解（3.09 MB）
-release/anchor-pdf-0.1.0.vsix       线2：PDF 视图（4.62 MB）
+release/anchor-explain-0.1.1.vsix   线1：代码讲解（3.31 MB）
+release/anchor-pdf-0.1.1.vsix       线2：PDF 视图（4.62 MB）
 ```
 
-版本号在两个扩展各自的 `package.json` 里（现在是 `0.1.0`）。**发新版前先改版本号**，
+版本号在两个扩展各自的 `package.json` 里（现在是 `0.1.1`）。**发新版前先改版本号**，
 `.vsix` 的文件名与 manifest 里的版本都从那里来。改完跑一遍 `pnpm check` 再打包。
 
 ## 2. 打包脚本自带四道校验（`scripts/package-vsix.mjs`）
@@ -55,7 +55,7 @@ release/anchor-pdf-0.1.0.vsix       线2：PDF 视图（4.62 MB）
 **推荐顺序（实测过，双击那条路真会翻车）：**
 
 1. VS Code 里：扩展面板右上角 `…` → **从 VSIX 安装…** → 选文件。
-2. 命令行：`code --install-extension anchor-explain-0.1.0.vsix`（线2 同理）。
+2. 命令行：`code --install-extension anchor-explain-0.1.1.vsix`（线2 同理）。
 
 装完**重启 VS Code**（或「开发人员: 重新加载窗口」）。两个包是**独立安装**的：
 只要代码讲解就只装线1；要讲 PDF 就两个都装。

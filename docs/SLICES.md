@@ -1248,3 +1248,43 @@ docs：STATE / SLICES / DECISIONS（D116）/ CONTRACTS（§12.4.5）。
 - **需用户实操**：F5 之后在命令面板里执行「Anchor: 把 PDF 拆成卡片流（块流窗口）」 →
   挑一份 PDF → 窗口里点几张卡（徽标应当出现 1、2、3）→ 按住拖过几块 → 按「问 AI」→
   侧边栏应当照常出讲解（这一步走的正是既有的讲解链路）。
+
+---
+
+## 发布记录
+
+### v0.1.1（2026-09-22）——跨文件取件修复，块流窗口搭车
+
+**内容**：主因是 **D117**（取件范围算错：锚点不在工作区里时什么都读不到 + 新增"不限"档 `any`）。
+同一次提交里的 **S-P1 / S-P2a**（块流窗口 `anchorExplain.showBlocks`）**一起进包**，
+按 **D118** 在 Release 说明里**如实标注为预览、尚未经实际使用验证**。
+
+**改了哪些文件**（版本号一处不漏）：`packages/extension-anchor/package.json`、
+`packages/extension-anchor-pdf/package.json`（`0.1.0` → `0.1.1`）；
+`docs/DISTRIBUTION.md`（产物名 / 大小 / 版本号说明 / 安装命令行）；
+两个 `README.dist.md` 的安装命令行（这两个文件进包后会变成包内 `README.md`）。
+
+**产物**：`release/anchor-explain-0.1.1.vsix`（3.31 MB，26 entry）、
+`release/anchor-pdf-0.1.1.vsix`（4.62 MB，415 entry）—— 四道校验全过，
+manifest `Version` 均 = `0.1.1`。（`release/` 被 `.gitignore` 忽略，分发靠 GitHub Release 附件。）
+
+**验收证据**：
+
+| 门 | 结果 |
+|---|---|
+| `pnpm typecheck` | 4 个包全 Done |
+| `pnpm test` | **467 例全过**：core 50 / pdf-blocks 58 / extension-anchor 333 / anchor-pdf 26 |
+| `pnpm build` | 产出 `packages/extension-anchor/dist/extension.cjs` |
+| `pnpm smoke` | 83 条断言，**82 ok / 1 FAIL** —— 唯一那条要 spawn 一个 node 子进程（`EBUSY`，见上文 S9a 那段） |
+| `pnpm smoke:chain` | 207 条全过 |
+| `pnpm smoke:fileswitch` | 18 条全过 |
+| `pnpm smoke:pdf` | 80 条全过 |
+| `pnpm package:vsix` | 两个包：结构 / 必带 / 禁带 / 密钥扫描全过 |
+
+**注意**：`pnpm check` 在这台机器的沙箱里**退出码永远是 1** —— 它用 `&&` 串起四组冒烟，
+而 `smoke` 里那条 spawn 断言在沙箱里必挂，后面的 `smoke:chain` / `smoke:fileswitch` /
+`smoke:pdf` 就**根本不会跑**。所以这里是把四组冒烟**逐个跑**过的（上面的数字即来源于此）。
+以后在本沙箱里验收，别只看 `check` 的退出码。
+
+**对外文案**：`release/RELEASE_NOTES-v0.1.1.md`（GitHub Release 用的正式说明）+
+`release/论坛公告-跨文件取件修复.md`（论坛版，更口语）。两份都留在 `release/`（不进 git）。
