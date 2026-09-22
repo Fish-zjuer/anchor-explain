@@ -8,7 +8,44 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_CANDIDATES, includeNamesIn, orderRelatedFiles } from '../src/relatedFiles.ts';
+import { resolveCandidatePaths } from '@anchor/core';
+import { MAX_CANDIDATES, candidateDisplayName, includeNamesIn, orderRelatedFiles } from '../src/relatedFiles.ts';
+
+// ── D117：清单里的名字怎么写 ────────────────────────────────────────────────
+
+test('candidateDisplayName：三种写法，**基准一律是锚点文件所在目录**', () => {
+  const anchorDir = 'C:/fw/Driver/dshot/Src';
+  // ① 同目录 → 裸文件名（模型照抄，闸门按锚点目录解析 → 就是它）
+  assert.equal(candidateDisplayName(anchorDir, 'C:\\fw\\Driver\\dshot\\Src\\dshot_dma.h'), 'dshot_dma.h');
+  // ② 锚点目录更深处 → 下去的相对写法
+  assert.equal(candidateDisplayName(anchorDir, 'C:/fw/Driver/dshot/Src/impl/regs.h'), 'impl/regs.h');
+  // ③ 别处（兄弟目录、别的模块）→ `..` 写法
+  assert.equal(candidateDisplayName(anchorDir, 'C:/fw/Driver/dshot/Inc/dshot_dma.h'), '../Inc/dshot_dma.h');
+  assert.equal(candidateDisplayName(anchorDir, 'C:/fw/main.c'), '../../../main.c');
+  // 不同盘符表达不出相对写法 → 原样给绝对路径（同样是合法写法）
+  assert.equal(candidateDisplayName(anchorDir, 'D:/sdk/hal.h'), 'D:/sdk/hal.h');
+});
+
+test('candidateDisplayName：清单里的名字**按构造**能解析回那个文件（D96 那轮 ENOENT 的根因）', () => {
+  // 这一条是这次修的核心承诺：名字的基准 = 闸门解析相对路径的基准。
+  // 原来"不同目录"那一类写的是工作区相对路径（`Drivers/hal.h`），闸门却按锚点目录解析
+  // → `<锚点目录>/Drivers/hal.h`，一个不存在的路径，白烧一轮取件。
+  const anchorFile = 'C:/fw/Driver/dshot/Src/dshot_dma.c';
+  for (const target of [
+    'C:/fw/Driver/dshot/Src/dshot_dma.h',
+    'C:/fw/Driver/dshot/Src/impl/regs.h',
+    'C:/fw/Driver/dshot/Inc/dshot_dma.h',
+    'C:/fw/main.c',
+  ]) {
+    const name = candidateDisplayName('C:/fw/Driver/dshot/Src', target);
+    // 闸门只读 `candidates[0]`（适配器读的就是那一个）—— 所以要看的是"首选候选"
+    assert.equal(
+      resolveCandidatePaths(name, anchorFile, ['C:/fw'])[0],
+      target,
+      `${name} 的首选候选应当是 ${target}`,
+    );
+  }
+});
 
 test('includeNamesIn：双引号与尖括号都认，注释里的也算', () => {
   const text = [

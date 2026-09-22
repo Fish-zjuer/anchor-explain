@@ -10,6 +10,8 @@
  *           3. 其余按路径排，总量封顶
  */
 
+import { isInsidePath, relativePathFrom, relativeToPath } from '@anchor/core';
+
 /** 清单上限。够覆盖一个模块的周边，又不至于把 prompt 撑大。 */
 export const MAX_CANDIDATES = 40;
 
@@ -31,8 +33,8 @@ export function includeNamesIn(text: string): string[] {
 
 /**
  * 排序 + 截断。输入是**已经算好的显示路径**：同目录给裸文件名（`ring_buffer.h`），
- * 其余给工作区相对路径（`Drivers/hal_gpio.h`）—— 清单里就按这个形式写，
- * 模型也照这个形式回抄给取件工具（解析规则见 `resolveCandidatePaths`）。
+ * 其余给**相对锚点文件所在目录**的写法（`../Inc/dshot_dma.h`、`sub/x.h`）——
+ * 清单里就按这个形式写，模型也照这个形式回抄给取件工具（解析规则见 `resolveCandidatePaths`）。
  */
 export function orderRelatedFiles(
   display: readonly string[],
@@ -50,4 +52,19 @@ export function orderRelatedFiles(
   };
 
   return [...new Set(display)].sort((a, b) => score(a) - score(b) || a.localeCompare(b)).slice(0, MAX_CANDIDATES);
+}
+
+/**
+ * 清单里那一条**该写成什么**（D117）：同目录 = 裸文件名；锚点目录里更深处 = 下去的相对写法；
+ * 其余 = 相对锚点目录的 `..` 写法（表达不出时原样给绝对路径）。
+ *
+ * @anchor 三种写法都**按锚点文件所在目录**算，与取件闸门解析相对路径的基准完全一致 ——
+ *         这是这一条的全部意义。原来"其余"那一类给的是**工作区相对路径**，而基准是工作区根：
+ *         模型照抄 `Drivers/hal_gpio.h`，闸门解析成 `<锚点目录>/Drivers/hal_gpio.h`，
+ *         一个不存在的路径，白烧一轮（用户实测的 ENOENT 就是这个形状）。
+ *         放在这里而不是宿主侧，是为了能被 `node --test` 钉住（宿主侧只能靠冒烟）。
+ */
+export function candidateDisplayName(anchorDir: string, path: string): string {
+  if (isInsidePath(anchorDir, path)) return relativeToPath(anchorDir, path);
+  return relativePathFrom(anchorDir, path);
 }

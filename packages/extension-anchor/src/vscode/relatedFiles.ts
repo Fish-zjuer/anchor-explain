@@ -9,9 +9,9 @@
  */
 
 import * as vscode from 'vscode';
-import { dirnameOf, isCodeLocation, relativeToPath, samePath } from '@anchor/core';
+import { dirnameOf, isCodeLocation, samePath } from '@anchor/core';
 import type { Anchor } from '@anchor/core';
-import { includeNamesIn, orderRelatedFiles } from '../relatedFiles.ts';
+import { candidateDisplayName, includeNamesIn, orderRelatedFiles } from '../relatedFiles.ts';
 
 /** 代码类的后缀。嵌入式常见的那几种都在这儿（`.S` 汇编、`.ld` 链接脚本、`.mk` 构建片段）。 */
 const CODE_GLOB = '**/*.{h,hpp,hh,hxx,c,cc,cpp,cxx,c++,inc,s,S,asm,ld,lds,mk,cmake,py,rs,go,ts,js}';
@@ -33,7 +33,6 @@ export async function listRelatedFiles(
 
   const anchorFile = anchor.location.filePath;
   const anchorDir = dirnameOf(anchorFile);
-  const root = folders[0]!.uri.fsPath;
 
   let found: readonly vscode.Uri[];
   try {
@@ -51,10 +50,10 @@ export async function listRelatedFiles(
     const path = uri.fsPath;
     if (samePath(path, anchorFile)) continue; // 锚点文件自己不进清单
 
-    // 同目录 → 裸文件名（嵌入式里最常见的相关者）；其余 → 工作区相对路径。
-    // 两种写法模型都能直接回抄给取件工具（解析规则见 `resolveCandidatePaths`）。
-    const sameDir = relativeToPath(anchorDir, path);
-    display.push(sameDir.includes('/') ? relativeToPath(root, path) : sameDir);
+    // S9a：同目录 → 裸文件名（嵌入式里最常见的相关者），其余 → 相对锚点目录的写法。
+    // D117：**基准一律是锚点目录**（`candidateDisplayName` 里说清了为什么 ——
+    // 取件闸门解析相对路径就是这个基准，写工作区相对路径会解析成一个不存在的路径）。
+    display.push(candidateDisplayName(anchorDir, path));
   }
 
   // 锚点正文里的 `#include` 是**代码自己说的依赖**，优先于我们的猜测

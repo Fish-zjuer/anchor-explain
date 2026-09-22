@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AdapterCapabilities, Anchor, ContextRequest } from '@anchor/core';
-import { validateContextRequest, describeFetched } from '../src/orchestrator/validateContextRequest.ts';
+import { validateContextRequest, describeFetched, relatedRoots } from '../src/orchestrator/validateContextRequest.ts';
 import type {
   ContextFetchPolicy,
   ContextFetchState,
@@ -329,6 +329,152 @@ test('S9a off：策略缺省就是 off，行为与 S1~S8 完全一致（回退�
   );
   assert.equal(roam.accepted, false);
   assert.match(roam.accepted === false ? roam.reason : '', /只允许取锚点所在的文件/);
+});
+
+// ─────────────────────────────────────────────────────────────
+// D117：范围算错的两种情形（用户实测那条报错）+ 第四档 `any`
+//
+// 起因：用户实测第 1 轮就被拒 —— `"../Inc/dshot_dma.h" 不在允许的范围内`，
+// 而那个头文件**就在锚点文件的兄弟目录里**（源在 `Src/`、头在 `Inc/`，嵌入式最常见的形状）。
+// 根因不在解析，在"范围"的定义：`related` 原来只有工作区根，而**锚点不在工作区里是常态**
+// （用「打开文件」而不是「打开文件夹」、开发宿主窗口开在别的目录）——
+// 那时锚点目录自己都不是根，连锚点旁边那个文件都读不到。
+// ─────────────────────────────────────────────────────────────
+
+/** 用户工程的实际形状：源在 `Src/`、头在兄弟目录 `Inc/` */
+const FW_SRC = 'C:\\fw\\Driver\\dshot\\Src\\dshot_dma.c';
+
+test('D117 related：锚点不在工作区里 → 范围退化成"锚点所在的这一层"（目录 + 上一层）', () => {
+  assert.deepEqual(relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']), [
+    'C:/other-project',
+    'C:/fw/Driver/dshot/Src',
+    // 上一层是必要的，不是凑数：`Src/` 与 `Inc/` 是兄弟目录，`../Inc/x.h` 过不了锚点目录这一关
+    'C:/fw/Driver/dshot',
+  ]);
+  // 没有打开文件夹（`workspaceFolders` 为空）时同理 —— 修之前这时**什么都读不到**
+  assert.deepEqual(relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', []), [
+    'C:/fw/Driver/dshot/Src',
+    'C:/fw/Driver/dshot',
+  ]);
+});
+
+test('D117 related：`../Inc/...` 与同目录文件名都放行（报错那条正是前者）', () => {
+  const policy: ContextFetchPolicy = {
+    scope: 'related',
+    roots: relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']),
+    maxLines: 400,
+  };
+  // ① 用户报的那一条：兄弟目录里的头文件
+  const sibling = validateContextRequest(
+    fileReq({ path: '../Inc/dshot_dma.h', start: 1, end: 200 }),
+    codeAnchor(FW_SRC),
+    state({ policy }),
+  );
+  assert.equal(sibling.accepted, true);
+  assert.equal(
+    sibling.accepted === true ? sibling.request.params.path : null,
+    'C:/fw/Driver/dshot/Inc/dshot_dma.h',
+  );
+
+  // ② 锚点旁边那个文件：修之前它同样被拒（候选还要落在某个根里才算数，锚点目录从来不是根）
+  const beside = validateContextRequest(
+    fileReq({ path: 'dshot_dma.h', start: 1, end: 20 }),
+    codeAnchor(FW_SRC),
+    state({ policy }),
+  );
+  assert.equal(beside.accepted, true);
+  assert.equal(
+    beside.accepted === true ? beside.request.params.path : null,
+    'C:/fw/Driver/dshot/Src/dshot_dma.h',
+  );
+
+  // ③ 再往上就出界了：`../../x.h` 落在 `C:/fw/Driver`，不在这一层里
+  const out = validateContextRequest(
+    fileReq({ path: '../../x.h', start: 1, end: 5 }),
+    codeAnchor(FW_SRC),
+    state({ policy }),
+  );
+  assert.equal(out.accepted, false);
+});
+
+test('D117 related：锚点**在工作区里**时范围不变（不许顺手把工作区外面放开）', () => {
+  // 锚点在工作区根直下是最能暴露"随手加父目录"的形状：那一步会把整个盘放开
+  assert.deepEqual(relatedRoots('C:/repo/main.c', ['C:/repo']), ['C:/repo']);
+  assert.deepEqual(relatedRoots('C:/repo/test/fixtures/main.c', ['C:/repo']), ['C:/repo']);
+  // 多根工作区照旧全带上（命中哪一个都算在范围内）
+  assert.deepEqual(relatedRoots('C:/b/main.c', ['C:/a', 'C:/b']), ['C:/a', 'C:/b']);
+});
+
+test('D117：拒绝文案要说清**当前档位与实际生效的根**（不然照它说的改写法还会被拒）', () => {
+  const policy: ContextFetchPolicy = {
+    scope: 'related',
+    roots: relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']),
+    maxLines: 400,
+  };
+  const out = validateContextRequest(
+    fileReq({ path: 'C:/sdk/hal_gpio.h', start: 1, end: 5 }),
+    codeAnchor(FW_SRC),
+    state({ policy }),
+  );
+  assert.equal(out.accepted, false);
+  const reason = out.accepted === false ? out.reason : '';
+  assert.match(reason, /当前取件范围 "related"/);
+  assert.match(reason, /C:\/other-project/);
+  assert.match(reason, /C:\/fw\/Driver\/dshot/);
+  // 还差一步时给得出下一步：档位名要写进文案，用户才知道去哪儿改
+  assert.match(reason, /anchorExplain\.fetchScope/);
+  // 第一句以句号收尾、且边界信息落在这句里：进度通知只取第一句（`briefReason`），
+  // 否则屏幕上那句会正好是"它说按锚点目录算，而那条规则此刻不生效"的误导（D68 的同一类问题）
+  assert.equal(
+    reason.slice(0, reason.indexOf('。') + 1),
+    '"C:/sdk/hal_gpio.h" 不在允许的范围内（当前取件范围 "related"）。',
+  );
+});
+
+test('D117 any：不按根判范围 —— 工作区外的绝对路径也放行', () => {
+  const policy: ContextFetchPolicy = { scope: 'any', roots: [], maxLines: 400 };
+  const r = validateContextRequest(
+    fileReq({ path: 'C:/sdk/Drivers/hal_gpio.h', start: 1, end: 40 }),
+    codeAnchor(),
+    state({ policy }),
+  );
+  assert.equal(r.accepted, true);
+  assert.equal(
+    r.accepted === true ? r.request.params.path : null,
+    'C:/sdk/Drivers/hal_gpio.h',
+  );
+  // 相对写法仍按锚点文件所在目录算（与别的档同一套坐标）
+  const rel = validateContextRequest(
+    fileReq({ path: '../Inc/x.h', start: 1, end: 5 }),
+    codeAnchor(),
+    state({ policy }),
+  );
+  assert.equal(rel.accepted, true);
+  assert.equal(rel.accepted === true ? rel.request.params.path : null, 'C:/repo/test/Inc/x.h');
+});
+
+test('D117 any：密钥/依赖/构建产物**照样挡**（那是底线，不是范围问题）', () => {
+  const policy: ContextFetchPolicy = { scope: 'any', roots: [], maxLines: 400 };
+  for (const path of ['C:/repo/.env', 'C:/repo/.env.local', 'C:/repo/keys/server.pem', 'C:/repo/node_modules/x/index.js', 'C:/repo/build/gen.h']) {
+    const out = validateContextRequest(fileReq({ path, start: 1, end: 5 }), codeAnchor(), state({ policy }));
+    assert.equal(out.accepted, false, path);
+    assert.match(out.accepted === false ? out.reason : '', /按约定不读/, path);
+  }
+});
+
+test('D117 any：去重与频率两条规则照跑（放宽的是范围，不是整套闸门）', () => {
+  const policy: ContextFetchPolicy = { scope: 'any', roots: [], maxLines: 400 };
+  const fetched: FetchedSpan[] = [
+    { type: 'file', path: 'C:/sdk/Drivers/hal_gpio.h', start: 1, end: 40, content: '旧内容' },
+  ];
+  const again = validateContextRequest(
+    fileReq({ path: './hal_gpio.h', start: 5, end: 10 }),
+    codeAnchor('C:\\sdk\\Drivers\\main.c'),
+    state({ policy, fetched }),
+  );
+  assert.equal(again.accepted, false);
+  assert.match(again.accepted === false ? again.reason : '', /已经取过了/);
+  assert.equal(again.accepted === false ? again.content : undefined, '旧内容');
 });
 
 test('S9a 去重按**解析后的文件**比对：同一个文件换个写法也绕不过去重', () => {

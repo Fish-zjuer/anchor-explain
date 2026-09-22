@@ -16,9 +16,11 @@ import {
   basenameOf,
   dirnameOf,
   isCodeLocation,
+  isInsidePath,
   isPDFLocation,
   normPath,
   resolveCandidatePaths,
+  resolveUnrestrictedPaths,
   samePath,
 } from '@anchor/core';
 
@@ -29,13 +31,21 @@ import {
  *         宏在 `config.h`、结构体在 `ring_buffer.h`、调用者在别的 `.c`，只看锚点文件讲不出
  *         "数据从哪来、给谁用"。所以规则从"只许锚点文件"松成"**逻辑相关**"。
  *         **相关性由模型判断（我们教它判据），这里只管边界。**
+ *
+ *         `any` 是 D117 加的第四档：前三档都要求"路径得先落在某个根里"，而**锚点不在工作区里**
+ *         是常态（用「打开文件」打开、或开发宿主窗口开在别的目录）—— 那时连锚点旁边的
+ *         `../Inc/dshot_dma.h` 都读不到，用户实测就是这么被拒的。`any` 把范围交给路径本身：
+ *         写绝对路径就按绝对路径读。
  */
-export type FetchScope = 'related' | 'same-dir' | 'off';
+export type FetchScope = 'related' | 'same-dir' | 'off' | 'any';
 
 export interface ContextFetchPolicy {
-  /** `related` = 工作区内任意文本文件；`same-dir` = 只允许锚点文件所在目录；`off` = 只允许锚点文件 */
+  /**
+   * `related` = 工作区内的文本文件（锚点不在工作区里时退化成"锚点所在的这一层"，见 `relatedRoots`）；
+   * `same-dir` = 只允许锚点文件所在目录；`off` = 只允许锚点文件；`any` = 不按根过滤（黑名单仍在）
+   */
   scope: FetchScope;
-  /** 允许的根（工作区目录）。空数组 = 跨文件关闭（任何别的文件都拒） */
+  /** 允许的根（工作区目录，`related` 时还含锚点邻域）。空数组 = 跨文件关闭（任何别的文件都拒） */
   roots: readonly string[];
   /** 单次取件最多几行（防"把这个文件整个给我"）。**由配置给**（`anchorExplain.maxFetchLines`） */
   maxLines: number;
@@ -59,6 +69,41 @@ export const RESTRICTED_POLICY: ContextFetchPolicy = {
   roots: [],
   maxLines: DEFAULT_MAX_FETCH_LINES,
 };
+
+/**
+ * `related` 档的允许根：工作区根 ∪（必要时）**锚点邻域**。
+ *
+ * @anchor 这一条是 D117 的核心，也是用户实测那条报错的根因，值得写清楚：
+ *
+ *         `related` 原来是"工作区根"，一步都没错 —— 前提是**锚点文件在工作区里**。
+ *         用户实测时那个前提不成立（锚点在 `…/Driver/dshot/Src/dshot_dma.c`，而窗口里
+ *         打开的文件夹是别的目录）：于是模型写 `../Inc/dshot_dma.h` 算出来的
+ *         `…/Driver/dshot/Inc/dshot_dma.h` 不在任何根里，被拒；
+ *         **而它旁边同目录的 `dshot_dma.h` 同样被拒** —— 因为候选还要在根里才算数，
+ *         锚点目录本身从来不是根。提示词与拒绝文案都在教模型"相对路径按锚点文件所在目录算"，
+ *         这一条却让那句话在锚点不在工作区时完全落空。
+ *
+ *         所以判定按"锚点在工作区里吗"分两种（不是拍脑袋加根，而是**把两种前提各自的边界说清**）：
+ *           - 在（工作区根覆盖锚点）：范围就是工作区根。锚点目录本来就在里面，不多加任何东西，
+ *             否则"锚点恰好在工作区根直下"时会把**工作区根的外面**也放开（那是整个盘）。
+ *           - 不在，或压根没打开文件夹：范围退化成**锚点所在的这一层** —— 锚点目录 + 它的上一层。
+ *             上一层是必要的，不是凑数：嵌入式工程的形状就是 `Src/` 与 `Inc/` 是兄弟目录，
+ *             `../Inc/dshot_dma.h` 是这个行业最常见的写法，只给锚点目录一个根它永远过不去。
+ *
+ *         回退档都在：想更严用 `same-dir` / `off`，想完全放开用 `any`。
+ */
+export function relatedRoots(anchorFile: string, workspaceRoots: readonly string[]): readonly string[] {
+  const roots = workspaceRoots.filter((root) => root !== '');
+  const dir = dirnameOf(anchorFile);
+  if (dir === '' || roots.some((root) => isInsidePath(root, anchorFile))) return roots;
+
+  const out = [...roots];
+  for (const extra of [dir, dirnameOf(dir)]) {
+    if (extra === '' || out.some((existing) => samePath(existing, extra))) continue;
+    out.push(extra);
+  }
+  return out;
+}
 
 /** 依赖、构建产物、版本控制目录：不读。它们是噪音，且常常巨大。 */
 const DENIED_DIR_SEGMENTS = ['.git', 'node_modules', 'dist', 'build', 'out', '.vscode-test', '.tmp-preview'];
@@ -273,12 +318,36 @@ export function validateContextRequest(
     } else if (policy.scope === 'off') {
       return reject(`只允许取锚点所在的文件（${anchorFile}），收到 ${JSON.stringify(span.path)}`);
     } else {
-      // 解析成绝对路径，并且**只用闸门批准过的那一个**（候选里剩下的同样都在允许范围内）
-      const candidates = resolveCandidatePaths(span.path, anchorFile, policy.roots);
+      /**
+       * 解析成绝对路径，并且**只用闸门批准过的那一个**（候选里剩下的同样都在允许范围内）。
+       *
+       * `any` 档不过滤根（D117）—— 那是它存在的唯一理由：写绝对路径就按绝对路径读。
+       * 黑名单不在这条路上分档：它与"范围"是两件事，见下面的 `isDeniedPath`。
+       */
+      const candidates =
+        policy.scope === 'any'
+          ? resolveUnrestrictedPaths(span.path, anchorFile, policy.roots)
+          : resolveCandidatePaths(span.path, anchorFile, policy.roots);
       if (candidates.length === 0) {
+        /**
+         * 拒绝文案要说**三件**事（D117）：边界在哪（档位 + 实际生效的根）、
+         * 怎么改写法、以及范围真的不够时该怎么办。
+         *
+         * @anchor 原来只有中间那件"怎么写相对路径"。用户在真工程上拿到的就是那句，而它
+         *         **恰好把线索引到反方向**：它说"按锚点文件所在目录算"，可锚点不在工作区里时
+         *         那条规则根本不生效 —— 照着它改写法只会一次次被拒。档位与根写出来，
+         *         "为什么它说按锚点目录算却读不到"当场就自明（D67「报错要说实话」的同一条纪律）。
+         *         第一句以句号收尾：进度通知只取第一句（`briefReason`），边界信息必须落在第一句里。
+         */
         return reject(
-          `${JSON.stringify(span.path)} 不在允许的范围内。只能取锚点所在的文件，或者工作区里的其他文件 —— ` +
-            '写相对路径时按锚点文件所在目录算，例如 "ring_buffer.h" 或 "include/ring_buffer.h"。',
+          `${JSON.stringify(span.path)} 不在允许的范围内（当前取件范围 ${JSON.stringify(policy.scope)}）。` +
+            `允许的根：${policy.roots.length === 0 ? '（无）' : policy.roots.join('、')}。` +
+            '只能取锚点所在的文件，或者允许范围内的其他文件 —— 写相对路径时按锚点文件所在目录算，' +
+            '例如 "ring_buffer.h" 或 "../Inc/dshot_dma.h"。' +
+            (policy.scope === 'any'
+              ? ''
+              : '锚点不在工作区里时，范围就是锚点所在的这一层；要读更远的地方，' +
+                '把设置 `anchorExplain.fetchScope` 改成 "any"。'),
         );
       }
       const target = candidates[0]!;
@@ -289,7 +358,8 @@ export function validateContextRequest(
         );
       }
       if (isDeniedPath(target)) {
-        // 密钥/依赖/构建产物：不读，并说清是哪一类，免得模型反复试
+        // 密钥/依赖/构建产物：不读，并说清是哪一类，免得模型反复试。
+        // `any` 档也照样挡（D117）：那是"不许把密钥发到远端模型"的底线，不是范围问题。
         return reject(`${basenameOf(target)} 按约定不读（密钥、依赖或构建产物）`);
       }
       resolvedFile = target;

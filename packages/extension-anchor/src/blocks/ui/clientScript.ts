@@ -37,6 +37,27 @@ export const BLOCK_VIEW_CLIENT_SCRIPT = `
   try { vscode = acquireVsCodeApi(); } catch (e) { vscode = null; }
   function post(msg) { if (vscode) vscode.postMessage(msg); }
 
+  /* ── 重画之后把滚动位置捡回来 ────────────────────────────────
+     宿主每次状态变化都**重设整个 HTML**（真相只有一份，见 BlockStreamPanel 的注释）。
+     不捡的话，点第 40 块时画面会跳回顶上 —— 那不是"纪律"，那是个 bug。
+     这里只存一个数（滚动位置），不存任何选中状态：选中态在宿主那边。 */
+  function savedScroll() {
+    try {
+      var st = vscode && vscode.getState ? vscode.getState() : null;
+      return st && typeof st.scrollTop === "number" ? st.scrollTop : 0;
+    } catch (e) { return 0; }
+  }
+  function saveScroll() {
+    try { if (vscode) vscode.setState({ scrollTop: window.scrollY }); } catch (e) { /* 存不下就算了 */ }
+  }
+  var restoreTop = savedScroll();
+  if (restoreTop > 0) {
+    window.scrollTo(0, restoreTop);
+    // 第一帧可能还没排完（缩略图撑高度）—— 下一帧再对一次。**一次性校正，不是动画**。
+    requestAnimationFrame(function () { window.scrollTo(0, restoreTop); });
+  }
+  window.addEventListener("scroll", saveScroll, { passive: true });
+
   var anchorId = null;   // 连选/滑选的起点（上一次点过的那块）
   var pressed = null;    // 本次按下落在哪张卡
   var dragged = false;   // 按下之后是否滑到过别的卡

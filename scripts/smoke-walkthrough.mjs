@@ -102,6 +102,8 @@ let focusAnswer;
 // 唯一被换掉的是最外面那一跳 `fetch`。于是"取件轮数、拒绝回灌、输出闸门"
 // 这些逻辑在冒烟里跑的是真代码，只有字节没有真的过网线。
 let fetchMode = 'with-fetch';
+/** D117：`anchor-outside` 模式要点名哪个文件（模拟模型自己拼出来的相对写法） */
+let fetchModePath = 'ring_buffer.h';
 let fetchFail;
 let peerPdfInstalled = true;
 /** D76：装的这份线2 有没有 `anchorPdf.flashRegion`（旧版没有 → 退回"只滚页"） */
@@ -177,6 +179,8 @@ const SIBLING_ABS = MAIN_C.replace(/\\/g, '/').replace(/\/[^/]*$/, '/ring_buffer
 function toolCallTurn() {
   // `related` 与 `related-ref` 都要读**兄弟文件**（后者还要求讲解里引用它）
   const related = fetchMode === 'related' || fetchMode === 'related-ref';
+  // D117：锚点不在工作区里时，模型拼出来的相对写法（裸名字 / 跨目录的 `../`）也得能取到
+  const anchorOutside = fetchMode === 'anchor-outside';
   return {
     content: '',
     tool_calls: [
@@ -188,8 +192,8 @@ function toolCallTurn() {
           arguments: JSON.stringify({
             request_type: 'file',
             // 跨文件那次要读到**宏与结构体**（它们不在文件开头），其余情形随便一小段
-            start: related ? 10 : 1,
-            end: related ? 20 : 5,
+            start: related || anchorOutside ? 10 : 1,
+            end: related || anchorOutside ? 20 : 5,
             reason: '想先看看文件头部有哪些定义',
             // §8 声明了 `path` 之后模型才可能点名文件（S9a 修订，D67）—— 这里刻意带上，
             // 好验证它一路被带到校验与适配器那两步。
@@ -197,11 +201,13 @@ function toolCallTurn() {
             // 好验证"先按锚点文件所在目录解析"那条规则。另外两个模式用来验拒绝路径。
             path: related
               ? 'ring_buffer.h'
-              : fetchMode === 'outside'
-                ? 'C:/Windows/win.ini'
-                : fetchMode === 'secret'
-                  ? '.env'
-                  : MAIN_C,
+              : anchorOutside
+                ? fetchModePath
+                : fetchMode === 'outside'
+                  ? 'C:/Windows/win.ini'
+                  : fetchMode === 'secret'
+                    ? '.env'
+                    : MAIN_C,
           }),
         },
       },
@@ -252,6 +258,12 @@ globalThis.fetch = (url, init) => {
     text: () => Promise.resolve(JSON.stringify({ choices: [{ message: cannedCompletion(body) }] })),
   });
 };
+
+/**
+ * 假宿主的工作区文件夹（D117 起可改）。默认只有 fixtures —— 锚点文件就在里面。
+ * 测"锚点不在工作区里"时把它换成别处（模拟 F5 起的开发宿主窗口开在别的目录）。
+ */
+let workspaceFoldersValue = [{ uri: { fsPath: FIXTURES }, name: 'fixtures', index: 0 }];
 
 /** S3 的配置桩。`providers.default` 齐了，所以 `makeProvider()` 不会报"还没配置" */
 let settingsValues = {
@@ -466,7 +478,12 @@ const vscodeStub = {
   },
 
   workspace: {
-    workspaceFolders: [{ uri: { fsPath: FIXTURES }, name: 'fixtures', index: 0 }],
+    // D117：**能改**（默认还是 fixtures）。"锚点不在工作区里"是常态 —— 用「打开文件」打开的、
+    // 或者 F5 起的开发宿主窗口开在别的目录 —— 而那一档的范围算法与"锚点在不在工作区里"直接相关，
+    // 只测得了把它翻过来这一条路
+    get workspaceFolders() {
+      return workspaceFoldersValue;
+    },
     textDocuments: [],
     asRelativePath: (uri) => path.relative(FIXTURES, uri.fsPath).split(path.sep).join('/'),
     // S9a：候选文件清单要靠它扫工作区。桩必须真的扫（按扩展名过滤 fixtures 目录），
@@ -1760,6 +1777,59 @@ await registered.get('anchorExplain.capture')?.();
 const outsideTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
 check(/请求被拒绝/.test(String(outsideTool?.content ?? '')), '工作区之外的文件被拒，且原因是回灌而不是抛错');
 check(/不在允许的范围内/.test(String(outsideTool?.content ?? '')), '拒绝原因说清了边界在哪');
+// D117：拒绝文案还要说清**当前是哪个档、实际生效的根在哪** —— 不然用户拿到那句
+// "写相对路径时按锚点文件所在目录算"会照着去改写法，而每次都被拒（实测那条报错的形状）
+check(
+  /当前取件范围 "related"/.test(String(outsideTool?.content ?? '')) &&
+    /允许的根：/.test(String(outsideTool?.content ?? '')),
+  '拒绝原因里报了档位与实际生效的根（锚点不在工作区里这件事当场自明）',
+  String(outsideTool?.content ?? '').slice(0, 140),
+);
+
+// ②b D117 第四档 `any`：范围不判 —— 同一条请求从"拒"变成"放行"
+//     用真存在、且**确实在工作区之外**的文件（本仓库的 docs/STATE.md）：这样断言的不只是
+//     "闸门放行了"，还有"内容真的读进来了"
+settingsValues = { ...settingsValues, fetchScope: 'any' };
+fetchMode = 'anchor-outside';
+fetchModePath = path.join(ROOT, 'docs', 'STATE.md').split(path.sep).join('/');
+fetchCalls.length = 0;
+await registered.get('anchorExplain.capture')?.();
+const anyTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
+const anyContent = String(anyTool?.content ?? '');
+check(
+  !/请求被拒绝|取件失败/.test(anyContent) && /行 10-20（共 \d+ 行）/.test(anyContent),
+  '取件范围换成 "any" 之后，工作区之外的绝对路径真读到了（那一档存在的唯一理由）',
+  anyContent.slice(0, 140),
+);
+settingsValues = { ...settingsValues, fetchScope: undefined };
+fetchMode = 'outside';
+
+// ②c D117 锚点**不在工作区里**：用户实测那条报错的形状
+//     把工作区换成另一个目录（F5 起的开发宿主窗口开在别处就是这样），锚点文件在 fixtures 里。
+//     修之前这里连锚点旁边的 `ring_buffer.h` 都取不到：`related` 的范围原来只有工作区根，
+//     而锚点目录自己从来不是根 —— 提示词却教模型"相对路径按锚点文件所在目录算"。
+workspaceFoldersValue = [{ uri: { fsPath: path.join(ROOT, 'scripts') }, name: 'scripts', index: 0 }];
+for (const wanted of ['ring_buffer.h', '../fixtures/ring_buffer.h']) {
+  fetchMode = 'anchor-outside';
+  fetchModePath = wanted;
+  fetchCalls.length = 0;
+  outputLines.length = 0;
+  await registered.get('anchorExplain.capture')?.();
+  const tool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
+  const content = String(tool?.content ?? '');
+  check(
+    !/请求被拒绝|取件失败/.test(content),
+    `锚点不在工作区里时，\`${wanted}\` 也取得到（D117：范围退化成锚点所在的这一层）`,
+    content.slice(0, 140),
+  );
+  check(
+    outputLines.some((l) => l.includes('取件') && l.includes('ring_buffer.h') && l.includes('第 1 轮')),
+    `\`${wanted}\` 的取件在日志里记成了归一化后的绝对路径`,
+    outputLines.find((l) => l.includes('ring_buffer.h')) ?? '(没有)',
+  );
+}
+workspaceFoldersValue = [{ uri: { fsPath: FIXTURES }, name: 'fixtures', index: 0 }];
+fetchMode = 'with-fetch';
 
 // ③ 密钥类：拒（模型能读工作区任意文件之后，这一条是必须的）
 fetchMode = 'secret';

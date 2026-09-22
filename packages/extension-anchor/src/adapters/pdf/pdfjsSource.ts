@@ -119,17 +119,24 @@ export interface PdfBytesPort {
  *         `process.versions`，要么依赖 pdf.js 的内部判定，两个都不该由我们改）。
  */
 /**
- * 把读到的字节统一成**真正的 `Uint8Array`**。
+ * 把读到的字节统一成**真正的 `Uint8Array`**，并且**永远复制一份**。
  *
  * @anchor pdf.js 会明确拒绝 Node 的 `Buffer`：`Please provide binary data as Uint8Array,
  *         rather than Buffer.` —— 而 `node:fs` 读出来的正好就是 Buffer 的子类。
  *         真实现（`vscode.workspace.fs`）给的是普通 `Uint8Array`，但端口是**注入**的，
  *         下一个实现（从压缩包/网络里读）完全可能给 Buffer —— 与其让每个调用方记着这件事，
- *         不如在入口一次性摆平。`Uint8Array.from` 是**复制**：既换掉 Buffer 的身份，
- *         也避开 Node 小块内存池（小 Buffer 共享同一块 ArrayBuffer，而 pdf.js 会 transfer 它）。
+ *         不如在入口一次性摆平。
+ *
+ *         **无条件复制**（不是"只在是 Buffer 时才复制"）：`getDocument` 会把这块缓冲
+ *         **transfer 走**，于是**调用方手里那个数组会当场变成空的**（byteLength 0）。
+ *         原实现只在身份不对时复制，于是"端口把同一块缓冲复用了返回"时就会踩到 ——
+ *         S-P2 的指纹正好是"读完字节算 sha1"，实测拿到的是空串的 sha1
+ *         （`da39a3ee…`）—— 那是**静默算错**，而且错得毫无痕迹。
+ *         一份 PDF 复制一次的代价（几 MB）远小于"指纹错了但没人知道"。
+ *         （同时 `pdf-blocks` 侧的 `readSplitInput` 也改成了**先算指纹再打开**，两道都上。）
  */
 function toPlainUint8(data: Uint8Array): Uint8Array {
-  return Object.getPrototypeOf(data) === Uint8Array.prototype ? data : Uint8Array.from(data);
+  return Uint8Array.from(data);
 }
 
 export function createPdfJsSource(deps: { bytes: PdfBytesPort }): OpenPDFSource {

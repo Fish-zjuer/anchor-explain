@@ -26,6 +26,7 @@ S8 新增的是一**个入口**，不是一条新链路：活动栏左侧多一�
 | `anchorExplain.goto` | `Anchor: 跳到指定步` | `Ctrl+Alt+W` |
 | `anchorExplain.playPause` | `Anchor: 播放或暂停` | `Ctrl+Shift+Space` |
 | `anchorExplain.showStart` | `Anchor: 打开开始界面` | `Ctrl+Alt+A`（带 `!inputFocus`，**S8 新增**） |
+| `anchorExplain.showBlocks` | `Anchor: 把 PDF 拆成卡片流（块流窗口）` | —（**S-P2 新增**：挑一份 PDF → 出相册 → 点/滑选 → 问 AI） |
 | `anchorExplain.explainAnchor` | `Anchor: 讲解外部锚点` | —（跨扩展入口，S6 由线2 调用） |
 | `anchorExplain.showState` | `Anchor: 显示状态` | —（自检：选区 / 上次捕获 / **模型配置** / 状态栏） |
 | `anchorExplain.setApiKey` | `Anchor: 设置 API Key（存进 SecretStorage）` | —（**S3 新增**） |
@@ -78,9 +79,10 @@ mac 上 `Ctrl` 换成 `Cmd`。**默认不绑 `Space`**（那是打字键），�
 
 | 值 | 允许读哪些文件 |
 |---|---|
-| `related`（默认） | 工作区里的其他文件（**密钥、依赖、构建产物目录始终不读**） |
+| `related`（默认） | 工作区里的其他文件；**锚点不在工作区里时**（比如你是用「打开文件」打开的、或者窗口开在别的目录）范围退化成**锚点所在的这一层**（锚点目录 + 上一层）—— 这样 `Src/` 旁边的 `Inc/xxx.h` 这种写法才成立（**密钥、依赖、构建产物目录始终不读**） |
 | `same-dir` | 只读锚点文件所在目录 |
 | `off` | 只读锚点文件（S9a 之前的行为） |
+| `any` | **不限范围**：写绝对路径就能读工作区之外的任何文件（跨仓库、共享 SDK）。密钥/依赖/构建产物**仍然不读** |
 
 ```jsonc
 { "anchorExplain.fetchScope": "off" }
@@ -234,6 +236,9 @@ detailed.md → `detailed` 档；线上常量有耦合锁，改 .md 后重新生
 | `src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**内联进产物**；客户端脚本不参与类型检查 |
 | `src/blocks/ui/model.ts` | **S-P1 新增**。块流视图的**视图模型**：块流 + 队列 → 卡片（页码标签含跨页、徽标=发送位次、悬停预览位次、图注折进图卡、孤儿 ID 报出）。零 vscode 依赖，有单测 |
 | `src/blocks/ui/{styles,html,clientScript}.ts` | **S-P1 新增**。相册卡片的 webview 资源（同样内联，同样只用 `--vscode-*` 主题变量）；CSP 比侧边栏多放行 `img-src … data:`（图块裁剪图是 dataURL，不放行会**静默**空白）。客户端脚本只渲染与派发，**不维护任何选中状态** |
+| `src/blocks/streamHost.ts` | **S-P2 新增**。块流面板的**宿主侧状态机**（纯函数）：点/滑选/清空/顺序模式、队列与块流对齐（图注折进图卡、孤儿清掉）、队列 → 重排稿 → `Anchor`（`askPayloadOf`）。零 vscode 依赖，有单测 |
+| `src/blocks/blockSource.ts` | **S-P2 新增**。拆块的**真实调用方**：pdf.js 的页文字项 → 引擎的 `SplitInput`（字段名映射只此一处）+ 文档指纹（内容 sha1，**先算指纹再打开** —— pdf.js 会把字节 transfer 走） |
+| `src/blocks/BlockStreamPanel.ts` | **S-P2 新增**。块流窗口（真 `WebviewPanel`，单例）：状态变一次就**重设整个 HTML**（真相只有一份，客户端只画）；`blocks:*` 五条消息过 `parseBlockMessage` 守卫后落到 `streamHost` 的纯函数上 |
 | `src/vscode/ports/editorPort.ts` | §2 `EditorPort` 真实现（五个方法全部是真的，没有覆盖层） |
 | `src/vscode/ports/fileSystemPort.ts` | §2 `FileSystemPort` 真实现 + `countLines` |
 

@@ -107,20 +107,12 @@ export function isInsidePath(root: string, candidate: string): boolean {
 }
 
 /**
- * 模型给的路径 → 一串**候选绝对路径**（按优先级，**已过滤到允许范围内**）。
+ * 模型给的写法 → 一串**候选绝对路径**（按优先级，去重后）。**不做范围判断**。
  *
  * 顺序：相对路径**先按锚点文件所在目录**，再按各个 root；绝对路径只做归一化。
- * **落在所有 root 之外的候选一律丢掉** —— 这一步是刻意的：闸门批准的就是适配器会去读的，
- * 多留一个候选就等于留了一条"闸门没看过但会被读到"的路。
- * `roots` 为空 = 跨文件关闭（只可能返回锚点目录下那一个候选，且它也得在 root 内才算数）。
- *
- * 纯函数、不查存在性：不存在这件事由适配器回一句人话给模型（那是正常的工具结果，不是异常）。
+ * 两个出口的差别只在这里往下十行：`resolveCandidatePaths` 还要按 root 过滤，`resolveUnrestrictedPaths` 不过滤。
  */
-export function resolveCandidatePaths(
-  given: string,
-  anchorFile: string,
-  roots: readonly string[],
-): string[] {
+function expandCandidates(given: string, anchorFile: string, roots: readonly string[]): string[] {
   const raw = given.trim();
   if (raw === '') return [];
 
@@ -136,10 +128,50 @@ export function resolveCandidatePaths(
 
   const out: string[] = [];
   for (const candidate of candidates) {
-    if (!roots.some((root) => isInsidePath(root, candidate))) continue;
     if (!out.some((p) => samePath(p, candidate))) out.push(candidate);
   }
   return out;
+}
+
+/**
+ * 模型给的路径 → 一串**候选绝对路径**（按优先级，**已过滤到允许范围内**）。
+ *
+ * **落在所有 root 之外的候选一律丢掉** —— 这一步是刻意的：闸门批准的就是适配器会去读的，
+ * 多留一个候选就等于留了一条"闸门没看过但会被读到"的路。
+ * `roots` 为空 = 什么别的文件都读不到（连锚点目录下那一个候选也留不下）。
+ *
+ * @anchor 为什么"锚点目录"必须自己进 `roots`（D117）：模型的相对写法是**按锚点文件所在目录**算的
+ *         （提示词与拒绝文案都这么教它），可锚点不一定在工作区里 —— 用「打开文件」而不是
+ *         「打开文件夹」、或开发宿主窗口开在别的目录时，工作区根跟锚点毫无关系。
+ *         那时 `../Inc/dshot_dma.h` 算出来的绝对路径既不在工作区根内、锚点目录又不是根，
+ *         于是**连锚点旁边的那个文件都被判成"不在允许的范围内"**（用户实测的那条报错）。
+ *         范围怎么算由此上移到 `relatedRoots`（orchestrator 侧）一处，这里只认 `roots`。
+ *
+ * 纯函数、不查存在性：不存在这件事由适配器回一句人话给模型（那是正常的工具结果，不是异常）。
+ */
+export function resolveCandidatePaths(
+  given: string,
+  anchorFile: string,
+  roots: readonly string[],
+): string[] {
+  return expandCandidates(given, anchorFile, roots).filter((candidate) =>
+    roots.some((root) => isInsidePath(root, candidate)),
+  );
+}
+
+/**
+ * 同上的展开，但**不按 root 过滤** —— 给"不限范围"那一档（`anchorExplain.fetchScope: "any"`）用。
+ *
+ * @anchor `any` 的含义就是"范围由路径本身说了算"：写绝对路径就按绝对路径读，写相对路径仍按
+ *         锚点文件所在目录算。密钥/依赖/构建产物那道黑名单**不在这里**（它在闸门里，
+ *         与档位无关：那是"不许发到远端模型"的底线，不是范围问题）。
+ */
+export function resolveUnrestrictedPaths(
+  given: string,
+  anchorFile: string,
+  roots: readonly string[] = [],
+): string[] {
+  return expandCandidates(given, anchorFile, roots);
 }
 
 /** 绝对路径的归一化：盘符单独处理，UNC 与 POSIX 走同一套（比较时都归一化，不影响判断）。 */
@@ -159,4 +191,46 @@ export function relativeToPath(root: string, p: string): string {
   const c = normPath(p);
   if (c === r) return '.';
   return p.slice(p.length - (c.length - r.length - 1)); // 用原串切，保留原大小写
+}
+
+/** 盘符 / UNC 共享名 / POSIX 根 —— 不同根的路径之间没法用 `..` 表达。 */
+function rootKeyOf(p: string): string {
+  const drive = /^([A-Za-z]:)/u.exec(p);
+  if (drive) return drive[1]!.toLowerCase();
+  const unc = /^([\\/]{2}[^\\/]+[\\/][^\\/]+)/u.exec(p);
+  if (unc) return unc[1]!.replace(/\\/g, '/').toLowerCase();
+  return p.startsWith('/') ? '/' : '';
+}
+
+/**
+ * `p` 相对**某个目录**的写法，允许 `..`（`C:/fw/x/Src` + `C:/fw/x/Inc/a.h` → `../Inc/a.h`）。
+ *
+ * @anchor 为什么需要它（D117）：候选文件清单给模型看的是**相对于锚点文件所在目录**的名字，
+ *         因为取件闸门解析相对路径正是先按那个目录算（`resolveCandidatePaths`）。
+ *         原来清单里"不同目录"的那些写的是**工作区相对路径**（`Drivers/hal_gpio.h`）——
+ *         两边基准不一样，于是模型照抄清单里的名字，解析出来的却是
+ *         `<锚点目录>/Drivers/hal_gpio.h`：**一个不存在的路径**，白烧一轮取件
+ *         （D96 那条 ENOENT 就是这么来的）。写成 `../../Drivers/hal_gpio.h` 之后，
+ *         清单里的名字**按构造**就指向那个文件，不必再靠"存在性"去猜。
+ *
+ * 不同根（`C:` 与 `D:`、或 UNC 与本地盘）之间表达不出相对写法，**原样返回绝对路径** ——
+ * 绝对路径同样合法（闸门那两档都收）。
+ */
+export function relativePathFrom(fromDir: string, p: string): string {
+  const from = fromDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  const to = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (rootKeyOf(from) === '' || rootKeyOf(from) !== rootKeyOf(to)) return p;
+
+  const fromParts = from.split('/').filter((s) => s !== '');
+  const toParts = to.split('/').filter((s) => s !== '');
+  let common = 0;
+  while (
+    common < fromParts.length &&
+    common < toParts.length &&
+    fromParts[common]!.toLowerCase() === toParts[common]!.toLowerCase()
+  ) {
+    common += 1;
+  }
+  const parts = [...Array<string>(fromParts.length - common).fill('..'), ...toParts.slice(common)];
+  return parts.length === 0 ? '.' : parts.join('/');
 }

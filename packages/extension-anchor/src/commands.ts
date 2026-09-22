@@ -44,6 +44,12 @@ import { createCodeAdapter } from './adapters/CodeAdapter.ts';
 import { createPdfAdapter } from './adapters/PDFAdapter.ts';
 import { createPdfDocumentCache } from './adapters/pdf/pdfDocumentCache.ts';
 import { createPdfJsSource } from './adapters/pdf/pdfjsSource.ts';
+import { splitDocument } from '@anchor/pdf-blocks';
+import { readSplitInput } from './blocks/blockSource.ts';
+import { BlockStreamPanel } from './blocks/BlockStreamPanel.ts';
+import type { BlockStreamHandlers } from './blocks/BlockStreamPanel.ts';
+import { reconciled, streamStateOf } from './blocks/streamHost.ts';
+import type { StreamState } from './blocks/streamHost.ts';
 import { primaryLocationOf } from './playback/decorationPlan.ts';
 import type { CaptureScope } from './adapters/CodeAdapter.ts';
 import { coerceLanguage, describeLanguage } from './prompts/index.ts';
@@ -75,7 +81,8 @@ import { createQueueStatusBar, createStatusBar } from './sidebar/statusBar.ts';
 import { StartViewProvider } from './start/StartViewProvider.ts';
 import { buildStartModel, findStartAction } from './start/startModel.ts';
 import type { StartModel } from './start/startModel.ts';
-import type { ContextFetchPolicy } from './orchestrator/validateContextRequest.ts';
+import { relatedRoots } from './orchestrator/validateContextRequest.ts';
+import type { ContextFetchPolicy, FetchScope } from './orchestrator/validateContextRequest.ts';
 import {
   configuredProviderIds,
   rawProvider,
@@ -132,17 +139,18 @@ function userFacing(err: unknown): string {
 /**
  * 跨文件取件的边界（S9a）：按 `anchorExplain.fetchScope` 与工作区根构造策略。
  *
- * @anchor 三个值对应三种边界，**`off` 时 roots 为空**（连锚点目录都不给）——
+ * @anchor 四个值对应四种边界，**`off` 时 roots 为空**（连锚点目录都不给）——
  *         那是 S1~S8 的行为，也是回退档。`same-dir` 只给锚点目录一个 root：
  *         `resolveCandidatePaths` 会因此只产出同目录的候选，跨目录的请求直接被拒。
+ *         `related` 的范围算法**不在这里**，在 `relatedRoots`（D117）—— 它要判"锚点在工作区里吗"，
+ *         那是纯逻辑，得能被 `node --test` 钉住；这里只负责把工作区文件夹取出来喂给它。
+ *         `any` 的 roots 只当**额外候选**用（不过滤）：写绝对路径就按绝对路径读。
  */
-function fetchPolicyFor(scope: 'related' | 'same-dir' | 'off', anchorFile: string, maxLines: number): ContextFetchPolicy {
+function fetchPolicyFor(scope: FetchScope, anchorFile: string, maxLines: number): ContextFetchPolicy {
   if (scope === 'off') return { scope, roots: [], maxLines };
-  const roots =
-    scope === 'same-dir'
-      ? [dirnameOf(anchorFile)]
-      : (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
-  return { scope, roots, maxLines };
+  if (scope === 'same-dir') return { scope, roots: [dirnameOf(anchorFile)], maxLines };
+  const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+  return { scope, roots: relatedRoots(anchorFile, workspaceRoots), maxLines };
 }
 
 /**
@@ -181,8 +189,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   // remote / 虚拟文件系统只有前者读得到，而后者会**静默读到空**（D75）。
   // `onError` 接到输出通道（D74）：拿不到页数就会导致"按页取件全被拒"，
   // 而这条路上过去没有任何痕迹 —— 用户只看到闸门说"无法确定总页数"。
+  const pdfCache = createPdfDocumentCache(createPdfJsSource({ bytes: fsPort }));
   const pdfAdapter = createPdfAdapter({
-    cache: createPdfDocumentCache(createPdfJsSource({ bytes: fsPort })),
+    cache: pdfCache,
     onError: (message) => note(message),
   });
 
@@ -1057,6 +1066,117 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     }
   }
 
+  /* ── S-P2：块流窗口（相册）──────────────────────────────────────
+     把一份 PDF 拆成卡片流，在一个真窗口里点选、滑选、问出去。
+     面板不存状态（§12.4.2）：真相在这两个变量上 —— `lastBlocks` 留着上次拆出来的
+     块流与队列，所以"关掉面板再打开"不必重拆一次，"重拆同一份文档"时块 ID 还能认回来（D100）。 */
+
+  let lastBlocks: StreamState | undefined;
+
+  /**
+   * 让用户挑一份 PDF。
+   *
+   * @anchor 为什么不是"当前打开的那个 PDF"：线2 的视图是 custom editor，
+   *         宿主这边**拿不到它的文件路径**（它不在 `window.visibleTextEditors` 里，
+   *         而 webview/custom editor 的 URI 也不在 activeTextEditor 上）。
+   *         硬猜一个"当前 PDF"只会造成"我明明开着它，它却说没找到" —— 找文件是确定的。
+   */
+  async function pickPdfFile(): Promise<string | undefined> {
+    const found = await vscode.workspace.findFiles('**/*.pdf', '**/node_modules/**', 30);
+    if (found.length === 0) {
+      void vscode.window.showInformationMessage('Anchor：这个工作区里没有找到 PDF 文件。');
+      return undefined;
+    }
+    if (found.length === 1) return found[0]!.fsPath;
+    const picked = await vscode.window.showQuickPick(
+      found.map((uri) => ({
+        label: basenameOf(uri.fsPath),
+        description: vscode.workspace.asRelativePath(uri),
+        detail: uri.fsPath,
+      })),
+      { title: 'Anchor 块流', placeHolder: '把哪一份 PDF 拆成卡片流？' },
+    );
+    return picked?.detail;
+  }
+
+  /** 面板交回来的三件事：问出去、队列对齐了、状态变了 */
+  function blockStreamHandlers(): BlockStreamHandlers {
+    return {
+      onAsk: (payload) => {
+        // 发出去多少、话费大概多少，先留一行日志：这一轮之后屏幕上全是侧边栏的事，
+        // 事后要回答"刚才那一下发的是什么"只能靠它（同 D68 的取件日志）
+        note(
+          `块流问出去：${payload.blockIds.length} 块 / 约 ${payload.approxTokens} tokens` +
+            (payload.truncated ? '（超预算，末尾的块没发出去）' : ''),
+        );
+        // **走既有的编排链路**（`explain`）：块流只是"选得准"的入口，
+        // 讲解、取件、校验、侧边栏、播放全部一行不改（这正是 Anchor 上那三个字段的用处）
+        void explain(payload.anchor);
+      },
+      onAligned: (info) => {
+        if (info.folded.length > 0) note(`块流：${info.folded.length} 个图注块并进了图卡（队列里的编号跟着改了）`);
+        if (info.orphans.length > 0) note(`块流：清掉 ${info.orphans.length} 个不在本文档里的块`);
+      },
+    };
+  }
+
+  /**
+   * S-P2：把一份 PDF 拆成卡片流并打开窗口。
+   *
+   * 两条入口（命令面板 / 传一个 uri 的调用方）走同一条路 —— 与 S8「入口有四处、实现只有一处」同一条规矩。
+   */
+  async function showBlocks(uri?: unknown): Promise<void> {
+    const fromArg = uri instanceof vscode.Uri ? uri.fsPath : undefined;
+    const filePath = fromArg ?? (await pickPdfFile());
+    if (filePath === undefined) return;
+
+    const existing = BlockStreamPanel.current?.state ?? lastBlocks;
+    // 同一份文档、命令再点一次 = "把那个窗口拿到前面来"，不重拆（拆一份 30 页 PDF 要几秒）
+    if (fromArg === undefined && existing !== undefined && samePath(existing.doc.filePath, filePath)) {
+      BlockStreamPanel.show(existing, blockStreamHandlers(), { fontScale: fontScaleOf(), language: languageOf() });
+      return;
+    }
+
+    let read: Awaited<ReturnType<typeof readSplitInput>>;
+    try {
+      read = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Anchor 正在读这份 PDF…', cancellable: false },
+        (progress) =>
+          readSplitInput(
+            { acquire: (path) => pdfCache.acquire(path), readBytes: (path) => fsPort.readBytes(path) },
+            filePath,
+            (done, total) => progress.report({ message: `第 ${done}/${total} 页`, increment: total === 0 ? 0 : 100 / total }),
+          ),
+      );
+    } catch (err) {
+      // 打不开就说打不开 —— 这是外部输入（用户的文件），不能让面板停在"什么都没发生"
+      void vscode.window.showErrorMessage(`Anchor：这份 PDF 读不了 —— ${(err as Error).message}`);
+      note(`块流：读 ${filePath} 失败（${(err as Error).message}）`);
+      return;
+    }
+
+    const stream = splitDocument(read.input);
+    const prev = existing !== undefined && existing.doc.sourceId === read.sourceId ? existing : undefined;
+    const started = streamStateOf(
+      {
+        filePath,
+        sourceId: read.sourceId,
+        sourceName: basenameOf(filePath),
+        label: `${basenameOf(filePath)} · 共 ${stream.pageCount} 页`,
+      },
+      stream,
+      prev === undefined ? {} : { registry: prev.registry, queue: prev.queue },
+    );
+    // 重拆之后块的构成可能变了（新块出现、旧块被并）：队列要跟着对齐，不能留一批对不上的号
+    const aligned = reconciled(started);
+    lastBlocks = aligned.state;
+    note(`块流：${basenameOf(filePath)} → ${aligned.state.stream.blocks.length} 块（${stream.pageCount} 页）`);
+    if (aligned.orphans.length > 0) note(`块流：清掉 ${aligned.orphans.length} 个不在本文档里的块`);
+    if (aligned.folded.length > 0) note(`块流：${aligned.folded.length} 个图注块并进了图卡`);
+
+    BlockStreamPanel.show(aligned.state, blockStreamHandlers(), { fontScale: fontScaleOf(), language: languageOf() });
+  }
+
   /**
    * 现读配置、现建编排器。
    *
@@ -1857,6 +1977,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.goto', goto),
     vscode.commands.registerCommand('anchorExplain.playPause', playPause),
     vscode.commands.registerCommand('anchorExplain.showStart', showStart),
+    // S-P2：块流窗口（相册）。传一个 pdf 的 uri 也能用（未来的右键入口走这条）
+    vscode.commands.registerCommand('anchorExplain.showBlocks', (uri?: unknown) => void showBlocks(uri)),
     vscode.commands.registerCommand('anchorExplain.openSettings', openSettings),
     vscode.commands.registerCommand('anchorExplain.configure', configure),
     vscode.commands.registerCommand('anchorExplain.showState', showState),

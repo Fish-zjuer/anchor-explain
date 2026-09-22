@@ -829,6 +829,41 @@ D13 定的是"不做高亮框，滚动不是高亮框，符合约束"——实�
   数字：**271 测**（core 40 + ext 219 + pdf 12）/ 冒烟 73 + **140** + 67。
   S9c 的剩余项（折叠已完成步骤、面板上的「下一步」按钮、配色语义写进 README）仍等确认。
 
+### S9a 修 5（D117）：取件范围算错了 —— 锚点不在工作区里的时候，**什么都读不到**
+
+- **起因**：用户报"桌面的 anchor_explain 有一个 bug"，给的证据是输出通道那一行：
+  `第 1 轮 拒绝（"../Inc/dshot_dma.h" 不在允许的范围内。…）`。
+  而 `Inc/dshot_dma.h` **就在锚点文件的兄弟目录里**（源在 `Driver/dshot/Src/`、头在 `Driver/dshot/Inc/`），
+  用户的原话是「**按理说是应该取的**」。
+- **根因（不是解析写错，是"范围"的定义漏了一种前提）**：`related` 的范围原来只有**工作区根**，
+  而**锚点不在工作区里是常态**（用「打开文件」打开的、或 F5 起的开发宿主窗口开在别的目录）。
+  那时：① `../Inc/dshot_dma.h` 算出来的绝对路径不在任何根里 → 拒；② **锚点目录自己从来不是根**，
+  所以连它旁边同目录的文件也一起被拒（`roots` 为空时是"全部拒"，一条不剩）。
+  而提示词与拒绝文案都在教模型"相对路径按锚点文件所在目录算"—— 那条规则在这一刻**根本不生效**，
+  用户照着它改写法只会一次次被拒。**顺带查出第二处同类缺陷**：候选清单里"不同目录"的名字写的是
+  **工作区相对路径**，与闸门解析相对路径的基准（锚点目录）不一致 —— 模型照抄清单里的名字，
+  解析出来是个不存在的路径，白烧一轮（用户早前实测的 `ENOENT: … transport_uart.c` 就是这个形状）。
+- **范围**：
+  - `core/src/paths.ts`：`resolveUnrestrictedPaths`（不过滤根的展开，与过滤版共用一个 `expandCandidates`）、
+    `relativePathFrom`（允许 `..` 的相对写法）
+  - `orchestrator/validateContextRequest.ts`：`FetchScope` 加第四档 `any`；**新增 `relatedRoots`** ——
+    范围怎么算收在这一处（锚点在工作区里 → 工作区根，不多加；不在 → 锚点目录 + 上一层）；
+    拒绝文案补"当前档位 + 实际生效的根 + 出路（改成 `any`）"
+  - `relatedFiles.ts`：新增纯函数 `candidateDisplayName`（清单里的名字**基准一律是锚点目录**）；
+    `vscode/relatedFiles.ts` 改用它
+  - `config.ts`（`coerceFetchScope` 四档 + `describeFetchScope`）、`package.json`（enum/描述）、
+    `commands.ts`（`fetchPolicyFor` 交给 `relatedRoots`）、`prompts/index.ts`（清单那一节的说口径）
+- **验收标准**：`pnpm check` 全绿 + 单测钉住三件事：① 锚点不在工作区里时 `../Inc/...` 与同目录名字都放行、
+  再往上一层是拒；② `any` 档放行工作区外的绝对路径、但密钥/依赖/构建产物照挡、去重与频率照跑；
+  ③ 清单里的名字**解析回来必须就是那个绝对路径**（基准同源）。
+  **＋ 用户实操**：在他那个工程上重跑，看第 1 轮是否已经能读 `Inc/dshot_dma.h`。
+- **回退点**：`slice-S9a-fix8`
+- **状态**：**完成（`slice-S9a-fix9`）**。数字：**383 测**（core 50 + ext 333）/ 链式冒烟 **207** 条断言全过
+  （另有 fileswitch 18、pdf 80 全过；`smoke-extension` 里那条"打包之后 pdf.js 真打开一份 PDF"在本机沙箱跑不了 ——
+  它要 spawn 一个 node 子进程，而沙箱里 spawn 一律 `EBUSY`，与本次改动无关）。
+  链式冒烟新增 4 条：拒绝文案报档位与根、`any` 档**真的读到**工作区外的文件（用本仓库的 `docs/STATE.md` 做证据）、
+  锚点不在工作区里时 `ring_buffer.h` 与 `../fixtures/ring_buffer.h` 都取得到。
+
 ### S9b 可选的追问入口（"要讲哪条线"）
 
 - **目标**：**可选的追问入口**。文件多、逻辑散，但线只有几条，用户心里往往已经有目标 —— 但**默认不打扰**。
@@ -957,7 +992,7 @@ D13 定的是"不做高亮框，滚动不是高亮框，符合约束"——实�
 ② 宿主侧的消费者（`pageSettled`/`pageText`/`blockClick` → 拆块 → 回画覆盖层）。
 它的三条上行守卫（`parseSelectMessage`）本来就是对的，没动。
 
-### S-P1 落地结果（2026-09-20，**工作区未提交**；tag `slice-S-P1` 待提交后打）
+### S-P1 落地结果（2026-09-20，已提交，tag `slice-S-P1`）
 
 **改了哪些文件**：
 
@@ -1151,3 +1186,65 @@ D111 的几何是自洽的，但用户要的是"能多看一点东西"，自洽�
 ⑦ **视觉上"越做越讲究"不等于在交付**：七轮的判据始终应该是用户那句"无感操作，又快又准"，
 不是"能不能做得更真"。**先给一个安静的版本，再问要不要加**；要加也只加一处，加完立刻问
 （D115 是用户替我把这个决定做了 —— 那七轮连带前面的成本都不该发生）。
+
+---
+
+## S-P2 把块流接成一个真的看得到、点得动的窗口
+
+**目标**：S-P1 交出去的是**纯函数 + 能预览的排版** —— 也就是说，用户到这一刻
+**一次也没真的用过卡片流**。本片把它接成真窗口：打开、点选、滑选、问出去。
+
+**范围**（分两片；S-P2a 本轮落地，S-P2b 见"明确不做"）：
+
+- `packages/extension-anchor/src/blocks/blockSource.ts`（新）—— 拆块的**真实调用方**：
+  pdf.js 的 `PDFSource` → 引擎的 `SplitInput`（**字段名映射只此一处**）+ 文档指纹（内容 sha1）
+- `packages/extension-anchor/src/blocks/streamHost.ts`（新）—— 宿主侧**状态机**（纯函数）：
+  点/滑选/清空/顺序模式、队列与块流对齐、队列 → 重排稿 → 锚点（`askPayloadOf`）
+- `packages/extension-anchor/src/blocks/BlockStreamPanel.ts`（新）—— 真 `WebviewPanel`
+  （照 `SidebarPanel` 的路子：单例、`retainContextWhenHidden`、全内联资源）
+- `src/protocol.ts` —— `BlockToHost` 五条 + `parseBlockMessage` 守卫
+- `src/commands.ts` —— 命令 `anchorExplain.showBlocks`（挑 PDF → 拆块 → 开窗）；
+  `blocks:ask` 接到既有的 `explain(anchor)`；`pdfCache` 提出来复用（原来是内联建的）
+- `src/blocks/ui/clientScript.ts` —— 重画时保住滚动位置（`setState`）
+- `package.json` —— 声明新命令（`smoke` 会查"声明了必注册、注册了必声明"）
+- `src/adapters/pdf/pdfjsSource.ts` —— **无条件复制**字节（修 transfer 造成指纹静默变空串的 bug）
+
+**验收标准**：
+
+| 验收 | 靠什么 |
+|---|---|
+| 点/滑选落在**卡片**上（图注那张在屏幕上不存在，不许被拉进队列） | 自动化：`test/blockStream.test.ts` 10 项 |
+| 队列与块流对齐：图注 ID 折到图卡、孤儿清掉**并报出来**（D81） | 同上 |
+| 问出去：稿子 = 重排稿、顺序 = 发送顺序、锚点带 `segments`/`blockIds`、超预算如实汇报 | 同上 |
+| **真 PDF**：30 页样张 → 文字项归一化 → 拆出成规模的块流、阅读序不倒退、指纹 = 文件内容的 sha1 | 同上（真件那一项） |
+| 命令接线完整（声明 ↔ 注册） | 自动化：`pnpm smoke`（25 条） |
+| **看得见、点得动、问得出**：命令开窗 → 选块 → 徽标 → 滑选 → 问 AI → 侧边栏出讲解 | **用户实操**（F5；工作区里要有一份 PDF） |
+
+**回退点**：删掉 `src/blocks/` 那三件 + `protocol.ts`/`commands.ts`/`package.json` 的四处改动即可
+（`streamHost.ts` 是纯函数、面板与命令都是新增入口，都不动既有链路）。
+
+**明确不做**（留给 **S-P2b**）：
+
+- **图块进得来**（`PageImageIn`：从 pdf.js 算子表拿图片 bbox）—— 现在只有文字层，
+  纯图页会被拆成碎字块；这是"卡片流好不好用"的第二大来源（第一大是 S-P2a 做的接线）
+- **卡片裁剪图的栅格路径**（按卡片尺寸渲染 + 按页缓存）—— 图卡现在走"本次未带像素"的占位（不假装有）
+- **D104 的尾巴**：注入脚本侧四个分支 + 0.9s 停稳计时；宿主侧 `pageSettled`/`pageText`/`blockClick` 的消费者
+- 跨页多 part 的**页面上**渲染（D102 第 1 条）、预取（第 3 条）、约束 1 再收窄（第 4 条，需用户确认）
+
+### S-P2a 落地结果（2026-09-20）
+
+**改了哪些文件**：`src/blocks/blockSource.ts`（新）、`src/blocks/streamHost.ts`（新）、
+`src/blocks/BlockStreamPanel.ts`（新）、`src/protocol.ts`、`src/commands.ts`、
+`src/blocks/ui/clientScript.ts`、`src/adapters/pdf/pdfjsSource.ts`、`package.json`（声明命令）、
+`test/blockStream.test.ts`（新，10 项）、`test/blockView.test.ts`（客户端那条断言跟着改）；
+docs：STATE / SLICES / DECISIONS（D116）/ CONTRACTS（§12.4.5）。
+
+**验收结果**：
+
+- **自动化**：`pnpm check` 退出码 0 —— core 48 / pdf-blocks 58 / extension-anchor 321 /
+  extension-anchor-pdf 26（共 453 例）；`smoke` 的"声明 ↔ 注册"两条都过（25 条命令）。
+  其中**真件**那两条：`test/fixtures/sample-30p.pdf`（30 页、90 个文字项）→ 拆出 30 块、
+  阅读序不倒退、指纹 = 该文件内容的 sha1（此前静默算成了空串的 sha1，见 D116 的那个 bug）。
+- **需用户实操**：F5 之后在命令面板里执行「Anchor: 把 PDF 拆成卡片流（块流窗口）」 →
+  挑一份 PDF → 窗口里点几张卡（徽标应当出现 1、2、3）→ 按住拖过几块 → 按「问 AI」→
+  侧边栏应当照常出讲解（这一步走的正是既有的讲解链路）。

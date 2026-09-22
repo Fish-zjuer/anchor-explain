@@ -276,8 +276,11 @@ test('客户端（D115）：只剩指针那四件事 —— 视线跟随与所�
 
   // 视线跟随（D111~D114）整段不在：没有那两个变量、不再量 rect、不再合帧
   assert.doesNotMatch(script, /--eye-x|--eye-y|EYE_MAX/, '那两个变量不许回来');
-  assert.doesNotMatch(script, /getBoundingClientRect|requestAnimationFrame/, '量 rect 与合帧是跟着视线来的，一起走');
+  assert.doesNotMatch(script, /getBoundingClientRect/, '不再量布局（那是视线那套的遗迹）');
   assert.doesNotMatch(script, /prefers-reduced-motion/, '减少动效那道早退只为视线存在，现在由 CSS 自己管');
+  // 唯一的 requestAnimationFrame 是**重画后校正一次滚动位置**（S-P2：宿主每次变化都重设整个 HTML）
+  assert.equal((script.match(/requestAnimationFrame/g) ?? []).length, 1, '只留重画后那一次滚动校正');
+  assert.match(script, /setState\(\{ scrollTop: window\.scrollY \}\)/, '重画前把滚动位置交给 webview 状态');
   // 几何一条都不在这里：不碰变换，也不写任何自定义属性
   assert.doesNotMatch(script, /\.style\.transform|rotate|matrix|perspective|setProperty/, 'JS 不碰变换、不写变量');
   // 旧机制（D110 之前那套跟随变量）同样不许回来

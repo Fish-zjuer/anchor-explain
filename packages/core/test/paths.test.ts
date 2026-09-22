@@ -18,7 +18,9 @@ import {
   isInsidePath,
   joinPath,
   normPath,
+  relativePathFrom,
   resolveCandidatePaths,
+  resolveUnrestrictedPaths,
   samePath,
 } from '../src/paths.ts';
 
@@ -111,4 +113,40 @@ test('resolveCandidatePaths：**落在 root 之外的候选一律丢掉**（闸�
 
 test('resolveCandidatePaths：roots 为空 = 跨文件关闭（锚点目录下那个也不算数）', () => {
   assert.deepEqual(resolveCandidatePaths('rb.h', 'C:/proj/src/main.c', []), []);
+});
+
+test('resolveUnrestrictedPaths：`any` 档的展开 —— 同一个写法，但**不过滤根**（D117）', () => {
+  const anchor = 'C:/fw/Driver/dshot/Src/dshot_dma.c';
+  // 与过滤版比：写法完全一样，锚点目录仍是相对路径的基准
+  assert.deepEqual(resolveUnrestrictedPaths('dshot_dma.h', anchor, ['C:/other/proj']), [
+    'C:/fw/Driver/dshot/Src/dshot_dma.h',
+    'C:/other/proj/dshot_dma.h',
+  ]);
+  // `../Inc/...`：锚点目录算出来那一个是对的（兄弟目录），根算出来那一个只是"也试一下"
+  assert.deepEqual(resolveUnrestrictedPaths('../Inc/dshot_dma.h', anchor, ['C:/other/proj']), [
+    'C:/fw/Driver/dshot/Inc/dshot_dma.h',
+    'C:/other/Inc/dshot_dma.h',
+  ]);
+  // 差别就在这三条：过滤版把它们丢光，不过滤版照单接受
+  assert.deepEqual(resolveCandidatePaths('C:/elsewhere/x.h', anchor, ['C:/proj']), []);
+  assert.deepEqual(resolveUnrestrictedPaths('C:/elsewhere/x.h', anchor, ['C:/proj']), [
+    'C:/elsewhere/x.h',
+  ]);
+  assert.deepEqual(resolveUnrestrictedPaths('/etc/passwd', anchor), ['/etc/passwd']);
+  assert.deepEqual(resolveUnrestrictedPaths('rb.h', anchor, []), ['C:/fw/Driver/dshot/Src/rb.h']);
+  // 空串仍给空数组（那一档也不接受"没给路径"）
+  assert.deepEqual(resolveUnrestrictedPaths('  ', anchor), []);
+});
+
+test('relativePathFrom：允许 `..` 的相对写法（清单给模型看的就是它，D117）', () => {
+  assert.equal(relativePathFrom('C:/fw/Driver/dshot/Src', 'C:/fw/Driver/dshot/Inc/dshot_dma.h'), '../Inc/dshot_dma.h');
+  assert.equal(relativePathFrom('C:/fw/Driver/dshot/Src', 'C:/fw/main.c'), '../../../main.c');
+  assert.equal(relativePathFrom('C:/fw/Driver/dshot/Src', 'C:/fw/Driver/dshot/Src/impl/regs.h'), 'impl/regs.h');
+  assert.equal(relativePathFrom('C:\\fw\\Src', 'C:\\fw\\Src\\a.h'), 'a.h', '两种斜杠都当分隔符');
+  assert.equal(relativePathFrom('C:/fw/src', 'c:/FW/SRC/a.h'), 'a.h', '大小写不影响结论（与 samePath 同一立场）');
+  assert.equal(relativePathFrom('/a/b', '/a/c/d.h'), '../c/d.h', 'POSIX 根下同理');
+  // 不同盘符/UNC 表达不出相对写法 → 原样返回绝对路径（那也是合法写法）
+  assert.equal(relativePathFrom('C:/fw/src', 'D:/sdk/hal.h'), 'D:/sdk/hal.h');
+  assert.equal(relativePathFrom('C:/fw/src', '\\\\server\\share\\x.h'), '\\\\server\\share\\x.h');
+  assert.equal(relativePathFrom('C:/fw/src', 'C:/fw/src'), '.');
 });

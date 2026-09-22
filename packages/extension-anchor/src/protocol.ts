@@ -174,6 +174,21 @@ export type HostToStart = { type: 'start:model'; model: StartModel };
  */
 export type StartToHost = { type: 'start:ready' } | { type: 'start:run'; id: string };
 
+/**
+ * §12.4.4 块流面板 → 宿主（S-P2）。五种动作，对应 `blocks/ui/clientScript.ts` 的五个 post。
+ *
+ * @anchor 为什么这里一条**状态**都没有：面板不维护选中态（§12.4.2），
+ *         所以"现在选了几块""第几个发出"一律由宿主算完再画；
+ *         客户端只说用户做了什么（点了哪块 / 从哪块滑到哪块 / 按了底部哪颗按钮）。
+ *         这样界面上的号码与发出去的稿子不可能分家 —— 它们本来就是同一次计算的结果。
+ */
+export type BlockToHost =
+  | { type: 'blocks:toggle'; blockId: string }
+  | { type: 'blocks:range'; from: string; to: string }
+  | { type: 'blocks:mode' }
+  | { type: 'blocks:clear' }
+  | { type: 'blocks:ask' };
+
 // ─────────────────────────────────────────────────────────────
 // 守卫
 // ─────────────────────────────────────────────────────────────
@@ -264,6 +279,38 @@ export function parseStartMessage(raw: unknown): StartToHost | null {
       const id = raw.id;
       if (typeof id !== 'string' || id === '') return null;
       return { type: 'start:run', id };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * §12.4.4 块流面板 → 宿主。**五条全是动作，没有一条是状态** ——
+ * 面板不维护选中态（§12.4.2），所以客户端只说"用户做了什么"，不说"现在是什么样"。
+ *
+ * 与另两条守卫同一条规矩：形状不对一律 null（丢弃，不进链路）。
+ * 这里同样**只查形状** —— `blockId` 认不认识由宿主拿块流的索引查（可能来自别的文档，
+ * 那种情况要如实告诉用户"这块不在当前文档里"，而不是在守卫里静默吃掉）。
+ */
+export function parseBlockMessage(raw: unknown): BlockToHost | null {
+  if (!isRecord(raw) || typeof raw.type !== 'string') return null;
+  switch (raw.type) {
+    case 'blocks:mode':
+    case 'blocks:clear':
+    case 'blocks:ask':
+      return { type: raw.type };
+    case 'blocks:toggle': {
+      const blockId = raw.blockId;
+      if (typeof blockId !== 'string' || blockId === '') return null;
+      return { type: 'blocks:toggle', blockId };
+    }
+    case 'blocks:range': {
+      const from = raw.from;
+      const to = raw.to;
+      if (typeof from !== 'string' || from === '') return null;
+      if (typeof to !== 'string' || to === '') return null;
+      return { type: 'blocks:range', from, to };
     }
     default:
       return null;

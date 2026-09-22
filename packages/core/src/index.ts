@@ -42,7 +42,9 @@ export {
   joinPath,
   normPath,
   relativeToPath,
+  relativePathFrom,
   resolveCandidatePaths,
+  resolveUnrestrictedPaths,
   samePath,
 } from './paths.ts';
 

@@ -244,6 +244,30 @@ test('describeConfig：把风格也报出来（显示状态里能一眼看出当
   assert.match(line, /风格 详细/);
 });
 
+// ── D117：取件范围的四档 ──────────────────────────────────────────────────
+
+test('fetchScope：四档都认，写错一个词回落默认档（`any` 不是笔误，是第四档）', async () => {
+  const { coerceFetchScope, describeFetchScope } = await import('../src/config.ts');
+  for (const scope of ['related', 'same-dir', 'off', 'any'] as const) {
+    assert.equal(coerceFetchScope(scope), scope);
+  }
+  assert.equal(coerceFetchScope('all'), 'related');
+  assert.equal(coerceFetchScope(undefined), 'related');
+  assert.equal(describeFetchScope('any'), '不限（工作区内外都读）');
+});
+
+test('describeConfig：取件范围报的是**人话 + 档位 id**（"我这次开的到底是哪一档"只能看这一行）', () => {
+  const cfg = resolveConfig({
+    providers: { default: { baseUrl: 'https://a.test/v1', tier1Model: 'm' } },
+    activeProvider: 'default',
+    maxFetchRounds: 2,
+    preferSecretStorage: true,
+    fetchScope: 'any',
+  });
+  const line = describeConfig(cfg);
+  assert.match(line, /取件范围 不限（工作区内外都读）（any）/);
+});
+
 // ── D97：讲解语言 ─────────────────────────────────────────────────────────
 
 test('language：默认 zh，en 之外一律回落（写错一个词不该让讲解不可用）', async () => {

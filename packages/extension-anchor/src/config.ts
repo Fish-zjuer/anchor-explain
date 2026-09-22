@@ -175,9 +175,26 @@ export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
 
 export const DEFAULT_FETCH_SCOPE: FetchScope = 'related';
 
-/** 只有三个合法值；写错一个词不该让讲解不可用，一律退化成默认档。 */
+/** 只有四个合法值；写错一个词不该让讲解不可用，一律退化成默认档。 */
 export function coerceFetchScope(raw: unknown): FetchScope {
-  return raw === 'off' || raw === 'same-dir' || raw === 'related' ? raw : DEFAULT_FETCH_SCOPE;
+  return raw === 'off' || raw === 'same-dir' || raw === 'related' || raw === 'any' ? raw : DEFAULT_FETCH_SCOPE;
+}
+
+/**
+ * 档位的人话名（D117）。与 `describeStyle` 同一个理由：设置里写的是英文 id，
+ * 而"一眼看出当前是哪档"靠的是中文 —— 状态行是用户判断"我这次开的到底是哪一档"的唯一地方。
+ */
+export function describeFetchScope(scope: FetchScope): string {
+  switch (scope) {
+    case 'related':
+      return '相关文件';
+    case 'same-dir':
+      return '同目录';
+    case 'off':
+      return '只锚点文件';
+    case 'any':
+      return '不限（工作区内外都读）';
+  }
 }
 
 /** 配置齐不齐，一句话说清。`Anchor: 显示状态` 与"未配置"的报错共用这句。 */
@@ -189,7 +206,7 @@ export function describeConfig(config: AnchorConfig): string {
   // 风格用 describeStyle 的人话名（D93）：档位 id 是英文，"一眼看出当前是哪档"靠的是中文。
   // 语言只在非默认时出现（D97）：默认中文是常态，每一行状态都带"输出语言 中文"反而是噪音。
   const language = config.language === 'en' ? `；输出语言 ${describeLanguage(config.language)}` : '';
-  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${config.fetchScope}${language}`;
+  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${describeFetchScope(config.fetchScope)}（${config.fetchScope}）${language}`;
 }
 
 /**

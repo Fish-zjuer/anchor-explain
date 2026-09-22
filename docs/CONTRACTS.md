@@ -344,16 +344,32 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
 
 #### §3.2 的实现约定（S3 定，都不改上表五条判据，只把边界说清楚）
 
-**S9a：规则 3 的"允许范围"（`anchorExplain.fetchScope`）**
+**S9a：规则 3 的"允许范围"（`anchorExplain.fetchScope`，D117 加第四档）**
 
 | `fetchScope` | 允许取的文件 |
 |---|---|
-| `related`（默认） | 工作区内任意文本文件；**排除** `.git/`、`node_modules/`、构建产物目录、`.env*`、`*.pem/*.key/*.p12/id_rsa*` 等（名字判断在闸门，体积/二进制判断在适配器） |
+| `related`（默认） | 工作区根之内任意文本文件；**锚点不在工作区里时**（用「打开文件」打开、或开发宿主窗口开在别的目录）范围退化成**锚点所在的这一层** = 锚点目录 + 它的上一层（`relatedRoots`）—— 嵌入式里 `Src/` 与 `Inc/` 是兄弟目录，只给锚点目录一个根，`../Inc/x.h` 永远过不去。**排除** `.git/`、`node_modules/`、构建产物目录、`.env*`、`*.pem/*.key/*.p12/id_rsa*` 等（名字判断在闸门，体积/二进制判断在适配器） |
 | `same-dir` | 只允许锚点文件所在目录 |
 | `off` | 只允许锚点文件（= S1~S8 的行为，回退档） |
+| `any`（D117） | **不按根判范围** —— 写绝对路径就能读工作区之外的任何文件（跨仓库、共享 SDK）。相对路径仍按锚点目录算。上面那串密钥/依赖/构建产物**照挡**：那是"不许发到远端模型"的底线，与范围是两件事 |
 
-**路径解析**：相对路径**先按锚点文件所在目录**解析，再按工作区根；绝对路径只做归一化；
-**落在所有 root 之外的候选一律丢掉**（闸门批准的就是适配器会读的 —— 不给自己留第二条路）。
+**D117 的两条不变量**（用户实测那条报错的根因，别再退回去）：
+
+1. **锚点目录永远是可读范围的基准**：`related` 的范围判定必须先看"锚点在工作区里吗" ——
+   在（工作区根覆盖锚点）→ 范围就是工作区根，**不多加**锚点目录的上一层
+   （否则锚点恰好在工作区根直下时会把工作区根的外面也放开，那是整个盘）；
+   不在或没有工作区 → 锚点目录 + 上一层。两种前提各自的边界都要说清，不能只写一句"工作区根"。
+2. **候选清单里的名字与实际解析基准必须同源**：清单里"不同目录"的写法一律是**相对锚点目录**
+   （`../Inc/dshot_dma.h`，`candidateDisplayName`），不是工作区相对路径 ——
+   后者被闸门按锚点目录解析会得到一个不存在的路径，白烧一轮（D96 的 ENOENT 就是这个形状）。
+
+**路径解析**：相对路径**先按锚点文件所在目录**解析，再按各个 root；绝对路径只做归一化；
+**落在所有 root 之外的候选一律丢掉**（闸门批准的就是适配器会读的 —— 不给自己留第二条路）；
+`any` 档是唯一不过滤的档（它存在的全部理由）。
+**拒绝文案（D117）**：范围不足时必须说清**当前档位**与**实际生效的根**，并给出下一步
+（`anchorExplain.fetchScope` 可以改成 `any`）—— 只回一句"写相对路径时按锚点文件所在目录算"
+会把线索引到反方向：锚点不在工作区里时那条规则不生效，照它改写法只会一次次被拒（D67 的同一条纪律）。
+**第一句以句号收尾且带上档位**：进度通知只取第一句（`briefReason`）。
 **两道闸门的分工**：名字与范围这类**形状**判断在 `validateContextRequest`（同步纯函数，可单测）；
 大小与二进制这类**内容**判断在适配器（那里才有字节）。
 
@@ -953,7 +969,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 | 配置 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `anchorExplain.maxFetchLines` | number | `400` | **S9a 修新增（D71）**。单次取件最多几行。**超出不会拒绝，只会截到这个数**（回灌内容头部写着真实行范围）。上限 2000；与 `DEFAULT_MAX_FETCH_LINES`（闸门侧的默认值）**同一个来源**，提示词里那句也用它 |
-| `anchorExplain.fetchScope` | `"related"` \| `"same-dir"` \| `"off"` | `"related"` | **S9a 新增（D66）**。允许读锚点文件之外哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖、构建产物目录**始终不读** |
+| `anchorExplain.fetchScope` | `"related"` \| `"same-dir"` \| `"off"` \| `"any"` | `"related"` | **S9a 新增（D66），`"any"` 由 D117 加**。允许读锚点文件之外哪些文件（四档的边界见 §3.2 那张表）。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖、构建产物目录**始终不读**（`"any"` 也挡） |
 | `anchorExplain.style` | `"standard"` \| `"concise"` \| `"detailed"` | `"standard"` | **S8 新增（D65），D93 起三档全部示范驱动，D94 起按用户模板组织 system prompt**：# 角色 → # 输出形状 → # 通用规则 → # 档位规则（只进当前档一节）→ # 取件（工具循环必需）→ # 示例（few-shot，只进当前档示范；正文 `scripts/style-lab/exemplar/<档位名>.md`，线上常量有同步锁）。标准（默认）：数据流视角、每步讲清因果 / 精简：几句话讲清目标与边界 / 详细：逐行讲解 + 具体推演。旧值 `rigorous` 自动按 `detailed` 处理 |
 | `anchorExplain.language` | `"zh"` \| `"en"` | `"zh"` | **D97 新增**。讲解语言：影响**讲解内容链** —— prompt 与示范（`en.ts` 的英文面 + `exemplar/<档位>.en.md`，同样有同步锁）、侧边栏讲解面板文案、导出的 Markdown（存档 `LastRun.language` 跟着那一次讲解走，旧存档按中文）。命令 `Anchor: 切换讲解语言` 一键翻转（Global 落点、写后验读）；扩展的命令与通知不跟随，取件工具层的回灌文案保持中文（模型侧指令，见 `prompts/index.ts` 的 `ExplainLanguage` 注释） |
 | `anchorExplain.temperature` | number | 未设置 | 透传给端点。留空就用端点的默认值 —— 不给默认值是刻意的：不同端点对 temperature 的合理取值不一样 |
@@ -1078,6 +1094,8 @@ function createContextRequestLogger(opts?: {
 不写 = 锚点文件本身。`required` 是 `['request_type', 'start', 'end', 'reason']`（S9a 补进 `start`/`end`，
 理由见 §8 那两条修订）。
 解析与边界判定全在 §3.2 的规则 3（纯函数，可单测）；适配器拿到的一定是**已归一化的绝对路径**。
+**D117 起相对写法也是"能读工作区之外"的写法**（`../Inc/dshot_dma.h`）：解析基准是锚点目录，
+而锚点可能在别处 —— 范围的四档与两条不变量见 §3.2。
 
 **两道闸门的坐标必须对齐（S9a 修订）**：允许集合里放的是**解析后的绝对路径**，
 而模型写 location 时可能照抄它请求时用的**相对路径**。所以：
@@ -1112,7 +1130,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/paths.ts` | **只是转发**（S5 起实现在 `@anchor/core`）：让线1 内部的 `from '../paths.ts'` 继续成立。**新增代码直接从 `@anchor/core` 导入** | — |
 | `packages/extension-anchor/src/adapters/CodeAdapter.ts` | **S2 落 `capture`，S3 落 `fetchContext`，S9a 加内容护栏**（大小/二进制、读不到给人话）。代码来源适配器：把「选区 / 整文件」变成 `Anchor`、按行取件。零 vscode 依赖 | `CaptureScope`:34 `CodeAdapter`:46 `CodeAdapterDeps`:64 `createCodeAdapter`:69 `fetchContext`:116 |
 | `packages/extension-anchor/src/orchestrator/Orchestrator.ts` | **S3 落地，S9a 修 D67**。编排循环：取件循环（≤maxFetchRounds）→ §3.3 闸门 → repair 一次。**它就是 S1/S2 里那个 `fakeProvider` 的真身** | `REJECT_PREFIX`:39 `OrchestratorAdapter`:41 `OrchestratorDeps`:46 `createOrchestrator`:80 |
-| `packages/extension-anchor/src/orchestrator/validateContextRequest.ts` | **S3 落地，S9a 改写规则 3**。§3.2 五条规则的实现 + 跨文件边界（`ContextFetchPolicy`，缺省 `RESTRICTED_POLICY` = 只允许锚点文件） | `FetchScope`:33 `ContextFetchPolicy`:35 `DEFAULT_MAX_FETCH_LINES`:44 `MAX_FETCH_LINES_CEILING`:51 `RESTRICTED_POLICY`:57 `FetchedSpan`:94 `ContextFetchState`:116 `ContextDecision`:132 `validateContextRequest`:172 |
+| `packages/extension-anchor/src/orchestrator/validateContextRequest.ts` | **S3 落地，S9a 改写规则 3，D117 加 `any` 档与 `relatedRoots`**。§3.2 五条规则的实现 + 跨文件边界（`ContextFetchPolicy`，缺省 `RESTRICTED_POLICY` = 只允许锚点文件）；"范围"怎么算收在 `relatedRoots` 一处（锚点在工作区里吗 → 两种边界） | `FetchScope`:40 `ContextFetchPolicy`:42 `DEFAULT_MAX_FETCH_LINES`:63 `MAX_FETCH_LINES_CEILING`:64 `RESTRICTED_POLICY`:67 `relatedRoots`:95 `FetchedSpan`:139 `ContextFetchState`:170 `ContextDecision`:186 `validateContextRequest`:226 |
 | `packages/extension-anchor/src/orchestrator/ModelRouter.ts` | **S3 落地**。tier1/tier2 的成本分层（ARCHITECTURE §5） | `ModelTier`:11 `ModelRouteInput`:13 `ModelChoice`:22 `ModelRouterConfig`:29 `createModelRouter`:35 |
 | `packages/extension-anchor/src/orchestrator/toolSchema.ts` | **S3 落地，S9a 修订（D67：声明 `path`、`required` 补 `start`/`end`、描述去掉"当前文档"）**。§8 的工具定义 + 参数解析（自定义键一并带过） | `FETCH_CONTEXT_TOOL`:19 `openAITools`:47 `EXPLANATION_JSON_SHAPE`:52 `parseContextRequest`:86 |
 | `packages/extension-anchor/src/orchestrator/providers/{types,openAICompatible}.ts` | **S3 落地**。LLM 调用面的抽象 + OpenAI 兼容实现（一个实现覆盖 OpenAI/DeepSeek/通义/Ollama） | `ChatMessage`:11 `ToolCall`:20 `AssistantTurn`:27 `ChatRequest`:33 `ChatProvider`:44；`OpenAICompatibleOptions`:20 `createOpenAICompatibleProvider`:71 |
@@ -1127,7 +1145,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（读用户实际绑定，并**交给侧边栏复用**）+ `probe()` 自检。**S8 起状态词来自 `protocol.ts`**，这里只剩图标表 | `StatusBarHandle`:24 `createStatusBar`:61 |
 | `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表（**S8 起两张：线1 的 `WALKTHROUGH_CHORDS` + 线2 的 `LINE2_CHORDS`，各有各的镜像锁**）+ JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:19 `WalkthroughChordSpec`:21 `WALKTHROUGH_CHORDS`:36 `LINE2_CHORDS`:105 `ResolvedChord`:119 `ResolvedChords`:120 `KeyBindingEntry`:122 `defaultChords`:129 `keybindingsPathFrom`:142 `stripJsonc`:159 `parseKeybindings`:218 `resolveChords`:234 `formatChord`:301 |
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
-| `packages/extension-anchor/src/relatedFiles.ts` | **S9a 新增**。候选文件清单的**纯逻辑**（`#include` / 同目录优先、封顶 40 条）。宿主侧取文件在 `vscode/relatedFiles.ts` | `MAX_CANDIDATES`:14 `includeNamesIn`:23 `orderRelatedFiles`:37 |
+| `packages/extension-anchor/src/relatedFiles.ts` | **S9a 新增，D117 加 `candidateDisplayName`**。候选文件清单的**纯逻辑**（`#include` / 同目录优先、封顶 40 条；名字怎么写 —— 基准一律是**锚点文件所在目录**，见 §3.2 的 D117 不变量 2）。宿主侧取文件在 `vscode/relatedFiles.ts` | `MAX_CANDIDATES`:16 `includeNamesIn`:25 `orderRelatedFiles`:39 `candidateDisplayName`:67 |
 | `packages/extension-anchor/src/vscode/relatedFiles.ts` | **S9a 新增**。`listRelatedFiles(anchor, text, { onError })`：在工作区里找代码类文件 → 交给纯逻辑排序。扫不出来时**降级但不静默**（D67：写一行输出通道，否则"空清单"与"真没有相关文件"分不出来） | `listRelatedFiles`:25 |
 | `packages/extension-anchor/src/describe.ts` | **S8 新增**。「说给用户听的一句话」的唯一格式化处：`Anchor: 显示状态` 与开始面板共用，两处不许各写一份 | `captureSummary`:22 |
 | `packages/extension-anchor/src/start/startModel.ts` | **S8 新增**。开始面板的内容模型：动作表（**每个动作只指向一条已声明的命令**）+ 状态→面板的纯映射。零 vscode 依赖，因此面板里没有一条业务判断 | `StartActionSpec`:27 `START_ACTIONS`:58 `findStartAction`:111 `StartModel`:139 `buildStartModel`:175 |
@@ -1146,7 +1164,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor-pdf/src/anchor/bridge.ts` | **S5 新增**。§5.2 两个联合类型的 TS 落地 + 边界守卫（注入脚本的输出和 AI 输出一样不可信） | `HostToSelect`:17 `CapturedGeometry`:33 `SelectToHost`:40 `parseSelectMessage`:92 |
 | `packages/extension-anchor-pdf/src/anchor/captureAnchor.ts` | **S5 新增**。框选 → `Anchor`（线2 版的 `CodeAdapter.capture()`） | `CaptureInput`:15 `buildPdfAnchor`:28 `describePdfAnchor`:52 |
 | `packages/extension-anchor-pdf/media/anchor-select.js` | **S5 新增**。注入式框选 overlay。**不是 TS、不参与类型检查、不进 bundle**（运行时从扩展目录读）。只做"跟手的事"：画橡皮筋、报像素几何 | — |
-| `packages/core/src/paths.ts` | **S5 新增，S9a 扩**。路径归一/比较/显示名/行数 + **解析与边界**（`isAbsolutePath` / `dirnameOf` / `joinPath` / `isInsidePath` / `resolveCandidatePaths` / `relativeToPath`）。两条线共用；线1 的 `src/paths.ts` 现在只是转发（已从行号表移除） | `normPath`:14 `samePath`:18 `basenameOf`:29 `countTextLines`:40 `isAbsolutePath`:57 `dirnameOf`:62 `joinPath`:75 `isInsidePath`:102 `resolveCandidatePaths`:119 `relativeToPath`:156 |
+| `packages/core/src/paths.ts` | **S5 新增，S9a 扩，D117 加两件**。路径归一/比较/显示名/行数 + **解析与边界**（`isAbsolutePath` / `dirnameOf` / `joinPath` / `isInsidePath` / `resolveCandidatePaths` / `resolveUnrestrictedPaths` / `relativeToPath` / `relativePathFrom`）。两条线共用；线1 的 `src/paths.ts` 现在只是转发（已从行号表移除） | `normPath`:14 `samePath`:18 `basenameOf`:29 `countTextLines`:40 `isAbsolutePath`:57 `dirnameOf`:62 `joinPath`:75 `isInsidePath`:102 `expandCandidates`:115 `resolveCandidatePaths`:152 `resolveUnrestrictedPaths`:169 `relativeToPath`:188 `relativePathFrom`:219 |
 | `packages/extension-anchor-pdf/{assets,patches}/` | **上游 vendored 源码，必须提交、绝不 ignore**（根 `.gitignore` 里有专门注释；`dist/` 也因此写成 `packages/*/dist/`） | `assets/pdf.js/`（23MB）、`patches/pdf.js.patch` |
 | `packages/extension-anchor-pdf/tools/check_pdfjs.mjs` | 上游的不变式守卫（CSP 恰好一次、pdf.js 补丁在位）。**S4 接成了本包的 `test` 脚本** | — |
 | `packages/extension-anchor-pdf/{MODIFICATIONS.md,LICENSE,README.md}` | fork 的义务件：改动声明 / 上游 Apache-2.0 原文 / 本包入口与边界 | — |
@@ -1536,4 +1554,48 @@ CSS `content: attr()` 在"悬停 / 选中"下切显。**不给徽标留第二份
 | 按住拖过几块 | `blocks:range {from, to}`（起点到当前，滑选） |
 
 底部按钮：`blocks:mode` / `blocks:clear` / `blocks:ask`。
-**`blocks:ask` 已声明、宿主尚未接线**（S-P2 接）。
+
+**§12.4.5 宿主侧（S-P2 接线）**：
+
+```ts
+// src/protocol.ts —— 面板 → 宿主。**五条全是动作，没有一条是状态**（§12.4.2）
+type BlockToHost = { type: 'blocks:toggle'; blockId: string }
+                 | { type: 'blocks:range'; from: string; to: string }
+                 | { type: 'blocks:mode' } | { type: 'blocks:clear' } | { type: 'blocks:ask' }
+parseBlockMessage(raw: unknown): BlockToHost | null   // 只查形状；id 认不认识由业务查
+
+// src/blocks/streamHost.ts —— 宿主侧状态机（纯函数，不 import 'vscode'）
+StreamState { doc: BlockDoc; stream: BlockStream; index: BlockIndex; registry: BlockRegistry; queue: BlockQueue }
+streamStateOf(doc, stream, prev?) / viewOf / summaryOf / orderTextOf
+toggled(state, blockId) / ranged(state, from, to) / cleared(state) / cycledMode(state)
+reconciled(state) → { state, folded, orphans }        // 队列与块流对齐（D81）
+askPayloadOf(state, opts?) → AskPayload | null        // 队列 → 重排稿 → 锚点
+
+// src/blocks/blockSource.ts —— 拆块的真实调用方
+readSplitInput({ acquire, readBytes }, filePath, onProgress?) → { input: SplitInput; sourceId; pageCount }
+itemsOfPage(page: PDFPageText): TextItemIn[]          // pdf.js 字段名 ↔ 引擎字段名，只此一处
+
+// src/blocks/BlockStreamPanel.ts —— 真 WebviewPanel（单例，照 SidebarPanel 的路子）
+BlockStreamPanel.show(state, handlers, { fontScale, language }) / setState / reveal / dispose
+```
+
+三条**必须保持**的语义（都有测试盯着）：
+
+1. **区间选择落在卡片上，不落在块上** —— 卡片数与块数可能不同（图注并进图卡），
+   所以 `ranged` 的成员来自 `blockViewOf(...).cards`：屏幕上拉过哪几张就选哪几张。
+2. **队列与块流对齐**（`reconciled`）：图注被并掉时把队列里的图注 ID 改写成图卡 ID、
+   别的文档的 ID 清掉，并**报出来**（D81）。每一条变更消息之后都跑一次。
+3. **问出去的载体是 `Anchor`**：`extractedText` = 重排稿（第一层上下文）、
+   `segments` = 选中的每一块的位置（按发送顺序）、`blockIds` = 块的身份证（D104）。
+   于是 `explain(anchor)` 一行不动 —— 编排/校验/侧边栏/播放全链路复用。
+   超预算截断时 `droppedBlockIds` 要说出来（不许假装都发了）。
+
+**重画策略**：面板每次变化都**重设整个 HTML**（不是增量 DOM）——真相只有一份，
+客户端永远只画宿主给的那一份；唯一要保住的客户端的数是**滚动位置**
+（`vscode.setState({ scrollTop })`，加载后校正一次，见 `clientScript.ts`）。
+
+⚠ **两个坑（都实测踩过，别再踩）**：① `getDocument` 会把喂进去的字节**transfer 走** ——
+`pdfjsSource` 现在**无条件复制**，`readSplitInput` 也改成**先算指纹再打开**
+（否则文档指纹会静默变成空串的 sha1）；② 命令不带参数时**不能猜"当前打开的 PDF"** ——
+线2 是 custom editor，宿主拿不到它的路径，只能让用户挑一份（`pickPdfFile`）。
+
