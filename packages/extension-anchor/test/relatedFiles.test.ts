@@ -93,7 +93,7 @@ test('orderRelatedFiles：去重、按路径稳定排序、封顶', () => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// S9a-fix10（D119）：清单 = 可取范围，且给假名
+// S9a-fix10（D119）+ S9a-fix12（D124）：清单 = 可取范围，**只给名字**（假名已去掉）
 // ─────────────────────────────────────────────────────────────
 
 test('orderRelatedFiles：limit 可配（S9a-fix10 起它由设置 `maxCandidateFiles` 给）', () => {
@@ -155,7 +155,7 @@ test('buildCandidateFiles：密钥/依赖/构建产物**根本不进清单**（�
   assert.deepEqual(list.map((c) => c.path), ['C:/repo/a.h']);
 });
 
-test('buildCandidateFiles：假名 1-based、与清单顺序一一对应；标签优先"相对工作区根"', () => {
+test('buildCandidateFiles：标签优先"相对工作区根"（它就是模型要照抄的那串）', () => {
   const list = buildCandidateFiles({
     files: ['C:/repo/App/Inc/esc.h', 'C:/repo/Core/Src/main.c'],
     anchorFile: 'C:/repo/Core/Src/main.c',
@@ -165,9 +165,9 @@ test('buildCandidateFiles：假名 1-based、与清单顺序一一对应；标�
     limit: 40,
   });
   assert.deepEqual(
-    list.map((c) => [c.alias, c.label]),
-    [['f1', 'App/Inc/esc.h']],
-    '标签是可读的唯一写法（相对工作区根），假名从 f1 起',
+    list.map((c) => c.label),
+    ['App/Inc/esc.h'],
+    '标签是可读的唯一写法（相对工作区根）—— 它就是模型要照抄的那串',
   );
 });
 
@@ -183,7 +183,7 @@ test('buildCandidateFiles：锚点不在工作区里时，标签退化成"相对
   assert.equal(list[0]?.label, '../Inc/dshot_dma.h', '这种写法仍按锚点目录解析，`findCandidate` 与闸门都认');
 });
 
-test('findCandidate：假名是正路；标签照抄也认；截短到多义就让它用假名', () => {
+test('findCandidate：名字照抄是正路；写短了（唯一后缀）也认；多义就让它抄完整', () => {
   const list = buildCandidateFiles({
     files: ['C:/repo/App/Inc/esc.h', 'C:/repo/Driver/transport/Inc/transport.h'],
     anchorFile: 'C:/repo/Core/Src/main.c',
@@ -194,12 +194,11 @@ test('findCandidate：假名是正路；标签照抄也认；截短到多义就�
   });
   const at = (written: string) => findCandidate(list, written);
 
-  assert.deepEqual(at('f1'), { entry: list[0] });
-  assert.deepEqual(at('F2'), { entry: list[1] }, '大小写不敏感');
-  assert.equal(at('f9'), undefined, '越界的假名不算命中');
-  assert.deepEqual(at('App/Inc/esc.h'), { entry: list[0] }, '标签照抄也认（不让抄对却读不到）');
-  assert.deepEqual(at('Inc/esc.h'), { entry: list[0] }, '唯一后缀命中就认');
+  assert.deepEqual(at('App/Inc/esc.h'), { entry: list[0] }, '照抄清单里那一行 —— 这是正路');
+  assert.deepEqual(at('app/inc/ESC.H'), { entry: list[0] }, '大小写不敏感');
+  assert.deepEqual(at('Inc/esc.h'), { entry: list[0] }, '唯一后缀命中就认（写短了不算白烧一轮）');
   assert.equal(at('C:/repo/App/Inc/esc.h'), undefined, '绝对路径不在这个函数的职责里（闸门另有一路解析）');
+  assert.equal(at('f1'), undefined, 'D124：没有假名了 —— 写 f1 不算命中');
   assert.equal(at('nope.h'), undefined);
 });
 
@@ -219,10 +218,10 @@ test('findCandidate：后缀命中多条时返回 ambiguous（把选择权还给
   assert.deepEqual(findCandidate(list, 'A/Inc/uart.h'), { entry: list[0] });
 });
 
-test('describeCandidates：一行假名 + 一行标签，模型照第一列写', () => {
+test('describeCandidates：一行一个名字，模型照抄它（D124 起没有假名那一列）', () => {
   const lines = describeCandidates([
-    { alias: 'f1', path: 'C:/repo/a.h', label: 'a.h' },
-    { alias: 'f2', path: 'C:/repo/b.h', label: 'sub/b.h' },
+    { path: 'C:/repo/a.h', label: 'a.h' },
+    { path: 'C:/repo/b.h', label: 'sub/b.h' },
   ]);
-  assert.deepEqual(lines, ['- `f1`  a.h', '- `f2`  sub/b.h']);
+  assert.deepEqual(lines, ['- a.h', '- sub/b.h']);
 });

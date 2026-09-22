@@ -65,10 +65,10 @@ const fileReq = (params: Record<string, unknown>, reason = '看不全'): Context
  * 清单里的一条（S9a-fix10）。**`related` / `same-dir` 档下清单就是可取范围**：
  * 只有清单里的文件取得动，清单外的一律拒（这正是 D119 要立起来的东西）。
  */
-function cand(alias: string, path: string): CandidateFile {
+function cand(path: string): CandidateFile {
   // 标签取末三段：真实实现用的是"相对工作区根"的写法（天然唯一），这里取末三段同样唯一 ——
   // 唯一性是必须的，否则 `findCandidate` 的后缀匹配会判"对上多条"（那是给模型截太短用的分支）。
-  return { alias, path, label: path.split('/').slice(-3).join('/') };
+  return { path, label: path.split('/').slice(-3).join('/') };
 }
 
 /**
@@ -84,7 +84,7 @@ function listPolicy(
   paths: readonly string[],
   maxLines = 400,
 ): ContextFetchPolicy {
-  return { scope, roots, maxLines, candidates: paths.map((p, i) => cand(`f${i + 1}`, p)) };
+  return { scope, roots, maxLines, candidates: paths.map((p) => cand(p)) };
 }
 
 test('规则 1：类型必须在该适配器声明的能力里', () => {
@@ -417,14 +417,18 @@ test('D117 related：`../Inc/...` 与同目录文件名都放行（报错那条�
     'C:/fw/Driver/dshot/Src/dshot_dma.h',
   );
 
-  // ③ 写假名也行（S9a-fix10：这才是正路）
-  const byAlias = validateContextRequest(
-    fileReq({ path: 'f1', start: 1, end: 20 }),
+  // ③ 照抄清单里那一行（D124：这才是正路）
+  const byLabel = validateContextRequest(
+    fileReq({ path: 'dshot/Inc/dshot_dma.h', start: 1, end: 20 }),
     codeAnchor(FW_SRC),
     state({ policy }),
   );
-  assert.equal(byAlias.accepted, true);
-  assert.equal(byAlias.accepted === true ? byAlias.request.params.path : null, 'C:/fw/Driver/dshot/Inc/dshot_dma.h');
+  assert.equal(byLabel.accepted, true);
+  assert.equal(byLabel.accepted === true ? byLabel.request.params.path : null, 'C:/fw/Driver/dshot/Inc/dshot_dma.h');
+
+  // ③b 假名已经没有了：写 `f1` 不算命中（D124 去掉了那一列）
+  const byAlias = validateContextRequest(fileReq({ path: 'f1', start: 1, end: 20 }), codeAnchor(FW_SRC), state({ policy }));
+  assert.equal(byAlias.accepted, false);
 
   // ④ 再往上就出界了：`../../x.h` 落在 `C:/fw/Driver`，不在这一层里，也不在清单里
   const out = validateContextRequest(
@@ -458,8 +462,9 @@ test('D119：拒绝文案要说清"清单就是范围" + 这次有几个可选 +
   const reason = out.accepted === false ? out.reason : '';
   assert.match(reason, /当前取件范围 "related"/);
   assert.match(reason, /清单里那 2 个文件/, '要说出这次一共有几个可选 —— 用户看日志时靠它判断"是不是被截断了"');
-  assert.match(reason, /假名/);
-  assert.match(reason, /`f1`/, '给一个可以直接照抄的例子，但例子是**假名**（不再是 `../Inc/dshot_dma.h` 那种路径形状）');
+  assert.match(reason, /照抄/);
+  assert.match(reason, /不要自己拼路径/, '要把"自己拼路径"这条堵死说清');
+  assert.match(reason, /也不要把名字改写成别的形状/, 'D124：改写形状（`../Inc/x.h`）是上一版实测里最贵的那个动作');
   // 还差一步时给得出下一步：两个设置名都要写进文案
   assert.match(reason, /anchorExplain\.fetchScope/);
   assert.match(reason, /anchorExplain\.maxCandidateFiles/);

@@ -93,15 +93,15 @@ const REJECTED_GRACE_TURNS = 2;
  * `path` 该怎么写 —— **由档位与清单一起决定**，system prompt 与闸门必须是同一套事实（D123）。
  *
  * @anchor `'none'` 这一档非有不可：跨文件开着、可清单是空的（没有工作区文件夹、锚点邻域也扫不到），
- *         这种情况上一版仍然在教模型"写清单里第一列的假名"，而清单根本不存在 ——
- *         于是它**编了一个 `f1`**，被拒、再编、把轮数烧完。提示词只要和闸门说的不是同一件事，
+ *         这种情况上一版仍然在教模型"照抄清单里的名字"，而清单根本不存在 ——
+ *         于是它**编了一个名字**，被拒、再编、把轮数烧完。提示词只要和闸门说的不是同一件事，
  *         模型就会按提示词去试，而闸门一定拒它。
  */
-function candidateModeOf(deps: OrchestratorDeps): 'alias' | 'path' | 'none' {
+function candidateModeOf(deps: OrchestratorDeps): 'list' | 'path' | 'none' {
   const scope = deps.fetchPolicy?.scope ?? 'off';
   if (scope === 'any') return 'path';
   if (scope === 'off') return 'none';
-  return (deps.candidateFiles ?? []).length > 0 ? 'alias' : 'none';
+  return (deps.candidateFiles ?? []).length > 0 ? 'list' : 'none';
 }
 
 /**
@@ -140,10 +140,10 @@ export function fetchFailureText(
   const lines = [
     `取件失败：${req.params.path} 打不开（${gone ? '这个文件不存在 —— 不要猜路径' : '读不出来'}）。`,
     '',
-    '`path` 的可靠写法：**照抄「可能相关的文件」清单里第一列的假名**（`f1`、`f2`…）。清单就是这次能取的全部文件，不要自己拼路径。',
+    '`path` 的可靠写法：**照抄「可能相关的文件」清单里那一行的名字**。清单就是这次能取的全部文件；不要自己拼路径，也不要把名字改写成别的形状。',
   ];
   if (candidates.length > 0) {
-    lines.push('', '可以取的文件（`path` 写假名）：', ...describeCandidates(candidates));
+    lines.push('', '可以取的文件（`path` 照抄其中一行）：', ...describeCandidates(candidates));
   }
   if (anchorDoc !== null) {
     lines.push('', `（锚点文件 ${anchorDoc} 本身不用取件。）`);
@@ -273,7 +273,7 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
           crossFile,
           maxFetchLines: deps.fetchPolicy?.maxLines,
           sourceType: anchor.sourceType === 'pdf' ? 'pdf' : 'code',
-          // `any` 档写真实路径、可以自己查（`find_files`）；清单驱动的档位只写假名；
+          // `any` 档写真实路径、可以自己查（`find_files`）；清单驱动的档位照抄清单里的名字；
           // **清单为空时要明说"这次一个别的文件都读不到"**（D123，见 `candidateModeOf`）
           candidateMode: candidateModeOf(deps),
         }),
@@ -374,7 +374,7 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
           return rejected(
             { type: 'file', params: {}, reason: '' },
             `工具 ${FIND_FILES_TOOL.name} 只在取件范围为 "any" 时可用。` +
-              '当前档位下请直接从「可能相关的文件」清单里写假名（`f1`、`f2`…）。',
+              '当前档位下请直接从「可能相关的文件」清单里照抄名字。',
           );
         }
         const raw = parseFindFilesArguments(call.arguments);

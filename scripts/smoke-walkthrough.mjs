@@ -208,7 +208,7 @@ function toolCallTurn() {
                   : fetchMode === 'secret'
                     ? '.env'
                     : fetchMode === 'alias'
-                      ? 'f1'
+                      ? 'ring_buffer.h'
                       : MAIN_C,
           }),
         },
@@ -1675,13 +1675,13 @@ check(
   '候选文件清单真的进了 user prompt（第一版它只是个死参数，模型不知道可以问谁）',
   s9aUser.includes('可能相关的文件') ? '有清单' : '没清单',
 );
-// D119：清单给的是**假名**（`f1`），而且 prompt 里说清"清单就是这次能取的全部文件"。
-// 这一条守着用户实测的那个失效形状：上一版举了 `../Inc/dshot_dma.h` 这个具体例子，
+// D119 + D124：清单**只给名字**（不再有假名那一列），而且 prompt 里说清"清单就是这次能取的全部文件"。
+// 这一条守着用户实测的两个失效形状：上一版举了 `../Inc/dshot_dma.h` 这个具体例子，
 // 模型照着它的**形状**把文件名换掉，写了一串不存在的路径（6 次取件只成 1 次）。
 check(
-  /- `f1`  /.test(s9aUser) && /清单\*\*就是\*\*这次能取的全部文件/.test(s9aUser),
-  '清单给的是假名，且明说"清单即范围"（不再发一个可以被套用的路径模板）',
-  s9aUser.split('\n').find((l) => l.startsWith('- `f1`')) ?? '(没有 f1 那一行)',
+  /^- ring_buffer\.h$/m.test(s9aUser) && /清单\*\*就是\*\*这次能取的全部文件/.test(s9aUser),
+  '清单只给名字，且明说"清单即范围"（不再发一个可以被套用的路径模板）',
+  s9aUser.split('\n').find((l) => l.startsWith('- ')) ?? '(清单里一行都没有)',
 );
 // D119：清单**等于**可取范围 —— 它按本次档位的 roots 过滤过。这里用"清单里不出现工作区之外
 // 的文件"来钉：fixtures 里若有 .env / node_modules 之类，它们也不该出现在清单里。
@@ -1807,15 +1807,15 @@ await registered.get('anchorExplain.capture')?.();
 const outsideTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
 check(/请求被拒绝/.test(String(outsideTool?.content ?? '')), '工作区之外的文件被拒，且原因是回灌而不是抛错');
 check(/不在这次可取的清单里/.test(String(outsideTool?.content ?? '')), '拒绝原因说清了边界在哪');
-// D119：拒绝文案要说清**这次一共有几个可选** + 该写什么（假名）+ 真不够用时往哪调。
+// D119 + D124：拒绝文案要说清**这次一共有几个可选** + 该写什么（照抄清单里那一行）+ 真不够用时往哪调。
 // 不再报"允许的根" —— 边界不再是根，而是**清单本身**（根只在清单为空时才有诊断价值）
 check(
   /当前取件范围 "related"/.test(String(outsideTool?.content ?? '')) &&
     /清单里那 \d+ 个文件/.test(String(outsideTool?.content ?? '')) &&
-    /假名/.test(String(outsideTool?.content ?? '')) &&
+    /照抄/.test(String(outsideTool?.content ?? '')) &&
     /anchorExplain\.fetchScope/.test(String(outsideTool?.content ?? '')) &&
     /anchorExplain\.maxCandidateFiles/.test(String(outsideTool?.content ?? '')),
-  '拒绝原因里报了档位、这次有几个可选、正确写法（假名）与两个可调的设置',
+  '拒绝原因里报了档位、这次有几个可选、正确写法（照抄清单）与两个可调的设置',
   String(outsideTool?.content ?? '').slice(0, 140),
 );
 
@@ -1881,11 +1881,11 @@ check(
 check(webviews[0].webview.posted.at(-1)?.type === 'session:update', '被拒之后整次讲解仍然继续（不是整段失败）');
 check(outputLines.some((l) => l.includes('拒绝')), '被拒的取件也落了日志（被拒原因正是要看的）');
 
-// ③b S9a-fix11（D123）：**只打开一个文件**（没有工作区文件夹）+ 模型写假名 `f1`。
+// ③b S9a-fix11（D123）：**只打开一个文件**（没有工作区文件夹）+ 模型照抄清单里的名字。
 //     这是用户实测的那次失败：范围正确退化成"锚点所在的这一层"，可池子来自 `findFiles`，
 //     而那个 API 只在工作区文件夹里找 —— 于是清单是空的 ⇒ 一个别的文件都读不到，
-//     比 D117 修之前还糟。模型那边还照着提示词**编了个 `f1`**（提示词在教它写假名，
-//     而清单根本不存在）。这一条同时钉住两件事：清单非空、假名能取到。
+//     比 D117 修之前还糟。模型那边还照着提示词**编了个名字**（提示词在教它照抄清单，
+//     而清单根本不存在）。这一条同时钉住两件事：清单非空、照抄名字就能取到。
 workspaceFoldersValue = [];
 settingsValues = { ...settingsValues, fetchScope: 'related' };
 fetchMode = 'alias';
@@ -1895,21 +1895,21 @@ await registered.get('anchorExplain.capture')?.();
 {
   const userPrompt = String(fetchCalls[0]?.body?.messages?.[1]?.content ?? '');
   check(
-    /- `f1`  /.test(userPrompt),
+    /^- ring_buffer\.h$/m.test(userPrompt),
     '没有工作区文件夹时，清单**仍然非空**（锚点邻域被真的走了一遍，S9a-fix11）',
-    userPrompt.includes('可能相关的文件') ? userPrompt.split('\n').find((l) => l.startsWith('- `f1`')) ?? '(有清单但没有 f1)' : '**清单是空的**',
+    userPrompt.includes('可能相关的文件') ? userPrompt.split('\n').find((l) => l.startsWith('- ')) ?? '(有清单但一行都没有)' : '**清单是空的**',
   );
   const aliasTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
   const aliasText = String(aliasTool?.content ?? '');
   check(
     !/请求被拒绝|取件失败/.test(aliasText) && /行 \d+-\d+（共 \d+ 行）/.test(aliasText),
-    '模型写假名 `f1` 就能取到文件（清单驱动的档位走通了，S9a-fix11）',
+    '照抄清单里的名字就能取到文件（清单驱动的档位走通了，S9a-fix11）',
     aliasText.slice(0, 140),
   );
-  // 假名的价值就在这一条：日志里记的是**解析后的绝对路径**，不是模型写的那个字符串
+  // 照抄名字的价值就在这一条：日志里记的是**解析后的绝对路径**，不是模型写的那串相对名字
   check(
     outputLines.some((l) => l.includes('取件') && l.includes('ring_buffer.h')),
-    '假名在日志里被记成了它指向的那个文件（D67 的口径：日志要能复核"到底读了哪个文件"）',
+    '日志里记的是它指向的那个文件（D67 的口径：日志要能复核"到底读了哪个文件"）',
     outputLines.find((l) => l.includes('取件')) ?? '(没有取件日志)',
   );
 }

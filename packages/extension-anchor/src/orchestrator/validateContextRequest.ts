@@ -140,7 +140,7 @@ function notInListReason(
   const head = `${JSON.stringify(written)} 不在这次可取的清单里（当前取件范围 ${JSON.stringify(scope)}）。`;
   if (list.length === 0) {
     // 清单为空时**必须把根写出来**：这是"为什么一个文件都没有"的唯一线索。
-    // 有清单的时候不写 —— 那时模型的正确动作是照清单写假名，根在它那儿不是可操作的信息。
+    // 有清单的时候不写 —— 那时模型的正确动作是照抄清单里的名字，根在它那儿不是可操作的信息。
     return (
       head +
       `这次**一个别的文件都取不到**（允许的根：${roots.length === 0 ? '（无）' : roots.join('、')}）—— ` +
@@ -148,13 +148,13 @@ function notInListReason(
       '请基于锚点自身的原文作答；要放开范围，把设置 `anchorExplain.fetchScope` 改成 `"any"`。'
     );
   }
-  // 只有一个候选时不举两个例子（`例如 \`f1\`、\`f1\`` 读起来像出了 bug）
-  const example =
-    list.length === 1 ? `\`${list[0]!.alias}\`` : `\`${list[0]!.alias}\`、\`${list[1]!.alias}\``;
+  // 只有一个候选时不举两个例子（"照抄 `a.h`、`a.h`" 读起来像出了 bug）
+  const example = list.length === 1 ? `\`${list[0]!.label}\`` : `\`${list[0]!.label}\`、\`${list[1]!.label}\``;
   return (
     head +
-    `这次能取的只有清单里那 ${list.length} 个文件，\`path\` 请写它们的**假名**（例如 ${example}）。` +
-    '不要自己拼路径 —— 拼出来的多半不存在，白费一轮。' +
+    `这次能取的只有清单里那 ${list.length} 个文件，\`path\` 请**照抄**清单里那一行的名字（例如 ${example}）。` +
+    '清单里的名字和文件是一一对应的 —— **不要自己拼路径，也不要把名字改写成别的形状**' +
+    '（比如把 `Driver/transport/Inc/transport.h` 写成 `../Inc/transport.h`），那一定取不到，白费一轮。' +
     '要读清单之外的文件：把设置 `anchorExplain.fetchScope` 改成 `"any"`（不限，写绝对路径即可），' +
     '或把 `anchorExplain.maxCandidateFiles` 调大（清单能列更多）。'
   );
@@ -369,9 +369,10 @@ export function validateContextRequest(
        *         现在把两者合成一件事：**闸门批准的就是清单里那几条**，
        *         清单外的写法一律拒，并且回灌里明说"这次只有这几个"。
        *
-       *         三种写法都认，前提都是**落回清单里的某一条**：
-       *         假名（`f3`，正路）／标签照抄／按锚点目录算的相对写法（解析回清单即可）。
-       *         这样既不奖励猜路径，也不至于"抄错一个字符就白烧一轮"。
+       *         D124 起清单**只给名字**（曾给过假名 `f1`，已去掉：名字本身带信息，
+       *         而假名不带；见 `relatedFiles.ts` 顶部那段）。
+       *         两种写法都认，前提都是**落回清单里的某一条**：名字照抄（正路）／标签的唯一后缀。
+       *         这样既不奖励猜路径，也不至于"抄短了就白烧一轮"。
        */
       const list = policy.candidates ?? [];
 
@@ -393,12 +394,12 @@ export function validateContextRequest(
       }
 
       if (target === undefined) {
-        // 假名（`f3`）或把清单里的标签照抄回来 —— 抄对了也认，不让"抄错一个字符"变成一次白烧
+        // 把清单里的名字照抄回来 —— 写短了（唯一后缀）也认，不让"抄少了几个目录"变成一次白烧
         const hit = findCandidate(list, span.path);
         if (hit !== undefined && 'ambiguous' in hit) {
           return reject(
-            `${JSON.stringify(span.path)} 在清单里对上了多条（${hit.ambiguous.map((c) => `\`${c.alias}\``).join('、')}）。` +
-              `请直接写假名，例如 \`${hit.ambiguous[0]!.alias}\`。`,
+            `${JSON.stringify(span.path)} 在清单里对上了多条（${hit.ambiguous.map((c) => `\`${c.label}\``).join('、')}）。` +
+              `请照抄完整的那一行，例如 \`${hit.ambiguous[0]!.label}\`。`,
           );
         }
         if (hit !== undefined) target = hit.entry.path;

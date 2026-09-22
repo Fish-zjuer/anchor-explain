@@ -68,9 +68,9 @@ interface Harness {
   logger: ReturnType<typeof createContextRequestLogger>;
 }
 
-/** 清单里的一条（S9a-fix10）。假名是给模型写的，`path` 是真身，`label` 只用于辨认。 */
-function cand(alias: string, path: string, label?: string): CandidateFile {
-  return { alias, path, label: label ?? path.split('/').slice(-2).join('/') };
+/** 清单里的一条（D124：只给名字，没有假名）。`label` 是模型要照抄的那串，`path` 是真身。 */
+function cand(path: string, label?: string): CandidateFile {
+  return { path, label: label ?? path.split('/').slice(-2).join('/') };
 }
 
 /** 把一个 turn 列表变成 ChatProvider；用完之后再被调用就抛（能抓住"多问了一轮"） */
@@ -244,8 +244,8 @@ test('D119：写在清单外的路径（构建目录那种）→ 在闸门就被
         roots: ['C:\\repo\\test'],
         maxLines: 400,
         candidates: [
-          cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
-          cand('f2', 'C:/repo/test/fixtures/uart.h', 'uart.h'),
+          cand('C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
+          cand('C:/repo/test/fixtures/uart.h', 'uart.h'),
         ],
       },
       fetchImpl: (req) => Promise.resolve(`文件：${req.params.path}\n行 1-10：\n 1\tvoid uart_send(uint8_t b);`),
@@ -260,7 +260,7 @@ test('D119：写在清单外的路径（构建目录那种）→ 在闸门就被
   assert.match(feedback?.content ?? '', /_build_tmp/, '要点名它写的那个路径（形状 `C:\\repo\\…\\…`）');
   assert.match(feedback?.content ?? '', /transport_uart\.c/, '要点名它写的那个文件');
   assert.match(feedback?.content ?? '', /清单里那 2 个文件/, '要说清这次一共几个可选');
-  assert.match(feedback?.content ?? '', /假名/);
+  assert.match(feedback?.content ?? '', /照抄/, '要说清正确写法是"照抄清单里那一行"');
   assert.match(feedback?.content ?? '', /anchorExplain\.fetchScope/, '给出路：改档位或调大清单');
   assert.equal(h.fetches.length, 1, '被拒的那次**不该**走到适配器（这是"清单即范围"的直接体现）');
 });
@@ -282,8 +282,8 @@ test('D96：清单里的文件在扫描之后读不到（放行 ≠ 读得到）
         roots: ['C:\\repo\\test'],
         maxLines: 400,
         candidates: [
-          cand('f1', 'C:/repo/test/fixtures/uart.h', 'uart.h'),
-          cand('f2', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
+          cand('C:/repo/test/fixtures/uart.h', 'uart.h'),
+          cand('C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
         ],
       },
       fetchImpl: (req) => {
@@ -303,8 +303,8 @@ test('D96：清单里的文件在扫描之后读不到（放行 ≠ 读得到）
   assert.match(feedback?.content ?? '', /取件失败/);
   assert.match(feedback?.content ?? '', /fixtures\\\\uart\.h|fixtures\/uart\.h/, '要点名解析出来的那个路径');
   assert.match(feedback?.content ?? '', /不要猜路径/);
-  assert.match(feedback?.content ?? '', /`f1`/, '清单要再给一遍（写假名），模型才有活路');
-  assert.match(feedback?.content ?? '', /`f2`/);
+  assert.match(feedback?.content ?? '', /uart\.h/, '清单要再给一遍（照抄名字），模型才有活路');
+  assert.match(feedback?.content ?? '', /ring_buffer\.h/);
 
   // 失败的那次**不消耗**取件预算：第二次取件照常放行（失败没有内容可回灌，不该罚它）
   assert.equal(h.fetches.length, 2, '两次都真的走到适配器了');
@@ -325,7 +325,7 @@ test('D96：取件连续打不开也会收场，报错里说清"打不开 N 次"
       scope: 'related',
       roots: ['C:\\repo\\test'],
       maxLines: 400,
-      candidates: Array.from({ length: 8 }, (_, i) => cand(`f${i + 1}`, `C:/repo/test/nope_${i}.h`, `nope_${i}.h`)),
+      candidates: Array.from({ length: 8 }, (_, i) => cand(`C:/repo/test/nope_${i}.h`, `nope_${i}.h`)),
     },
     fetchImpl: () => Promise.reject(new Error('ENOENT: no such file or directory, open \'C:\\repo\\test\\nope.h\'')),
   });
@@ -504,8 +504,8 @@ const RELATED: ContextFetchPolicy = {
   // S9a-fix10（D119）：`related` 档下**清单就是范围** —— 策略里没有清单，就等于"一个别的文件都取不到"。
   // `ring_buffer.h` 按锚点目录解析成 `C:/repo/test/fixtures/ring_buffer.h`，所以清单里要有这一条。
   candidates: [
-    cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
-    cand('f2', 'C:/repo/test/fixtures/config.h', 'config.h'),
+    cand('C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
+    cand('C:/repo/test/fixtures/config.h', 'config.h'),
   ],
 };
 /**
@@ -592,8 +592,8 @@ test('S9a 修复：跨文件时 system / user / repair 三处口径一致（不�
     {
       fetchPolicy: RELATED,
       candidates: [
-        cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
-        cand('f2', 'C:/repo/test/fixtures/config.h', 'config.h'),
+        cand('C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
+        cand('C:/repo/test/fixtures/config.h', 'config.h'),
       ],
     },
   );
@@ -616,7 +616,7 @@ test('S9a 修复：跨文件时 system / user / repair 三处口径一致（不�
 
 test('S9a 修复：候选清单只在跨文件时给（不然等于邀请它去撞拒绝）', async () => {
   const h = harness([{ content: validJson(), toolCalls: [] }], {
-    candidates: [cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h')],
+    candidates: [cand('C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h')],
   });
   await h.run();
 
@@ -806,7 +806,7 @@ test('D119：非 any 档调用 `find_files` 会被拒，并告诉它该走清单
 
   const toolMsg = (h.requests[1]?.messages ?? []).find((m: ChatMessage) => m.role === 'tool');
   assert.match(toolMsg?.content ?? '', /只在取件范围为 "any" 时可用/, '清单驱动的档位不该能绕过清单去列文件');
-  assert.match(toolMsg?.content ?? '', /假名/);
+  assert.match(toolMsg?.content ?? '', /照抄/);
 });
 
 test('D119 any：`find_files` 缺 reason 时当拒绝处理，不抛', async () => {
@@ -858,16 +858,16 @@ test('D123：清单为空时，system prompt 必须说"这次读不到别的文�
   await h.run();
 
   const system = String(h.requests[0]?.messages[0]?.content ?? '');
-  assert.doesNotMatch(system, /假名/, '清单为空时不该再提假名 —— 提了它就会编一个出来');
+  assert.doesNotMatch(system, /照抄清单/, '清单为空时不该再说"照抄清单" —— 说了它就会编一个名字出来');
   assert.match(system, /这次读不到锚点文件之外的任何文件/);
   assert.match(system, /不要请求别的文件/);
 });
 
-test('D123：清单非空时仍然教假名（两种口径按事实切换）', async () => {
+test('D123：清单非空时教"照抄清单里那一行"（两种口径按事实切换）', async () => {
   const h = harness([{ content: validJson(), toolCalls: [] }], { fetchPolicy: RELATED });
   await h.run();
   const system = String(h.requests[0]?.messages[0]?.content ?? '');
-  assert.match(system, /假名/);
+  assert.match(system, /照抄/);
   assert.doesNotMatch(system, /这次读不到锚点文件之外的任何文件/);
 });
 

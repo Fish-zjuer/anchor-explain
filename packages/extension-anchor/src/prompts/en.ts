@@ -214,7 +214,7 @@ export const TIER_RULES_EN: Record<ExplainStyle, string> = {
 export function fetchSectionEn(
   crossFile: boolean,
   maxFetchLines?: number,
-  listMode: 'alias' | 'path' | 'none' = 'alias',
+  listMode: 'list' | 'path' | 'none' = 'list',
 ): string {
   if (!crossFile) {
     return [
@@ -231,42 +231,43 @@ export function fetchSectionEn(
     ].join('\n');
   }
   const limit = typeof maxFetchLines === 'number' && maxFetchLines > 0 ? maxFetchLines : null;
-  // "How to name the file" differs by scope (S9a-fix10 / D119) — see the Chinese version
-  // in `index.ts` for the full reasoning. Short version: the two scopes can do fundamentally
-  // different things, and the previous single wording handed the model a concrete example
-  // (`../Inc/dshot_dma.h`) which it then used as a **template**, inventing paths that do not exist.
+  // "How to name the file" differs by scope (S9a-fix10 / D119, reworked in S9a-fix12 / D124).
+  // See the Chinese version in `index.ts` for the full reasoning. Short version: a single wording
+  // with a concrete example (`../Inc/dshot_dma.h`) handed the model a **template** it then reused,
+  // inventing paths that do not exist. Now the list-driven scope says only "copy the name from the
+  // list", and the unbounded scope says "write a real path / look it up".
   const howToName =
     listMode === 'none'
       ? [
           // See the Chinese version in `index.ts` (S9a-fix11 / D123): the list can be genuinely
-          // empty (no workspace folder and nothing found near the anchor). Teaching aliases then
-          // makes the model **invent** an alias (`f1`) and burn its turns on rejections.
+          // empty (no workspace folder and nothing found near the anchor). Teaching "copy a name"
+          // then makes the model **invent** one and burn its turns on rejections.
           '- **No file other than the anchor file can be read this run** (there is no "Files that may be related" list).',
-          '  So **do not request other files**, and do not invent file names (anything like `f1` will be rejected) —',
+          '  So **do not request other files**, and do not invent file names —',
           '  explain from the anchor text itself; if you do not know what a macro or struct really is, say what it does',
           '  in general, but do not pretend you have read its definition.',
         ]
-      : listMode === 'alias'
-      ? [
-          '- **You may read files other than the anchor file** — put the **alias in the first column** ' +
-            '(`f1`, `f2`, …) of the "Files that may be related" list into `path`. **That list IS every file ' +
-            'you can read this run**; omitting `path` means "the anchor file itself".',
-          '  Macro definitions, types/structs, and **the callers or callees** usually live in other files —',
-          '  when you cannot explain "where the data comes from and who consumes it", go read them; that is encouraged.',
-          '- **Do not invent paths** (`../Inc/something.h` and the like). Aliases map one-to-one onto files; ' +
-            'just write the alias. An invented path earns a rejection and wastes a round. If the list has ' +
-            'nothing you need, answer from what you already have.',
-        ]
-      : [
-          '- **You may read files other than the anchor file, with no range limit** — `path` may be an ' +
-            'absolute path (or a path relative to **the directory of the anchor file**); files outside the ' +
-            'workspace are readable too.',
-          '- If you do not know what files exist, call `' + FIND_FILES_TOOL.name + '` first (give it a ' +
-            'keyword from the file name), then pick what to read. **Do not invent paths from memory** — ' +
-            'look them up, or answer from what you already have.',
-          '- Reading a file outside the workspace **requires an absolute path**: relative paths always resolve ' +
-            'against the directory of the anchor file.',
-        ];
+      : listMode === 'list'
+        ? [
+            '- **You may read files other than the anchor file** — **copy** the name from one line of the ' +
+              '"Files that may be related" list into `path`.',
+            '  **That list IS every file you can read this run**: anything outside it will be rejected, so ' +
+              '**do not invent paths**, and **do not rewrite the name into another shape** (e.g. turning ' +
+              '`Driver/transport/Inc/transport.h` into `../Inc/transport.h`) — that never resolves and wastes a round.',
+            '  Omitting `path` means "the anchor file itself".',
+            '  Macro definitions, types/structs, and **the callers or callees** usually live in other files —',
+            '  when you cannot explain "where the data comes from and who consumes it", go read them; that is encouraged.',
+          ]
+        : [
+            '- **You may read files other than the anchor file, with no range limit** — `path` may be an ' +
+              'absolute path (or a path relative to **the directory of the anchor file**); files outside the ' +
+              'workspace are readable too.',
+            '- If you do not know what files exist, call `' + FIND_FILES_TOOL.name + '` first (give it a ' +
+              'keyword from the file name), then pick what to read. **Do not invent paths from memory** — ' +
+              'look them up, or answer from what you already have.',
+            '- Reading a file outside the workspace **requires an absolute path**: relative paths always resolve ' +
+              'against the directory of the anchor file.',
+          ];
   return [
     '# Fetching context (tool available in this environment)',
     '',
@@ -393,8 +394,8 @@ export function buildSystemPromptEn(
     maxFetchLines?: number;
     examples?: boolean;
     sourceType?: 'code' | 'pdf';
-    /** See `buildSystemPrompt` in `index.ts` (S9a-fix10 / D123). */
-    candidateMode?: 'alias' | 'path' | 'none';
+    /** See `buildSystemPrompt` in `index.ts` (S9a-fix10 / D123 / D124). */
+    candidateMode?: 'list' | 'path' | 'none';
   } = {},
 ): string {
   // PDF 释义面（D98）：角色/输出形状/通用规则/取件换成 PDF 版；档位与示范不进（代码特有）。
@@ -413,7 +414,7 @@ export function buildSystemPromptEn(
     outputShapeSectionEn(crossFile),
     GENERAL_RULES_SECTION_EN,
     `# Tier rules\n\n${TIER_RULES_EN[style]}`,
-    fetchSectionEn(crossFile, options.maxFetchLines, options.candidateMode ?? 'alias'),
+    fetchSectionEn(crossFile, options.maxFetchLines, options.candidateMode ?? 'list'),
   ];
   if (withExamples) parts.push(examplesSectionEn(style));
   return parts.join('\n\n');
@@ -497,10 +498,9 @@ export function buildUserPromptEn(
     parts.push(
       '## Files that may be related',
       'These files may be logically related to the anchor file (sorted by relevance; ones mentioned by `#include` come first).',
-      '**To read one, put the alias in the left column into `path`** (e.g. `f1`). The list **IS** every file ' +
-        'you can read this run — anything outside it will be rejected, so **do not invent paths**.',
-      'The name on the right is only there so you can tell which file is which; copying it is accepted, ' +
-        'but it is not a path (do not rewrite it).',
+      '**To read one, copy the name from one of the lines below into `path`** (one file per line). ' +
+        'The list **IS** every file you can read this run — anything outside it will be rejected, so ' +
+        '**do not invent a path**, and do not rewrite the name into another shape.',
       ...describeCandidates(candidates),
       '',
     );
