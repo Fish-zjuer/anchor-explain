@@ -58,20 +58,25 @@ import {
   DEFAULT_ACTIVE_PROVIDER,
   checkBaseUrl,
   describeConfig,
+  describeFetchScope,
+  coerceFetchScope,
   looksFlattened,
   normalizeBaseUrl,
   promoteFlattenedProviders,
 } from './config.ts';
 import { captureSummary } from './describe.ts';
-import { listRelatedFiles } from './vscode/relatedFiles.ts';
+import { buildCandidateFiles, includeNamesIn } from './relatedFiles.ts';
+import { scanCodeFiles } from './vscode/relatedFiles.ts';
 import { createOrchestrator } from './orchestrator/Orchestrator.ts';
 import { createModelRouter } from './orchestrator/ModelRouter.ts';
 import { createOpenAICompatibleProvider } from './orchestrator/providers/openAICompatible.ts';
+import type { TokenUsage } from './orchestrator/providers/types.ts';
 import { describeIssues, validateExplanation } from './orchestrator/validateExplanation.ts';
 import { describeFetched } from './orchestrator/validateContextRequest.ts';
 import { isAnchorLike } from './protocol.ts';
 import { LAST_RUN_KEY, readLastRun, toStoredRun } from './session/lastRun.ts';
 import type { LastRun } from './session/lastRun.ts';
+import { LAST_FOCUS_KEY, readLastFocus } from './session/lastFocus.ts';
 import { CodeWalkthroughPlayer } from './playback/CodeWalkthroughPlayer.ts';
 import { WalkthroughSession } from './playback/WalkthroughSession.ts';
 import type { WalkthroughSnapshot } from './playback/WalkthroughSession.ts';
@@ -137,20 +142,52 @@ function userFacing(err: unknown): string {
 }
 
 /**
- * 跨文件取件的边界（S9a）：按 `anchorExplain.fetchScope` 与工作区根构造策略。
+ * 跨文件取件的边界（S9a）：按档位与工作区根构造策略，**并把清单一起算出来**。
  *
  * @anchor 四个值对应四种边界，**`off` 时 roots 为空**（连锚点目录都不给）——
- *         那是 S1~S8 的行为，也是回退档。`same-dir` 只给锚点目录一个 root：
- *         `resolveCandidatePaths` 会因此只产出同目录的候选，跨目录的请求直接被拒。
- *         `related` 的范围算法**不在这里**，在 `relatedRoots`（D117）—— 它要判"锚点在工作区里吗"，
- *         那是纯逻辑，得能被 `node --test` 钉住；这里只负责把工作区文件夹取出来喂给它。
- *         `any` 的 roots 只当**额外候选**用（不过滤）：写绝对路径就按绝对路径读。
+ *         那是 S1~S8 的行为，也是回退档。四个档位的边界出处是两处：
+ *         `same-dir` 只给锚点目录一个 root；`related` 的范围算法**不在这里**，
+ *         在 `relatedRoots`（D117）—— 它要判"锚点在工作区里吗"，那是纯逻辑，
+ *         得能被 `node --test` 钉住；`any` 的 roots 只当**额外候选**用（不过滤）。
+ *
+ * @anchor S9a-fix10（D119）起这份 `roots` **也用来筛清单**：清单与闸门从此共用一份判据，
+ *         "清单里点得到、取件却读不到"不再可能出现。`any` 档**不给清单**
+ *         （整个文件系统列不完），改由 `find_files` 工具让模型自己查。
  */
-function fetchPolicyFor(scope: FetchScope, anchorFile: string, maxLines: number): ContextFetchPolicy {
-  if (scope === 'off') return { scope, roots: [], maxLines };
-  if (scope === 'same-dir') return { scope, roots: [dirnameOf(anchorFile)], maxLines };
+async function buildFetchBoundary(
+  scope: FetchScope,
+  anchorFile: string,
+  anchorText: string,
+  maxLines: number,
+  maxCandidates: number,
+  onScanError?: (err: unknown) => void,
+): Promise<{ policy: ContextFetchPolicy; pool: readonly string[] }> {
   const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
-  return { scope, roots: relatedRoots(anchorFile, workspaceRoots), maxLines };
+  const roots =
+    scope === 'off'
+      ? []
+      : scope === 'same-dir'
+        ? [dirnameOf(anchorFile)]
+        : [...relatedRoots(anchorFile, workspaceRoots)];
+
+  const pool = await scanCodeFiles({
+    // 「不限」档的 `find_files` 拿池子当"文件系统地图"，所以那一档要多扫一些
+    unbounded: scope === 'any',
+    ...(onScanError !== undefined ? { onError: onScanError } : {}),
+  });
+
+  // 「不限」档**不给清单** —— 它的范围是整个文件系统，列不完；改由 `find_files` 让模型自己查
+  if (scope === 'any') return { policy: { scope, roots, maxLines }, pool };
+
+  const candidates = buildCandidateFiles({
+    files: pool,
+    anchorFile,
+    workspaceRoot: workspaceRoots[0] ?? '',
+    roots,
+    includeNames: includeNamesIn(anchorText),
+    limit: maxCandidates,
+  });
+  return { policy: { scope, roots, maxLines, candidates }, pool };
 }
 
 /**
@@ -291,6 +328,21 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   let session: WalkthroughSession | undefined;
   /** 当前会话的锚点文件（D69）。`session:update` 带着它，面板据此决定要不要标文件名。 */
   let sessionAnchorPath: string | null = null;
+  /**
+   * 本次讲解累计的 token 用量（D120）。**只在内存里** —— 不落盘、不进讲解历史、
+   * 不进 `workspaceState`（用户原话："程序处理，不保存"）。每次讲解开始时清空。
+   */
+  let usageThisRun: TokenUsage | undefined;
+  /**
+   * 用户在这次 VS Code 会话里**临时指定**的取件范围（D119）。`undefined` = 用设置里的值。
+   *
+   * @anchor 为什么是"临时"而不是直接改设置：用户的原话是"再加一个用户自己选给它什么范围的操作"——
+   *         他要的是"**给这一次**什么范围"。直接写进 settings 会留下一个他不知道什么时候被改过、
+   *         也不知道怎么回去的全局状态；而按档位给的四种范围本来就该跟着场合走
+   *         （讲自己的模块用 `related`，读别人的 SDK 用 `any`）。
+   *         所以它活在内存里：重载窗口即回到设置里的值，状态行随时说得出当前是哪一档。
+   */
+  let scopeOverride: FetchScope | undefined;
   /**
    * 锚点文件刚被关掉、结果**还没定**（D78）。见 `onDidCloseTextDocument` 那段：
    * 预览替换与用户主动关标签在回调里长得一模一样，要等下一次"可见编辑器变了"才能分辨。
@@ -561,6 +613,66 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   // ───────────────────────────────────────────────────────────
+  // 取件范围（D119）—— 用户自己给"这一次"定范围
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * 「Anchor: 选择这次的取件范围」。
+   *
+   * @anchor 为什么要它：四种范围的**合适的场合不一样**，而设置里那个值是给"平时"用的 ——
+   *         讲自己模块时用 `related`，去读一份外部 SDK / 参考实现时用 `any`，
+   *         想只看这一个文件时用 `off`。让用户为了这一次去改一个全局设置、
+   *         再记得改回来，是把选择成本推给了他（而且他会忘）。
+   *
+   *         每一项都把**后果**写在标题里（能读到什么 / 读不到什么），
+   *         因为档位 id（`related` / `any`）本身不说明任何事 —— 用户要判断的是
+   *         "这次它能不能读到那个文件"，不是"我选了哪个词"。
+   *
+   *         它**只影响本次会话**（内存里覆盖设置），所以每一项后面都标了当前生效值、
+   *         还留了一条"用设置里的"能退回去。
+   */
+  async function pickFetchScope(): Promise<void> {
+    const fromSettings = coerceFetchScope(vscode.workspace.getConfiguration('anchorExplain').get('fetchScope'));
+    const now = scopeOverride ?? fromSettings;
+    const label = (scope: FetchScope): string =>
+      `${describeFetchScope(scope)}（${scope}）${scope === now ? '　← 当前' : ''}`;
+
+    const picked = await vscode.window.showQuickPick(
+      [
+        {
+          scope: 'related' as const,
+          label: label('related'),
+          description: '可以读这次列出来的相关文件（清单即范围）',
+        },
+        { scope: 'same-dir' as const, label: label('same-dir'), description: '只读锚点文件所在目录里的文件' },
+        { scope: 'off' as const, label: label('off'), description: '只读锚点所在的这一个文件（跨文件全关）' },
+        {
+          scope: 'any' as const,
+          label: label('any'),
+          description: '不按工作区判范围：写绝对路径就能读工作区外，并多给一个列文件工具',
+        },
+        {
+          scope: undefined,
+          label: `用设置里的（当前是 ${describeFetchScope(fromSettings)}）${scopeOverride === undefined ? '　← 当前' : ''}`,
+          description: '清掉这一次的临时选择',
+        },
+      ],
+      {
+        title: 'Anchor：这次的取件范围',
+        placeHolder: '只影响这次会话；重载窗口就回到设置里的值',
+      },
+    );
+    if (picked === undefined) return; // Esc = 不改
+
+    scopeOverride = picked.scope;
+    void vscode.window.showInformationMessage(
+      picked.scope === undefined
+        ? `Anchor：已回到设置里的取件范围（${describeFetchScope(fromSettings)}）—— 下一次讲解生效。`
+        : `Anchor：这次会话的取件范围 = ${describeFetchScope(picked.scope)}（${picked.scope}）—— 下一次讲解生效，重载窗口即还原。`,
+    );
+  }
+
+  // ───────────────────────────────────────────────────────────
   // 讲解面板的字号（D89）—— 独立于 VS Code 的 Ctrl+= / Ctrl+-
   // ───────────────────────────────────────────────────────────
 
@@ -680,6 +792,10 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       // 字号系数同理内联（D89）：建面板那一刻的系数就是初值，之后的变更走消息。
       // 语言同理内联（D97）：面板文案（按钮/徽章/取件日志）跟着讲解语言走。
       sidebar = SidebarPanel.create(handlers, status.chords(), fontScaleOf(), languageOf());
+      // token 那一行（D120）：**取件与模型调用都发生在建面板之前**（用户是在开始面板上按的按钮，
+      // 面板是结果出来才建的），所以这里要把已经记下的那份补进去，否则新建的面板永远是空的。
+      // 面板重建（折叠再展开）同理 —— `SidebarPanel` 自己也存一份并在 `ui:ready` 时补发。
+      sidebar.setUsage(usageThisRun ?? null);
     }
     return sidebar;
   }
@@ -1188,19 +1304,39 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 后者让人以为是扩展坏了，而不是"我还没填 baseUrl"。
    */
   async function makeProvider(anchor: Anchor): Promise<ReturnType<typeof createOrchestrator>> {
-    const cfg = await readAnchorConfig(context);
-    if (!cfg.provider) throw new AnchorError('PROVIDER_ERROR', describeConfig(cfg));
+    const read = await readAnchorConfig(context);
+    const provider = read.provider;
+    if (!provider) throw new AnchorError('PROVIDER_ERROR', describeConfig(read));
+    // 本次会话的临时档位（D119）：只覆盖**范围**这一个字段，其余照旧
+    const cfg = scopeOverride === undefined ? read : { ...read, fetchScope: scopeOverride };
+
+    // 取件边界与清单**一起**算（S9a-fix10）：两者必须同源，分两处建迟早各说各话。
+    // 扫描失败「降级但不静默」—— 清单没了跨文件取件仍在（`any` 档模型可以自己写路径），
+    // 但它多半**不知道该问哪个文件**，这句话是唯一能解释"它怎么不往外读"的线索（D67）。
+    const boundary = isCodeLocation(anchor.location)
+      ? await buildFetchBoundary(
+          cfg.fetchScope,
+          anchor.location.filePath,
+          anchor.extractedText ?? '',
+          cfg.maxFetchLines,
+          cfg.maxCandidateFiles,
+          (err) =>
+            note(
+              `候选文件清单取不到（${describeError(err)}）—— 不影响讲解，但模型不会知道有哪些相关文件`,
+            ),
+        )
+      : undefined;
 
     return createOrchestrator({
       chat: createOpenAICompatibleProvider({
-        baseUrl: cfg.provider.baseUrl,
-        apiKey: cfg.provider.apiKey,
-        extraHeaders: cfg.provider.extraHeaders,
-        extraBody: cfg.provider.extraBody,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        extraHeaders: provider.extraHeaders,
+        extraBody: provider.extraBody,
       }),
       routeModel: createModelRouter({
-        tier1Model: cfg.provider.tier1Model,
-        tier2Model: cfg.provider.tier2Model,
+        tier1Model: provider.tier1Model,
+        tier2Model: provider.tier2Model,
       }),
       adapter: adapterFor(anchor),
       makeOutline,
@@ -1208,17 +1344,15 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       temperature: cfg.temperature,
       style: cfg.style,
       language: cfg.language,
-      fetchPolicy: isCodeLocation(anchor.location)
-        ? fetchPolicyFor(cfg.fetchScope, anchor.location.filePath, cfg.maxFetchLines)
-        : undefined,
-      candidateFiles: isCodeLocation(anchor.location)
-        ? await listRelatedFiles(anchor, anchor.extractedText ?? '', {
-            // 降级但不静默：清单没了，跨文件取件仍在（模型可以自己写路径），
-            // 但它多半**不知道该问哪个文件** —— 这句话是唯一能解释"它怎么不往外读"的线索
-            onError: (err) =>
-              note(`候选文件清单取不到（${describeError(err)}）—— 不影响讲解，但模型不会知道有哪些相关文件`),
-          })
-        : undefined,
+      fetchPolicy: boundary?.policy,
+      candidateFiles: boundary?.policy.candidates,
+      workspaceFiles: boundary?.pool,
+      // token 用量（D120）：**只活在内存里**，边跑边刷面板最下面那一行。
+      // 面板可能还没建（结果出来才建）—— 那时先记着，建面板时用它当初值。
+      onUsage: (total) => {
+        usageThisRun = total;
+        sidebar?.setUsage(total);
+      },
       logger: loggerOf(),
     });
   }
@@ -1253,6 +1387,10 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const gen = (generation += 1);
     fetchedThisRun = [];
     traceThisRun = [];
+    // 新的一轮讲解从零开始计账（D120）。不清的话上一段的 token 会被算到这一段头上 ——
+    // 那种数字比不显示更糟。面板那一行也一起清掉（它此刻挂的是上一轮的值）。
+    usageThisRun = undefined;
+    sidebar?.setUsage(null);
     // 「开始/结束」各留一行（D68）：进度通知与这份日志是同一段时间轴，
     // 屏幕上出现滞留通知时，第一件要回答的事就是"到底开了几份" —— 看这两行即可
     note(`讲解开始（第 ${gen} 次）`);
@@ -1448,16 +1586,37 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    *
    *         提示语与占位符都**举一个例子**（"比如：只关心边界判断"）：
    *         用户第一次看到这个框时并不知道该写多细，一个例子比一句"请输入"有用得多。
+   *
+   * @anchor **记忆上一次**（D121）：用户的原话是"可能误操作、对上一次回答不满意，
+   *         但可能给了很多的提示词，没了，再写又烦又不能完全一样。"
+   *         所以上一次写的内容会被**预填**回来 —— 直接回车就是用它的原话，
+   *         全选删掉就是不用它。关掉窗口也还在（存在 `workspaceState`，按工作区隔离）。
+   *
+   *         **他建议的"全空时按方向键上键自动填充"做不到**：`showInputBox` 是工作台自己的
+   *         控件，扩展拿不到它的按键事件（没有这个 API），而注册一个全局"上箭头"键位
+   *         会把编辑器里的光标移动一起吃掉（那是不能接受的代价）。
+   *         能控制的是它的**初值** —— 那正好比按上键更省事：不用按任何键，内容已经在那儿。
+   *
+   *         预填**不覆盖**用户的判断：`value` 是可编辑的初值，不是只读提示。
    */
   async function askFocus(): Promise<string | undefined> {
+    const remembered = readLastFocus(context.workspaceState);
     const typed = await vscode.window.showInputBox({
       title: 'Anchor 讲解',
-      prompt: '这段想重点讲什么？（可留空 —— 直接回车就是整段都讲）',
+      prompt:
+        remembered === undefined
+          ? '这段想重点讲什么？（可留空 —— 直接回车就是整段都讲）'
+          : '这段想重点讲什么？（已填上一次那句 —— 回车就用它，全选删掉就不用）',
+      value: remembered ?? '',
       placeHolder: '比如：只关心空/满的边界判断，别讲那些常规读写',
     });
     // 用户按 Esc → undefined（跳过）；回车但没打字 → `''`（也跳过）。
     // 两者在这里合成同一个结果，因为对下游而言它们是同一件事：没有额外要求。
-    return typeof typed === 'string' && typed.trim() !== '' ? typed.trim() : undefined;
+    const focus = typeof typed === 'string' && typed.trim() !== '' ? typed.trim() : undefined;
+    // 这一句的**正事**是把它记住（D121）。`undefined`（Esc）**不清记忆** ——
+    // 那多半是"这次不想说"，而不是"把上次那句作废"；真要作废，把框清空回车一次即可。
+    if (focus !== undefined) void context.workspaceState.update(LAST_FOCUS_KEY, focus);
+    return focus;
   }
 
   async function capture(): Promise<void> {
@@ -1995,6 +2154,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.openHistoryFolder', () => void openHistoryFolder()),
     // D97：讲解语言一键切换（中文 ↔ English）
     vscode.commands.registerCommand('anchorExplain.toggleLanguage', () => toggleLanguage()),
+    // D119：让用户自己给"这一次"定取件范围（只影响本次会话）
+    vscode.commands.registerCommand('anchorExplain.pickFetchScope', () => void pickFetchScope()),
 
     // 开始面板显示的四件事里，有两件不经过 emit：模型配置（改设置）与对端（装/卸线2）。
     // 不订阅它们的话，面板会一直显示打开那一刻的旧话。

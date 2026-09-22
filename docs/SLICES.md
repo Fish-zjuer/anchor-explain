@@ -1255,6 +1255,14 @@ docs：STATE / SLICES / DECISIONS（D116）/ CONTRACTS（§12.4.5）。
 
 ### v0.1.1（2026-09-22）——跨文件取件修复，块流窗口搭车
 
+> **⚠ 这一版在同一天被重新打包过一次，版本号仍然是 `0.1.1`。**
+> 第一次发的是 D117（范围修复，提交 `abc73bb`）。用户装上后实测：**范围修好了，
+> 跨文件讲解仍然没成**（6 次取件只成 1 次，而它想要的文件清单里全都写着）——
+> 于是有了 **S9c（D119~D122）**：清单即范围 + 假名 + `find_files` + 可配清单条数 +
+> 用户自选范围 + 提示词记忆 + token 汇总。
+> **两个 `.vsix` 与 Release 说明都按 S9c 重新生成**，tag `v0.1.1` **被强制移到新提交**
+> （同一天、同一版本号、前一个只活了几个小时，不移的话附件与 tag 就对不上了）。
+
 **内容**：主因是 **D117**（取件范围算错：锚点不在工作区里时什么都读不到 + 新增"不限"档 `any`）。
 同一次提交里的 **S-P1 / S-P2a**（块流窗口 `anchorExplain.showBlocks`）**一起进包**，
 按 **D118** 在 Release 说明里**如实标注为预览、尚未经实际使用验证**。
@@ -1288,3 +1296,68 @@ manifest `Version` 均 = `0.1.1`。（`release/` 被 `.gitignore` 忽略，分�
 
 **对外文案**：`release/RELEASE_NOTES-v0.1.1.md`（GitHub Release 用的正式说明）+
 `release/论坛公告-跨文件取件修复.md`（论坛版，更口语）。两份都留在 `release/`（不进 git）。
+
+---
+
+## S9c 清单即范围 + 假名（线上实测逼出来的第二次返工）
+
+**目标**：把"清单"与"能取什么"合成一件事。S9a-fix9（D117）修好了**范围**，
+但用户在自己工程上实测仍然 6 次取件只成 1 次 —— 而它想要的文件清单里全都写着（D119）。
+
+**范围**：
+
+- `relatedFiles.ts`：`orderRelatedFiles` 加 `limit`；新增 `buildCandidateFiles`
+  （过滤 = 与闸门同一份 `roots` 与黑名单 → 排序 → 封顶 → 编假名 `f1`…）、
+  `findCandidate`（假名 / 标签照抄 / 唯一后缀；多义时交给调用方）、`describeCandidates`
+- `fetchDeny.ts`（新）：黑名单从闸门搬出来，**闸门与清单共用**
+- `validateContextRequest.ts`：`ContextFetchPolicy.candidates`；`related` / `same-dir`
+  改成**只认清单**（先确定性解析、再后缀兜底）；`notInListReason` 改写拒绝文案
+- `toolSchema.ts`：`FIND_FILES_TOOL` + `openAITools({ withFindFiles })`（只有 `any` 给）
+- `Orchestrator.ts`：`candidates` / `workspaceFiles` / `onUsage` 三个 dep；
+  `find_files` 的处理（**不占轮次、不进取件日志**）；prompt 两处按档位分口径
+- `prompts/index.ts` + `en.ts`：`fetchSection` 按 `candidateMode` 分两种说法；
+  user prompt 的清单改成假名 + "清单就是这次能取的全部文件"
+- `commands.ts`：`buildFetchBoundary`（扫一次文件 → 边界与清单一起算）；
+  `pickFetchScope`（D120）；`askFocus` 预填（D121）；`usageThisRun` + `onUsage`（D122）
+- `config.ts` + `vscode/configSource.ts` + `package.json`：`maxCandidateFiles`
+- `sidebar/`：`ui:usage` 消息 + 面板最下面那一行（`clientScript` / `styles` / `SidebarPanel`）
+- `provider`：读 `usage`（两种缓存字段形状）
+
+**验收标准**：
+
+| 验收 | 靠什么 |
+|---|---|
+| 清单里每一条都取得到、清单外的写法一律拒 | 单测：`buildCandidateFiles` 按 roots 过滤 / 假名 1-based / 黑名单不进清单；`validateContextRequest` 只认清单（含假名、标签照抄、唯一后缀、多义） |
+| 假名不会被"猜"出来，也不会因为抄错一个字符白烧一轮 | 单测 `findCandidate` 六种输入；冒烟断言 prompt 里是 `- \`f1\`` 且写着"清单**就是**这次能取的全部文件" |
+| `any` 档能自己查文件，且清单驱动的档位**不能** | 单测：`find_files` 只在 `any` 可用、非 `any` 被拒、缺 reason 不抛；黑名单不进列表；不进取件日志 |
+| 拒绝文案可诊断（档位 / 有几个可选 / 假名 / 两个设置） | 单测两条（有清单 / 空清单）+ 冒烟一条 |
+| 用户能给这一次选范围 | 命令声明 ↔ 注册（冒烟）+ 状态行报生效值 |
+| 提示词会被记住并预填 | 单测 `lastFocus` 四条 |
+| token 汇总区分缓存、拿不到就说拿不到 | 单测：两种字段形状 / 缺 usage → undefined / `addUsage` 累计；面板那一行见冒烟的重放断言 |
+
+**回退点**：`slice-S9a-fix9`（S9c 之前）。整片是本地的：删掉 `fetchDeny.ts` /
+`session/lastFocus.ts`、还原 `relatedFiles.ts` / `validateContextRequest.ts` / `toolPrompts` 三处口径、
+去掉 `policy.candidates` 与 `openAITools` 的开关即可 —— **不动 `Anchor` 契约、不动 §3.3**。
+
+**状态**：**完成（见下方"落地结果"）**。
+
+### S9c 落地结果（2026-09-22）
+
+- **单测**：`pnpm -r test` → **494 例全过**（core 50 / pdf-blocks 58 / extension-anchor 360 /
+  anchor-pdf 26）。extension-anchor 从 321 → 360（+39）。
+- **冒烟**：四组 **390 条断言**（smoke 83 / chain **209** / fileswitch 18 / pdf 80），
+  唯一 FAIL 仍是那条要 `spawn` 子进程的（本沙箱一律 `EBUSY`，与代码无关）。
+- **typecheck / build**：4 个包全过，产物 `packages/extension-anchor/dist/extension.cjs`。
+- **新增/改写的冒烟断言**：`ui:ready` 重放补发**两条**（字号 + token 用量）；
+  prompt 里清单是**假名**且写着"清单即范围"；清单里没有密钥/依赖类文件；
+  拒绝文案报"档位 + 几个可选 + 假名 + 两个设置"；密钥类文件的拒绝口径跟着实际行为走。
+
+### ⚠ 下次第一件事（S9c 之后）
+
+**"库文件挤占清单名额"没修**：实测那份 CubeMX 工程 40 条里 25 条是 `Drivers/CMSIS/**`
+（候选 344 条，官方库 320 个）。`#include` 提到的那 6 条排序是对的，坏在第 16 行往后按字母序填。
+`anchorExplain.maxCandidateFiles` 是给用户的临时出路；真正的修法（第三方树降级 / 同子树优先 /
+每个顶层目录配额）需要**用户拍板判据** —— 写死一条会在别人的工程里误伤。
+
+**另外**：`any` 档的 `find_files` 只在"跨文件之外还要找文件"时才有用，
+建议让它顺手回答"这次清单里有几个、叫什么"（现在清单驱动的档位没有等价物）。

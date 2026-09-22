@@ -41,6 +41,7 @@
     "onCommand:anchorExplain.exportLast",
     "onCommand:anchorExplain.openHistoryFolder",
     "onCommand:anchorExplain.toggleLanguage",
+    "onCommand:anchorExplain.pickFetchScope",
     "onView:anchorExplain.start"
   ],
   "contributes": {
@@ -240,6 +241,11 @@
         "command": "anchorExplain.toggleLanguage",
         "title": "切换讲解语言（中文 / English）",
         "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.pickFetchScope",
+        "title": "选择这次的取件范围（只影响本次会话）",
+        "category": "Anchor"
       }
     ],
     "keybindings": [
@@ -371,7 +377,14 @@
             "关闭：只读锚点所在的文件（跨文件讲解之前的行为）。",
             "不限：不按工作区判范围 —— 写绝对路径就能读工作区之外的任何文件（跨仓库、共享 SDK、别处的参考实现）。密钥/依赖/构建产物仍然不读。"
           ],
-          "markdownDescription": "允许 AI 读**锚点文件之外**哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖（`node_modules`）、构建产物目录始终不读。"
+          "markdownDescription": "允许 AI 读**锚点文件之外**哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖（`node_modules`）、构建产物目录始终不读。\n\n**「可能相关的文件」清单就是可取范围本身**：清单里的每一条都取得到，清单外的一律取不到（清单里给的是假名 `f1`、`f2`…）。清单之外真要读，用命令 `Anchor: 选择这次的取件范围` 把范围改成「不限」，或把 `anchorExplain.maxCandidateFiles` 调大。"
+        },
+        "anchorExplain.maxCandidateFiles": {
+          "type": "number",
+          "default": 40,
+          "minimum": 1,
+          "maximum": 400,
+          "markdownDescription": "一次给 AI 列几条候选文件（默认 40）。\n\n它同时是**这次能读到几个别的文件**的上限 —— 清单就是可取范围。CubeMX / STM32 这类工程里，官方库（`Drivers/CMSIS/**`）会占掉不少名额；发现自己的文件挤不进清单，就把它调大（或用命令 `Anchor: 选择这次的取件范围` 换成「不限」）。"
         },
         "anchorExplain.style": {
           "type": "string",

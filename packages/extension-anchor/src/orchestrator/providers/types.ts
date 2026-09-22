@@ -28,6 +28,44 @@ export interface AssistantTurn {
   /** 模型这一轮的自然语言部分；只要了工具、没说话时是空串 */
   content: string;
   toolCalls: readonly ToolCall[];
+  /**
+   * 这一轮的 token 用量（D120）。**端点给什么就记什么**：能拿到 `usage` 的端点才填，
+   * 拿不到的（有的本地端点、有的代理会吞掉）就是 `undefined` —— 不猜、不估。
+   */
+  usage?: TokenUsage;
+}
+
+/**
+ * 一次调用的 token 用量。缓存命中单独记，因为它**价钱差着倍数**（DeepSeek 的命中价是未命中的 1/10），
+ * 只报一个总数等于把"这次贵在哪"掩掉了。
+ *
+ * @anchor 两种字段形状都要认（实测里各家不一样）：
+ *   - DeepSeek：`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+ *   - OpenAI：  `prompt_tokens_details.cached_tokens`（命中），其余算未命中
+ * 拿不到细分时 `cached` 留 `undefined`，由展示层写成"未提供"而不是 0 —— 把"不知道"写成 0
+ * 是在编一个看起来很确定的数（D67「报错要说实话」的同一条纪律）。
+ */
+export interface TokenUsage {
+  /** 输入（提示）token。`undefined` = 端点没给 */
+  input?: number;
+  /** 输出（补全）token */
+  output?: number;
+  /** 输入里**命中缓存**的部分 */
+  cachedInput?: number;
+  /** 输入里**未命中缓存**的部分 */
+  uncachedInput?: number;
+}
+
+/** 累计（并集）—— 累加时跳过 `undefined`，全为 `undefined` 就返回 `undefined`。 */
+export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  const plus = (x?: number, y?: number): number | undefined =>
+    x === undefined && y === undefined ? undefined : (x ?? 0) + (y ?? 0);
+  return {
+    input: plus(a.input, b.input),
+    output: plus(a.output, b.output),
+    cachedInput: plus(a.cachedInput, b.cachedInput),
+    uncachedInput: plus(a.uncachedInput, b.uncachedInput),
+  };
 }
 
 export interface ChatRequest {

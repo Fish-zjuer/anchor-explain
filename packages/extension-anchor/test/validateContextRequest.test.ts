@@ -15,6 +15,7 @@ import type {
   ContextFetchState,
   FetchedSpan,
 } from '../src/orchestrator/validateContextRequest.ts';
+import type { CandidateFile } from '../src/relatedFiles.ts';
 
 const CODE_FILE = 'C:\\repo\\test\\fixtures\\main.c';
 
@@ -59,6 +60,32 @@ const fileReq = (params: Record<string, unknown>, reason = '看不全'): Context
   params,
   reason,
 });
+
+/**
+ * 清单里的一条（S9a-fix10）。**`related` / `same-dir` 档下清单就是可取范围**：
+ * 只有清单里的文件取得动，清单外的一律拒（这正是 D119 要立起来的东西）。
+ */
+function cand(alias: string, path: string): CandidateFile {
+  // 标签取末三段：真实实现用的是"相对工作区根"的写法（天然唯一），这里取末三段同样唯一 ——
+  // 唯一性是必须的，否则 `findCandidate` 的后缀匹配会判"对上多条"（那是给模型截太短用的分支）。
+  return { alias, path, label: path.split('/').slice(-3).join('/') };
+}
+
+/**
+ * 一个"这次能取这几个文件"的策略。
+ *
+ * @anchor 为什么测试也要跟着改成"必须先有清单"：旧契约下 `roots` 一个人说了算，
+ *         清单只是提示；新契约把两者并成一件事。测试若还按旧写法摆（只给 roots 不给清单），
+ *         测到的就是一条**产品里不会出现**的组合 —— 那种测试绿着也没有意义。
+ */
+function listPolicy(
+  scope: 'related' | 'same-dir',
+  roots: readonly string[],
+  paths: readonly string[],
+  maxLines = 400,
+): ContextFetchPolicy {
+  return { scope, roots, maxLines, candidates: paths.map((p, i) => cand(`f${i + 1}`, p)) };
+}
 
 test('规则 1：类型必须在该适配器声明的能力里', () => {
   // 线1 不支持按页取件
@@ -156,7 +183,7 @@ test('规则 3 补：行上界（§3.2 原文只冻结了 path，行边界是 S3
 });
 
 test('D71：单次行数超上限 → **截到上限照常给**，不再整条拒绝（被拒那一轮是白烧的）', () => {
-  const policy: ContextFetchPolicy = { scope: 'related', roots: ['C:\\repo'], maxLines: 30 };
+  const policy = listPolicy('related', ['C:\\repo'], ['C:/repo/test/fixtures/ring_buffer.h'], 30);
   // **别的文件**：行数信息我们拿不到（同步纯函数），所以它只受单次上限管 —— 要 999 行就给 30 行
   const foreign = validateContextRequest(
     fileReq({ path: 'ring_buffer.h', start: 10, end: 999 }),
@@ -267,7 +294,7 @@ test('start / end 缺失或非正整数一律拒绝，且拒绝原因里带上�
 // S9a：跨文件取件的三条边界（related / same-dir / off）与黑名单
 // ─────────────────────────────────────────────────────────────
 
-const RELATED = { scope: 'related' as const, roots: ['C:/repo'], maxLines: 60 };
+const RELATED = listPolicy('related', ['C:/repo'], ['C:/repo/test/fixtures/ring_buffer.h'], 60);
 
 test('S9a related：允许读工作区里的**另一个文件**，并且 path 被归一成绝对路径', () => {
   const r = validateContextRequest(
@@ -285,11 +312,13 @@ test('S9a related：允许读工作区里的**另一个文件**，并且 path �
 
 test('S9a related：工作区外的路径、以及密钥/依赖/构建产物一律拒（并说清是哪一类）', () => {
   const cases: [string, RegExp][] = [
-    ['C:/elsewhere/x.h', /不在允许的范围内/],
-    ['../../../etc/passwd', /不在允许的范围内/],
-    ['.env', /按约定不读/],
-    ['node_modules/foo/index.js', /不在允许的范围内|按约定不读/],
-    ['../../.ssh/id_rsa', /不在允许的范围内|按约定不读/],
+    ['C:/elsewhere/x.h', /不在这次可取的清单里/],
+    ['../../../etc/passwd', /不在这次可取的清单里/],
+    // S9a-fix10：密钥/依赖/构建产物**根本不会进清单**（`buildCandidateFiles` 就滤掉了），
+    // 所以模型撞到的是"清单里没有"这一句。两句话都在守同一件事，测试跟着实际行为走。
+    ['.env', /不在这次可取的清单里|按约定不读/],
+    ['node_modules/foo/index.js', /不在这次可取的清单里|按约定不读/],
+    ['../../.ssh/id_rsa', /不在这次可取的清单里|按约定不读/],
   ];
   for (const [path, expected] of cases) {
     const r = validateContextRequest(
@@ -303,14 +332,14 @@ test('S9a related：工作区外的路径、以及密钥/依赖/构建产物一�
 });
 
 test('S9a same-dir：只允许锚点所在目录（跨目录的直接拒）', () => {
-  const policy = { scope: 'same-dir' as const, roots: ['C:/repo/test/fixtures'], maxLines: 60 };
+  const policy = listPolicy('same-dir', ['C:/repo/test/fixtures'], ['C:/repo/test/fixtures/ring_buffer.h'], 60);
   assert.equal(
     validateContextRequest(fileReq({ path: 'ring_buffer.h', start: 1, end: 5 }), codeAnchor(), state({ policy }))
       .accepted,
     true,
     '同目录应放行',
   );
-  // 跨目录：连候选都产不出来（root 就是锚点目录），所以理由是"不在允许范围内"——
+  // 跨目录：连清单里都不可能有它（root 就是锚点目录），所以理由是"清单里没有"——
   // 这正是同目录模式想要的效果：`../inc/...` 这种写法在这里一定走不通
   const out = validateContextRequest(
     fileReq({ path: '../inc/rb.h', start: 1, end: 5 }),
@@ -318,7 +347,7 @@ test('S9a same-dir：只允许锚点所在目录（跨目录的直接拒）', ()
     state({ policy }),
   );
   assert.equal(out.accepted, false);
-  assert.match(out.accepted === false ? out.reason : '', /不在允许的范围内/);
+  assert.match(out.accepted === false ? out.reason : '', /不在这次可取的清单里/);
 });
 
 test('S9a off：策略缺省就是 off，行为与 S1~S8 完全一致（回退档）', () => {
@@ -359,11 +388,11 @@ test('D117 related：锚点不在工作区里 → 范围退化成"锚点所在�
 });
 
 test('D117 related：`../Inc/...` 与同目录文件名都放行（报错那条正是前者）', () => {
-  const policy: ContextFetchPolicy = {
-    scope: 'related',
-    roots: relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']),
-    maxLines: 400,
-  };
+  const roots = relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']);
+  const policy: ContextFetchPolicy = listPolicy('related', roots, [
+    'C:/fw/Driver/dshot/Inc/dshot_dma.h',
+    'C:/fw/Driver/dshot/Src/dshot_dma.h',
+  ]);
   // ① 用户报的那一条：兄弟目录里的头文件
   const sibling = validateContextRequest(
     fileReq({ path: '../Inc/dshot_dma.h', start: 1, end: 200 }),
@@ -388,7 +417,16 @@ test('D117 related：`../Inc/...` 与同目录文件名都放行（报错那条�
     'C:/fw/Driver/dshot/Src/dshot_dma.h',
   );
 
-  // ③ 再往上就出界了：`../../x.h` 落在 `C:/fw/Driver`，不在这一层里
+  // ③ 写假名也行（S9a-fix10：这才是正路）
+  const byAlias = validateContextRequest(
+    fileReq({ path: 'f1', start: 1, end: 20 }),
+    codeAnchor(FW_SRC),
+    state({ policy }),
+  );
+  assert.equal(byAlias.accepted, true);
+  assert.equal(byAlias.accepted === true ? byAlias.request.params.path : null, 'C:/fw/Driver/dshot/Inc/dshot_dma.h');
+
+  // ④ 再往上就出界了：`../../x.h` 落在 `C:/fw/Driver`，不在这一层里，也不在清单里
   const out = validateContextRequest(
     fileReq({ path: '../../x.h', start: 1, end: 5 }),
     codeAnchor(FW_SRC),
@@ -405,12 +443,12 @@ test('D117 related：锚点**在工作区里**时范围不变（不许顺手把�
   assert.deepEqual(relatedRoots('C:/b/main.c', ['C:/a', 'C:/b']), ['C:/a', 'C:/b']);
 });
 
-test('D117：拒绝文案要说清**当前档位与实际生效的根**（不然照它说的改写法还会被拒）', () => {
-  const policy: ContextFetchPolicy = {
-    scope: 'related',
-    roots: relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']),
-    maxLines: 400,
-  };
+test('D119：拒绝文案要说清"清单就是范围" + 这次有几个可选 + 真不够用时往哪调', () => {
+  const roots = relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']);
+  const policy = listPolicy('related', roots, [
+    'C:/fw/Driver/dshot/Inc/dshot_dma.h',
+    'C:/fw/Driver/dshot/Inc/dshot.h',
+  ]);
   const out = validateContextRequest(
     fileReq({ path: 'C:/sdk/hal_gpio.h', start: 1, end: 5 }),
     codeAnchor(FW_SRC),
@@ -419,16 +457,30 @@ test('D117：拒绝文案要说清**当前档位与实际生效的根**（不然
   assert.equal(out.accepted, false);
   const reason = out.accepted === false ? out.reason : '';
   assert.match(reason, /当前取件范围 "related"/);
-  assert.match(reason, /C:\/other-project/);
-  assert.match(reason, /C:\/fw\/Driver\/dshot/);
-  // 还差一步时给得出下一步：档位名要写进文案，用户才知道去哪儿改
+  assert.match(reason, /清单里那 2 个文件/, '要说出这次一共有几个可选 —— 用户看日志时靠它判断"是不是被截断了"');
+  assert.match(reason, /假名/);
+  assert.match(reason, /`f1`/, '给一个可以直接照抄的例子，但例子是**假名**（不再是 `../Inc/dshot_dma.h` 那种路径形状）');
+  // 还差一步时给得出下一步：两个设置名都要写进文案
   assert.match(reason, /anchorExplain\.fetchScope/);
-  // 第一句以句号收尾、且边界信息落在这句里：进度通知只取第一句（`briefReason`），
-  // 否则屏幕上那句会正好是"它说按锚点目录算，而那条规则此刻不生效"的误导（D68 的同一类问题）
+  assert.match(reason, /anchorExplain\.maxCandidateFiles/);
+  // 第一句以句号收尾、且边界信息落在这句里：进度通知只取第一句（`briefReason`）
   assert.equal(
     reason.slice(0, reason.indexOf('。') + 1),
-    '"C:/sdk/hal_gpio.h" 不在允许的范围内（当前取件范围 "related"）。',
+    '"C:/sdk/hal_gpio.h" 不在这次可取的清单里（当前取件范围 "related"）。',
   );
+});
+
+test('D119：清单为空时拒绝文案要说清"一个都取不到"+ 允许的根（那是唯一的线索）', () => {
+  const roots = relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']);
+  const policy: ContextFetchPolicy = { scope: 'related', roots, maxLines: 400, candidates: [] };
+  const out = validateContextRequest(fileReq({ path: 'x.h', start: 1, end: 5 }), codeAnchor(FW_SRC), state({ policy }));
+  assert.equal(out.accepted, false);
+  const reason = out.accepted === false ? out.reason : '';
+  assert.match(reason, /一个别的文件都取不到/);
+  assert.match(reason, /允许的根/, '清单为空时根是"为什么一个都没有"的唯一线索');
+  assert.match(reason, /C:\/other-project/);
+  assert.match(reason, /C:\/fw\/Driver\/dshot/);
+  assert.match(reason, /anchorExplain\.fetchScope/);
 });
 
 test('D117 any：不按根判范围 —— 工作区外的绝对路径也放行', () => {

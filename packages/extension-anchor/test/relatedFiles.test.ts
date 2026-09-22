@@ -9,7 +9,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveCandidatePaths } from '@anchor/core';
-import { MAX_CANDIDATES, candidateDisplayName, includeNamesIn, orderRelatedFiles } from '../src/relatedFiles.ts';
+import {
+  MAX_CANDIDATES,
+  buildCandidateFiles,
+  candidateDisplayName,
+  describeCandidates,
+  findCandidate,
+  includeNamesIn,
+  orderRelatedFiles,
+} from '../src/relatedFiles.ts';
 
 // ── D117：清单里的名字怎么写 ────────────────────────────────────────────────
 
@@ -82,4 +90,139 @@ test('orderRelatedFiles：去重、按路径稳定排序、封顶', () => {
   assert.equal(ordered.length, MAX_CANDIDATES);
   assert.equal(ordered[0], 'dir/f00.h');
   assert.equal(new Set(ordered).size, ordered.length);
+});
+
+// ─────────────────────────────────────────────────────────────
+// S9a-fix10（D119）：清单 = 可取范围，且给假名
+// ─────────────────────────────────────────────────────────────
+
+test('orderRelatedFiles：limit 可配（S9a-fix10 起它由设置 `maxCandidateFiles` 给）', () => {
+  const pool = ['dir/a.h', 'dir/b.h', 'dir/c.h'];
+  assert.deepEqual(orderRelatedFiles(pool, [], 2), ['dir/a.h', 'dir/b.h']);
+  // 非法值（0 / 负数 / NaN）回落默认上限 —— 一个写坏的设置不该让清单变成空的
+  assert.equal(orderRelatedFiles(pool, [], 0).length, pool.length);
+  assert.equal(orderRelatedFiles(pool, [], Number.NaN).length, pool.length);
+});
+
+test('buildCandidateFiles：**只留本次允许的根里**的文件（清单与闸门同一判据）', () => {
+  const files = [
+    'C:/repo/Core/Inc/main.h',
+    'C:/repo/Core/Src/main.c',
+    'C:/repo/Drivers/hal.h', // 在根之外（这次只许 Core）
+    'D:/elsewhere/x.h', // 别的盘，更在根之外
+  ];
+  const list = buildCandidateFiles({
+    files,
+    anchorFile: 'C:/repo/Core/Src/main.c',
+    workspaceRoot: 'C:/repo',
+    roots: ['C:/repo/Core'],
+    includeNames: ['main.h'],
+    limit: 40,
+  });
+  const paths = list.map((c) => c.path);
+  assert.deepEqual(paths, ['C:/repo/Core/Inc/main.h'], '根之外的一律不进清单');
+  // 锚点自己也不进（它不用取件）
+  assert.ok(!paths.includes('C:/repo/Core/Src/main.c'));
+});
+
+test('buildCandidateFiles：roots 为空 = 清单为空（`off` 档的语义）', () => {
+  const list = buildCandidateFiles({
+    files: ['C:/repo/a.h'],
+    anchorFile: 'C:/repo/main.c',
+    workspaceRoot: 'C:/repo',
+    roots: [],
+    includeNames: [],
+    limit: 40,
+  });
+  assert.deepEqual(list, []);
+});
+
+test('buildCandidateFiles：密钥/依赖/构建产物**根本不进清单**（不然就是"列了却取不到"）', () => {
+  const list = buildCandidateFiles({
+    files: [
+      'C:/repo/.env',
+      'C:/repo/node_modules/x/index.js',
+      'C:/repo/build/gen.h',
+      'C:/repo/keys/id_rsa',
+      'C:/repo/a.h',
+    ],
+    anchorFile: 'C:/repo/main.c',
+    workspaceRoot: 'C:/repo',
+    roots: ['C:/repo'],
+    includeNames: [],
+    limit: 40,
+  });
+  assert.deepEqual(list.map((c) => c.path), ['C:/repo/a.h']);
+});
+
+test('buildCandidateFiles：假名 1-based、与清单顺序一一对应；标签优先"相对工作区根"', () => {
+  const list = buildCandidateFiles({
+    files: ['C:/repo/App/Inc/esc.h', 'C:/repo/Core/Src/main.c'],
+    anchorFile: 'C:/repo/Core/Src/main.c',
+    workspaceRoot: 'C:/repo',
+    roots: ['C:/repo'],
+    includeNames: [],
+    limit: 40,
+  });
+  assert.deepEqual(
+    list.map((c) => [c.alias, c.label]),
+    [['f1', 'App/Inc/esc.h']],
+    '标签是可读的唯一写法（相对工作区根），假名从 f1 起',
+  );
+});
+
+test('buildCandidateFiles：锚点不在工作区里时，标签退化成"相对锚点目录"的写法', () => {
+  const list = buildCandidateFiles({
+    files: ['C:/fw/Driver/dshot/Inc/dshot_dma.h'],
+    anchorFile: 'C:/fw/Driver/dshot/Src/dshot_dma.c',
+    workspaceRoot: 'C:/other-project', // 工作区跟锚点毫无关系
+    roots: ['C:/fw/Driver/dshot'],
+    includeNames: [],
+    limit: 40,
+  });
+  assert.equal(list[0]?.label, '../Inc/dshot_dma.h', '这种写法仍按锚点目录解析，`findCandidate` 与闸门都认');
+});
+
+test('findCandidate：假名是正路；标签照抄也认；截短到多义就让它用假名', () => {
+  const list = buildCandidateFiles({
+    files: ['C:/repo/App/Inc/esc.h', 'C:/repo/Driver/transport/Inc/transport.h'],
+    anchorFile: 'C:/repo/Core/Src/main.c',
+    workspaceRoot: 'C:/repo',
+    roots: ['C:/repo'],
+    includeNames: [],
+    limit: 40,
+  });
+  const at = (written: string) => findCandidate(list, written);
+
+  assert.deepEqual(at('f1'), { entry: list[0] });
+  assert.deepEqual(at('F2'), { entry: list[1] }, '大小写不敏感');
+  assert.equal(at('f9'), undefined, '越界的假名不算命中');
+  assert.deepEqual(at('App/Inc/esc.h'), { entry: list[0] }, '标签照抄也认（不让抄对却读不到）');
+  assert.deepEqual(at('Inc/esc.h'), { entry: list[0] }, '唯一后缀命中就认');
+  assert.equal(at('C:/repo/App/Inc/esc.h'), undefined, '绝对路径不在这个函数的职责里（闸门另有一路解析）');
+  assert.equal(at('nope.h'), undefined);
+});
+
+test('findCandidate：后缀命中多条时返回 ambiguous（把选择权还给模型）', () => {
+  const list = buildCandidateFiles({
+    files: ['C:/repo/A/Inc/uart.h', 'C:/repo/B/Inc/uart.h'],
+    anchorFile: 'C:/repo/main.c',
+    workspaceRoot: 'C:/repo',
+    roots: ['C:/repo'],
+    includeNames: [],
+    limit: 40,
+  });
+  const hit = findCandidate(list, 'uart.h');
+  assert.ok(hit !== undefined && 'ambiguous' in hit, '两条都以 uart.h 结尾，不该替它挑一个');
+  assert.equal(hit !== undefined && 'ambiguous' in hit ? hit.ambiguous.length : 0, 2);
+  // 写全标签就唯一了
+  assert.deepEqual(findCandidate(list, 'A/Inc/uart.h'), { entry: list[0] });
+});
+
+test('describeCandidates：一行假名 + 一行标签，模型照第一列写', () => {
+  const lines = describeCandidates([
+    { alias: 'f1', path: 'C:/repo/a.h', label: 'a.h' },
+    { alias: 'f2', path: 'C:/repo/b.h', label: 'sub/b.h' },
+  ]);
+  assert.deepEqual(lines, ['- `f1`  a.h', '- `f2`  sub/b.h']);
 });

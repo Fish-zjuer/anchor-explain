@@ -31,14 +31,44 @@ import type {
 } from '@anchor/core';
 import { buildRepairPrompt, buildSystemPrompt, buildUserPrompt } from '../prompts/index.ts';
 import type { ExplainLanguage, ExplainStyle } from '../prompts/index.ts';
+import { describeCandidates, type CandidateFile } from '../relatedFiles.ts';
+import { isDeniedPath } from '../fetchDeny.ts';
 import { describeIssues, validateExplanation } from './validateExplanation.ts';
 import type { ExplanationOutline } from './validateExplanation.ts';
 import type { ModelChoice, ModelRouteInput } from './ModelRouter.ts';
-import { openAITools, parseContextRequest } from './toolSchema.ts';
+import { FIND_FILES_MAX_HITS, FIND_FILES_TOOL, openAITools, parseContextRequest } from './toolSchema.ts';
 import { RESTRICTED_POLICY, validateContextRequest } from './validateContextRequest.ts';
 import type { ContextFetchPolicy } from './validateContextRequest.ts';
 import type { ContextFetchState, FetchedSpan } from './validateContextRequest.ts';
-import type { ChatMessage, ChatProvider, ToolCall } from './providers/types.ts';
+import { addUsage } from './providers/types.ts';
+import type { ChatMessage, ChatProvider, TokenUsage, ToolCall } from './providers/types.ts';
+
+/**
+ * `find_files` 的参数解析（S9a-fix10）。与 `parseContextRequest` 同一个立场：
+ * **只做形状解析，不做业务校验** —— 档位判断在 `handleToolCall` 里。
+ */
+function parseFindFilesArguments(rawArguments: string): { keyword: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawArguments);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  const raw = parsed as Record<string, unknown>;
+  if (typeof raw.reason !== 'string' || raw.reason.trim() === '') return null;
+  return { keyword: typeof raw.keyword === 'string' ? raw.keyword.trim().toLowerCase() : '' };
+}
+
+/**
+ * 关键词过滤（S9a-fix10）。空关键词 = 全都要（由调用方截断），否则按**整条路径**
+ * 大小写不敏感包含匹配 —— 按整条路径而不是只按文件名，是因为嵌入式里
+ * `Drivers/.../Inc/` 这种目录层级本身常常就是最有用的那个关键词。
+ */
+export function filterWorkspaceFiles(pool: readonly string[], keyword: string): string[] {
+  if (keyword === '') return [...pool];
+  return pool.filter((p) => p.toLowerCase().includes(keyword));
+}
 
 /** 工具被拒时回灌的固定前缀（§3.2 明确要求这条文案的形状）。 */
 const REJECT_PREFIX = '请求被拒绝：';
@@ -56,7 +86,7 @@ const REJECT_PREFIX = '请求被拒绝：';
 export function fetchFailureText(
   req: ContextRequest,
   detail: string,
-  candidates: readonly string[],
+  candidates: readonly CandidateFile[],
   anchorDoc: string | null,
 ): string {
   if (req.type === 'page_range') {
@@ -79,10 +109,10 @@ export function fetchFailureText(
   const lines = [
     `取件失败：${req.params.path} 打不开（${gone ? '这个文件不存在 —— 不要猜路径' : '读不出来'}）。`,
     '',
-    '`path` 的可靠写法只有两种：「可能相关的文件」清单里的名字照抄；或你在读过的内容里亲眼见过的路径。不要自己拼目录。',
+    '`path` 的可靠写法：**照抄「可能相关的文件」清单里第一列的假名**（`f1`、`f2`…）。清单就是这次能取的全部文件，不要自己拼路径。',
   ];
   if (candidates.length > 0) {
-    lines.push('', '可以选的文件（照抄这些名字）：', ...candidates.map((name) => `- ${name}`));
+    lines.push('', '可以取的文件（`path` 写假名）：', ...describeCandidates(candidates));
   }
   if (anchorDoc !== null) {
     lines.push('', `（锚点文件 ${anchorDoc} 本身不用取件。）`);
@@ -108,8 +138,23 @@ export interface OrchestratorDeps {
    * 产品默认是 `related`，由命令层按 `anchorExplain.fetchScope` 构造。
    */
   fetchPolicy?: ContextFetchPolicy;
-  /** 给模型的"可能相关的文件"清单（S9a）。只是提示，不影响取件的合法性判断 */
-  candidateFiles?: readonly string[];
+  /**
+   * 给模型的「可能相关的文件」清单（S9a）。**从 S9a-fix10 起它不只是提示**：
+   * `related` / `same-dir` 档下闸门只认这份清单里的文件（见 `ContextFetchPolicy.candidates`），
+   * 两处用的是同一个数组 —— 清单即范围。
+   */
+  candidateFiles?: readonly CandidateFile[];
+  /**
+   * `find_files` 工具的回话池（S9a-fix10）：工作区里扫到的代码文件（绝对路径）。
+   * 只在取件范围为 `any` 时用到 —— 那一档没有清单，给模型一个查询口自己找。
+   */
+  workspaceFiles?: readonly string[];
+  /**
+   * 每轮模型调用的 token 用量（D120）。**累计值**，调用方拿它刷面板底部那一行。
+   * 做成回调而不是塞进 `ExplanationResult`：那个类型是冻结契约，而这是**展示**信息，
+   * 且它应当**边跑边更新**（讲解要跑几十秒，用户盯着面板时就能看见在涨）。
+   */
+  onUsage?: (total: TokenUsage) => void;
   temperature?: number;
   /** 讲解风格（D65）。缺省 = `prompts` 的默认档 */
   style?: ExplainStyle;
@@ -137,16 +182,37 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
   const now = deps.now ?? (() => Date.now());
 
   /**
+   * 本次讲解累计的 token 用量（D120）。**谁都不存它** —— 它是"这一眼想看的东西"，
+   * 不是要留下的记录：讲解历史里没有它，`workspaceState` 里也没有，窗口一关就没了。
+   *
+   * @anchor 每次讲解开始时清空（见下面 `run` 的开头）：同一个扩展实例会连着讲很多段，
+   *         不清空就会把上一段的账记到这一段头上 —— 那种数字比不显示更糟。
+   */
+  let usageTotal: TokenUsage | undefined;
+
+  /**
    * 一次模型调用。**这一层不做业务校验**：走到这里失败一定是端点/网络/key 的问题，
    * 一律 `PROVIDER_ERROR`。业务层面的"不合规"全部走回灌，不让它变成异常。
+   *
+   * @anchor `tools` 按档位给（S9a-fix10）：`any` 档多一个 `find_files`（那一档没有清单，
+   *         得让模型自己查有什么文件）；清单驱动的档位**不给** —— 给了它就会绕开清单去列文件，
+   *         而"清单即范围"正是这次要立的东西。
    */
   function say(model: string, messages: readonly ChatMessage[]) {
-    return deps.chat.chat({
-      model,
-      messages: [...messages],
-      tools: openAITools(),
-      ...(deps.temperature !== undefined ? { temperature: deps.temperature } : {}),
-    });
+    return deps.chat
+      .chat({
+        model,
+        messages: [...messages],
+        tools: openAITools({ withFindFiles: deps.fetchPolicy?.scope === 'any' }),
+        ...(deps.temperature !== undefined ? { temperature: deps.temperature } : {}),
+      })
+      .then((turn) => {
+        if (turn.usage !== undefined) {
+          usageTotal = usageTotal === undefined ? turn.usage : addUsage(usageTotal, turn.usage);
+          deps.onUsage?.(usageTotal);
+        }
+        return turn;
+      });
   }
 
   /**
@@ -158,6 +224,7 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
     [...new Set(fetched.map((f) => f.path).filter((p): p is string => p !== null))];
 
   return async (anchor: Anchor): Promise<ExplanationResult> => {
+    usageTotal = undefined; // 每次讲解重新计账（见 `usageTotal` 的说明）
     const outline = await deps.makeOutline(anchor);
     /**
      * 跨文件开关由**策略**推出（不另开一个 deps 字段，免得两处说法可能不一致）。
@@ -175,6 +242,8 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
           crossFile,
           maxFetchLines: deps.fetchPolicy?.maxLines,
           sourceType: anchor.sourceType === 'pdf' ? 'pdf' : 'code',
+          // `any` 档写真实路径、可以自己查（`find_files`）；其余档只写清单里的假名（S9a-fix10）
+          candidateMode: deps.fetchPolicy?.scope === 'any' ? 'path' : 'alias',
         }),
       },
       {
@@ -255,6 +324,54 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
         });
         return { accepted: false, text: `${REJECT_PREFIX}${reason}` };
       };
+
+      /**
+       * `find_files`：只列文件、不读内容（S9a-fix10，D119）。**只在不限档可用**。
+       *
+       * @anchor 它是"清单"的替代品，不是补充：`related` / `same-dir` 档已经有清单了，
+       *         再给一个列文件的工具等于把"清单即范围"这条规矩拆掉（模型会拿它绕过清单）。
+       *         所以非 `any` 档直接拒，并把该走的路说清。
+       *
+       *         回话**只列池子里扫到的代码文件**（`deps.workspaceFiles`），
+       *         不去现场遍历文件系统 —— 池子是宿主侧一次扫描的结果，
+       *         把它当唯一事实源，就没有"扫两次得到两套结果"的可能。
+       */
+      if (call.name === FIND_FILES_TOOL.name) {
+        if ((deps.fetchPolicy?.scope ?? 'off') !== 'any') {
+          return rejected(
+            { type: 'file', params: {}, reason: '' },
+            `工具 ${FIND_FILES_TOOL.name} 只在取件范围为 "any" 时可用。` +
+              '当前档位下请直接从「可能相关的文件」清单里写假名（`f1`、`f2`…）。',
+          );
+        }
+        const raw = parseFindFilesArguments(call.arguments);
+        if (raw === null) {
+          return rejected(
+            { type: 'file', params: {}, reason: '' },
+            `${FIND_FILES_TOOL.name} 的参数不是合法 JSON，或缺了必填的 reason。`,
+          );
+        }
+        const pool = (deps.workspaceFiles ?? []).filter((p) => !isDeniedPath(p));
+        const hits = filterWorkspaceFiles(pool, raw.keyword);
+        // 列文件**不占取件轮次、也不进取件日志**：它不是"读了哪个文件的哪几段"，
+        // 计进去会把"取件 N 次"这个数字说岔（那个数字是要给用户看的账）。
+        if (hits.length === 0) {
+          return {
+            accepted: false,
+            text:
+              `没有匹配 ${JSON.stringify(raw.keyword)} 的文件（可读的代码文件共 ${pool.length} 个）。` +
+              '换个关键词，或者基于现有信息作答。',
+          };
+        }
+        const shown = hits.slice(0, FIND_FILES_MAX_HITS);
+        return {
+          accepted: false,
+          text:
+            `匹配到 ${hits.length} 个文件${hits.length > shown.length ? `（只列出前 ${shown.length} 个，请换更窄的关键词）` : ''}：\n` +
+            shown.map((p) => `- ${p}`).join('\n') +
+            '\n读其中某个时，`path` 写它**完整的绝对路径**。',
+        };
+      }
 
       if (call.name !== 'fetch_context') {
         return rejected({ type: 'file', params: {}, reason: '' }, `没有名为 ${call.name} 的工具。`);

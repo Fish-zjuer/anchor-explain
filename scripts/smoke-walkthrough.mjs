@@ -887,16 +887,18 @@ const postedBefore = webviews[0].webview.posted.length;
 receiveFromWebview?.({ type: 'ui:ready' });
 // D89：重放之外还会**补发一条 ui:fontScale**（重放缓冲只有 50 条，字号那条可能被挤掉；
 // ready 后总补发一次当前的值，重建的面板才不丢字号）。
+// D120：同理补发一条 `ui:usage`（token 那一行可能在面板存在之前就已经发过一轮）。
 check(
-  webviews[0].webview.posted.length - postedBefore === postedBefore + 1 &&
-    webviews[0].webview.posted.at(-1)?.type === 'ui:fontScale' &&
-    typeof webviews[0].webview.posted.at(-1)?.scale === 'number',
-  'ui:ready 触发全量重放 + 补发当前字号（重开面板不会是空白，字号也不丢）',
-  `重放 ${webviews[0].webview.posted.length - postedBefore - 1} 条 + 字号 1 条`,
+  webviews[0].webview.posted.length - postedBefore === postedBefore + 2 &&
+    webviews[0].webview.posted.at(-1)?.type === 'ui:usage' &&
+    webviews[0].webview.posted.at(-2)?.type === 'ui:fontScale' &&
+    typeof webviews[0].webview.posted.at(-2)?.scale === 'number',
+  'ui:ready 触发全量重放 + 补发当前字号与 token 用量（重开面板不会是空白，这两样也不丢）',
+  `重放 ${webviews[0].webview.posted.length - postedBefore - 2} 条 + 字号 1 条 + 用量 1 条`,
 );
 receiveFromWebview?.({ type: 'ui:evil' });
 check(
-  webviews[0].webview.posted.length === postedBefore * 2 + 1,
+  webviews[0].webview.posted.length === postedBefore * 2 + 2,
   '未知消息类型被挡下，不触发任何重放',
 );
 
@@ -1660,6 +1662,21 @@ check(
   '候选文件清单真的进了 user prompt（第一版它只是个死参数，模型不知道可以问谁）',
   s9aUser.includes('可能相关的文件') ? '有清单' : '没清单',
 );
+// D119：清单给的是**假名**（`f1`），而且 prompt 里说清"清单就是这次能取的全部文件"。
+// 这一条守着用户实测的那个失效形状：上一版举了 `../Inc/dshot_dma.h` 这个具体例子，
+// 模型照着它的**形状**把文件名换掉，写了一串不存在的路径（6 次取件只成 1 次）。
+check(
+  /- `f1`  /.test(s9aUser) && /清单\*\*就是\*\*这次能取的全部文件/.test(s9aUser),
+  '清单给的是假名，且明说"清单即范围"（不再发一个可以被套用的路径模板）',
+  s9aUser.split('\n').find((l) => l.startsWith('- `f1`')) ?? '(没有 f1 那一行)',
+);
+// D119：清单**等于**可取范围 —— 它按本次档位的 roots 过滤过。这里用"清单里不出现工作区之外
+// 的文件"来钉：fixtures 里若有 .env / node_modules 之类，它们也不该出现在清单里。
+check(
+  !/node_modules|\.env/.test(s9aUser),
+  '清单里没有密钥/依赖类文件（清单如果列了它们，就是"列了却取不到"）',
+  s9aUser.includes('node_modules') ? '清单里有 node_modules' : '干净',
+);
 
 // ④ 最难的那一下：模型**读了兄弟文件，又在讲解里引用它**（filePath 写的是相对写法）。
 //    内部闸门的允许集合是绝对路径、命令层第二道闸门收的是模型原样写的相对路径 ——
@@ -1776,13 +1793,16 @@ fetchCalls.length = 0;
 await registered.get('anchorExplain.capture')?.();
 const outsideTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
 check(/请求被拒绝/.test(String(outsideTool?.content ?? '')), '工作区之外的文件被拒，且原因是回灌而不是抛错');
-check(/不在允许的范围内/.test(String(outsideTool?.content ?? '')), '拒绝原因说清了边界在哪');
-// D117：拒绝文案还要说清**当前是哪个档、实际生效的根在哪** —— 不然用户拿到那句
-// "写相对路径时按锚点文件所在目录算"会照着去改写法，而每次都被拒（实测那条报错的形状）
+check(/不在这次可取的清单里/.test(String(outsideTool?.content ?? '')), '拒绝原因说清了边界在哪');
+// D119：拒绝文案要说清**这次一共有几个可选** + 该写什么（假名）+ 真不够用时往哪调。
+// 不再报"允许的根" —— 边界不再是根，而是**清单本身**（根只在清单为空时才有诊断价值）
 check(
   /当前取件范围 "related"/.test(String(outsideTool?.content ?? '')) &&
-    /允许的根：/.test(String(outsideTool?.content ?? '')),
-  '拒绝原因里报了档位与实际生效的根（锚点不在工作区里这件事当场自明）',
+    /清单里那 \d+ 个文件/.test(String(outsideTool?.content ?? '')) &&
+    /假名/.test(String(outsideTool?.content ?? '')) &&
+    /anchorExplain\.fetchScope/.test(String(outsideTool?.content ?? '')) &&
+    /anchorExplain\.maxCandidateFiles/.test(String(outsideTool?.content ?? '')),
+  '拒绝原因里报了档位、这次有几个可选、正确写法（假名）与两个可调的设置',
   String(outsideTool?.content ?? '').slice(0, 140),
 );
 
@@ -1836,7 +1856,15 @@ fetchMode = 'secret';
 fetchCalls.length = 0;
 await registered.get('anchorExplain.capture')?.();
 const secretTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
-check(/按约定不读/.test(String(secretTool?.content ?? '')), '密钥类文件按约定不读（`.env` 也在射程内，必须挡住）');
+// D119：密钥类文件**根本不进清单**（`buildCandidateFiles` 就按同一份黑名单滤掉了），
+// 所以模型撞到的是"清单里没有"这一句 —— 比"按约定不读"更早一步。
+// 两种措辞都算挡住，但**必须是被拒**，而且要证明它确实没被读进来。
+check(
+  /请求被拒绝|取件失败/.test(String(secretTool?.content ?? '')) &&
+    /不在这次可取的清单里|按约定不读/.test(String(secretTool?.content ?? '')),
+  '密钥类文件按约定不读（`.env` 也在射程内，必须挡住）',
+  String(secretTool?.content ?? '').slice(0, 140),
+);
 check(webviews[0].webview.posted.at(-1)?.type === 'session:update', '被拒之后整次讲解仍然继续（不是整段失败）');
 check(outputLines.some((l) => l.includes('拒绝')), '被拒的取件也落了日志（被拒原因正是要看的）');
 

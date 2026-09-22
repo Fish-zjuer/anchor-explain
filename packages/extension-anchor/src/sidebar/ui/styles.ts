@@ -292,6 +292,33 @@ body {
   word-break: break-all;
 }
 
+/* 本次 token 用量（D120）。**面板最下面一行**，压得比取件日志还轻：
+   它是"顺带看一眼"的信息，不该跟讲解正文抢注意力。 */
+.usage {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.usage-title { font-weight: 600; }
+
+.usage-item { white-space: nowrap; }
+
+.usage-key { margin-right: 3px; opacity: 0.8; }
+
+/* 数字用等宽，边涨边看的时候不会左右跳 */
+.usage-val { font-family: var(--vscode-editor-font-family, monospace); }
+
+.usage-unknown { opacity: 0.75; }
+
+.usage-note { opacity: 0.65; font-size: 0.92em; }
+
 .ended {
   margin-top: var(--anchor-gap);
   color: var(--vscode-descriptionForeground);

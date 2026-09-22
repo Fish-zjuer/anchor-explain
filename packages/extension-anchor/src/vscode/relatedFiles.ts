@@ -1,17 +1,19 @@
 /**
- * 「候选文件清单」的**宿主侧**（S9a）：真的去工作区里找文件，然后交给
- * `../relatedFiles.ts` 的纯逻辑排序。分工与 `config.ts` / `vscode/configSource.ts` 同一条。
+ * 「候选池」的**宿主侧**（S9a）：真的去工作区里找文件。**它只负责"有哪些文件"**，
+ * 过滤、排序、编假名全在 `../relatedFiles.ts` 的纯逻辑里（分工与 `config.ts` /
+ * `vscode/configSource.ts` 同一条）。
+ *
+ * @anchor 为什么它从"列清单"退成"扫文件"（S9a-fix10，D119）：清单必须与本次可取范围
+ *         逐条一致，而"范围"是**纯逻辑**（`relatedRoots` + 黑名单）算出来的。
+ *         宿主侧只要把池子交出去，纯逻辑想怎么筛就怎么筛 —— 两边就不会各算一套。
  *
  * @anchor 为什么限定这几类扩展名：清单是给**跨文件读代码**用的（宏、结构体、调用者），
  *         所以只列代码/头文件/链接脚本这类；不列 `.md`、图片、JSON —— 那些既不是相关性信号，
- *         也会把有限的 40 条挤满。找不到（模型想读某个没列出来的文件）也不影响取件：
- *         清单只是**提示**，取件的合法性由 `validateContextRequest` 判。
+ *         也会把有限的清单挤满。找不到（模型想读某个没列出来的文件）也不影响取件：
+ *         清单驱动的档位由清单说了算，`any` 档由模型自己查。
  */
 
 import * as vscode from 'vscode';
-import { dirnameOf, isCodeLocation, samePath } from '@anchor/core';
-import type { Anchor } from '@anchor/core';
-import { candidateDisplayName, includeNamesIn, orderRelatedFiles } from '../relatedFiles.ts';
 
 /** 代码类的后缀。嵌入式常见的那几种都在这儿（`.S` 汇编、`.ld` 链接脚本、`.mk` 构建片段）。 */
 const CODE_GLOB = '**/*.{h,hpp,hh,hxx,c,cc,cpp,cxx,c++,inc,s,S,asm,ld,lds,mk,cmake,py,rs,go,ts,js}';
@@ -19,43 +21,36 @@ const CODE_GLOB = '**/*.{h,hpp,hh,hxx,c,cc,cpp,cxx,c++,inc,s,S,asm,ld,lds,mk,cma
 /** 找文件时的排除项：依赖与构建产物目录（与取件黑名单同一立场）。 */
 const EXCLUDE_GLOB = '**/{node_modules,.git,dist,build,out,.vscode-test,.tmp-preview}/**';
 
-/** 一次扫描的上限。工作区再大也不至于为了一份提示清单扫穿整棵树。 */
+/**
+ * 一次扫描的上限。
+ *
+ * @anchor 它**不是**清单上限（那是 `anchorExplain.maxCandidateFiles`）。这里是"池子多大"：
+ *         池子必须比清单大，才有得筛（`#include` 提到过的、同目录的都要能在里面）。
+ *         池子被截断时清单会退化成一个**任意子集**（`findFiles` 的顺序没有语义）——
+ *         所以给"不限"档留了大得多的额度：那一档的 `find_files` 要靠池子当"文件系统地图"。
+ */
 const SCAN_LIMIT = 400;
+const SCAN_LIMIT_UNBOUNDED = 4000;
 
-export async function listRelatedFiles(
-  anchor: Anchor,
-  anchorText: string,
-  opts: { onError?: (err: unknown) => void } = {},
+/**
+ * 扫出工作区里的代码文件（绝对路径）。扫不动时**降级但不静默**：
+ * 清单/地图没了，跨文件取件仍在（`any` 档模型可以自己写路径），
+ * 但它多半**不知道该问哪个文件** —— 那句 `onError` 是唯一能解释"它怎么不往外读"的线索（D67）。
+ */
+export async function scanCodeFiles(
+  opts: { unbounded?: boolean; onError?: (err: unknown) => void } = {},
 ): Promise<string[]> {
-  if (!isCodeLocation(anchor.location)) return [];
   const folders = vscode.workspace.workspaceFolders ?? [];
   if (folders.length === 0) return [];
-
-  const anchorFile = anchor.location.filePath;
-  const anchorDir = dirnameOf(anchorFile);
-
-  let found: readonly vscode.Uri[];
   try {
-    found = await vscode.workspace.findFiles(CODE_GLOB, EXCLUDE_GLOB, SCAN_LIMIT);
+    const found = await vscode.workspace.findFiles(
+      CODE_GLOB,
+      EXCLUDE_GLOB,
+      opts.unbounded === true ? SCAN_LIMIT_UNBOUNDED : SCAN_LIMIT,
+    );
+    return found.map((uri) => uri.fsPath);
   } catch (err) {
-    // 扫描失败不当成讲解失败（清单只是提示），但**必须发声**：静默返回空清单与"工作区里
-    // 真没有相关文件"在日志里长得一模一样，而后果是跨文件取件悄悄退化成"模型不知道该问谁"
-    // —— 用户看到的就是"它就是没有往外读的想法"，却没有任何线索（S9a 交付时正是如此，D67）
     opts.onError?.(err);
     return [];
   }
-
-  const display: string[] = [];
-  for (const uri of found) {
-    const path = uri.fsPath;
-    if (samePath(path, anchorFile)) continue; // 锚点文件自己不进清单
-
-    // S9a：同目录 → 裸文件名（嵌入式里最常见的相关者），其余 → 相对锚点目录的写法。
-    // D117：**基准一律是锚点目录**（`candidateDisplayName` 里说清了为什么 ——
-    // 取件闸门解析相对路径就是这个基准，写工作区相对路径会解析成一个不存在的路径）。
-    display.push(candidateDisplayName(anchorDir, path));
-  }
-
-  // 锚点正文里的 `#include` 是**代码自己说的依赖**，优先于我们的猜测
-  return orderRelatedFiles(display, includeNamesIn(anchorText));
 }

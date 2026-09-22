@@ -18,7 +18,8 @@
 
 import { dirnameOf, isCodeLocation, isPDFLocation, locationLabel, pdfSegmentsOf, segmentsOf } from '@anchor/core';
 import type { Anchor } from '@anchor/core';
-import { EXPLANATION_JSON_SHAPE_EN, EXPLANATION_JSON_SHAPE_PDF_EN, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
+import { EXPLANATION_JSON_SHAPE_EN, EXPLANATION_JSON_SHAPE_PDF_EN, FETCH_CONTEXT_TOOL, FIND_FILES_TOOL } from '../orchestrator/toolSchema.ts';
+import { describeCandidates, type CandidateFile } from '../relatedFiles.ts';
 import type { ExplainStyle } from './index.ts';
 import { CONCISE_EXEMPLAR_EN, DETAILED_EXEMPLAR_EN, STANDARD_EXEMPLAR_EN } from './exemplars.ts';
 
@@ -210,7 +211,11 @@ export const TIER_RULES_EN: Record<ExplainStyle, string> = {
  * 「取件」一节的英文面 —— 与中文版同一条扩展适配：没有它模型不会正确使用 `fetch_context`。
  * 含 D96 的「不要猜路径」一条（两种语言同口径）。
  */
-export function fetchSectionEn(crossFile: boolean, maxFetchLines?: number): string {
+export function fetchSectionEn(
+  crossFile: boolean,
+  maxFetchLines?: number,
+  listMode: 'alias' | 'path' = 'alias',
+): string {
   if (!crossFile) {
     return [
       '# Fetching context (tool available in this environment)',
@@ -226,6 +231,32 @@ export function fetchSectionEn(crossFile: boolean, maxFetchLines?: number): stri
     ].join('\n');
   }
   const limit = typeof maxFetchLines === 'number' && maxFetchLines > 0 ? maxFetchLines : null;
+  // "How to name the file" differs by scope (S9a-fix10 / D119) — see the Chinese version
+  // in `index.ts` for the full reasoning. Short version: the two scopes can do fundamentally
+  // different things, and the previous single wording handed the model a concrete example
+  // (`../Inc/dshot_dma.h`) which it then used as a **template**, inventing paths that do not exist.
+  const howToName =
+    listMode === 'alias'
+      ? [
+          '- **You may read files other than the anchor file** — put the **alias in the first column** ' +
+            '(`f1`, `f2`, …) of the "Files that may be related" list into `path`. **That list IS every file ' +
+            'you can read this run**; omitting `path` means "the anchor file itself".',
+          '  Macro definitions, types/structs, and **the callers or callees** usually live in other files —',
+          '  when you cannot explain "where the data comes from and who consumes it", go read them; that is encouraged.',
+          '- **Do not invent paths** (`../Inc/something.h` and the like). Aliases map one-to-one onto files; ' +
+            'just write the alias. An invented path earns a rejection and wastes a round. If the list has ' +
+            'nothing you need, answer from what you already have.',
+        ]
+      : [
+          '- **You may read files other than the anchor file, with no range limit** — `path` may be an ' +
+            'absolute path (or a path relative to **the directory of the anchor file**); files outside the ' +
+            'workspace are readable too.',
+          '- If you do not know what files exist, call `' + FIND_FILES_TOOL.name + '` first (give it a ' +
+            'keyword from the file name), then pick what to read. **Do not invent paths from memory** — ' +
+            'look them up, or answer from what you already have.',
+          '- Reading a file outside the workspace **requires an absolute path**: relative paths always resolve ' +
+            'against the directory of the anchor file.',
+        ];
   return [
     '# Fetching context (tool available in this environment)',
     '',
@@ -234,16 +265,9 @@ export function fetchSectionEn(crossFile: boolean, maxFetchLines?: number): stri
     `you may call the tool \`${FETCH_CONTEXT_TOOL.name}\` to request more context. Rules:`,
     '- Call it only when you **really** need it. If you can explain it with what you have, do not fetch "just to be safe".',
     '- Request one small span at a time (lines for code, pages for PDF), and always give both `start` and `end`.',
-    '- **You may read files other than the anchor file** — name the file with `path` (a relative path is resolved ' +
-      'against **the directory of the anchor file**, e.g. `ring_buffer.h`); omitting `path` means "the anchor file itself".',
-    '  Macro definitions, types/structs, and **the callers or callees** usually live in other files —',
-    '  when you cannot explain "where the data comes from and who consumes it", go read them; that is encouraged. ' +
-      'The user once put it this way: "There is no cross-file understanding — embedded code and the like is scattered across many files."',
+    ...howToName,
     '- Read **one** span of **one** file per fetch: **take only the span you actually need** (do not ask for a whole file "since you can") ' +
       (limit === null ? '; conclude once you have read it.' : `, at most ${limit} lines per fetch — asking for more only gets you the first ${limit} lines.`),
-    '- **Do not guess paths** — `path` must either be copied verbatim from the "Files that may be related" list, ' +
-      'or be a path you saw with your own eyes in content you already read. Directories you made up (such as build-output dirs) usually do not exist; ' +
-      'a nonexistent path only earns a fetch failure and wastes a round.',
     '- Secrets, dependency directories (`node_modules`), and build outputs cannot be read — do not try.',
     '- You may only cite files **you actually read** (or the anchor file) in the explanation — a file you never read must not appear in a location.',
     '- The number of fetches is limited, and a range you already fetched will not be given twice.',
@@ -354,7 +378,14 @@ export function examplesSectionEn(style: ExplainStyle): string {
 
 export function buildSystemPromptEn(
   style: ExplainStyle,
-  options: { crossFile?: boolean; maxFetchLines?: number; examples?: boolean; sourceType?: 'code' | 'pdf' } = {},
+  options: {
+    crossFile?: boolean;
+    maxFetchLines?: number;
+    examples?: boolean;
+    sourceType?: 'code' | 'pdf';
+    /** See `buildSystemPrompt` in `index.ts` (S9a-fix10 / D119). */
+    candidateMode?: 'alias' | 'path';
+  } = {},
 ): string {
   // PDF 释义面（D98）：角色/输出形状/通用规则/取件换成 PDF 版；档位与示范不进（代码特有）。
   if (options.sourceType === 'pdf') {
@@ -372,7 +403,7 @@ export function buildSystemPromptEn(
     outputShapeSectionEn(crossFile),
     GENERAL_RULES_SECTION_EN,
     `# Tier rules\n\n${TIER_RULES_EN[style]}`,
-    fetchSectionEn(crossFile, options.maxFetchLines),
+    fetchSectionEn(crossFile, options.maxFetchLines, options.candidateMode ?? 'alias'),
   ];
   if (withExamples) parts.push(examplesSectionEn(style));
   return parts.join('\n\n');
@@ -424,7 +455,11 @@ export function describeAnchorEn(anchor: Anchor): string {
 
 export function buildUserPromptEn(
   anchor: Anchor,
-  options: { candidates?: readonly string[]; focus?: string; crossFile?: boolean } = {},
+  options: {
+    candidates?: readonly CandidateFile[];
+    focus?: string;
+    crossFile?: boolean;
+  } = {},
 ): string {
   const parts = ['## Anchor', describeAnchorEn(anchor), ''];
 
@@ -451,11 +486,12 @@ export function buildUserPromptEn(
   if (options.crossFile === true && candidates.length > 0) {
     parts.push(
       '## Files that may be related',
-      'These are files in the workspace logically related to the anchor file (sorted by relevance; ones mentioned by `#include` come first).',
-      'The list is only a **lead** — you do not have to use it; but if the explanation needs to touch what is inside them ' +
-        '(macros, structs, callers),',
-      '**read them with the fetch tool first** (put the name in `path`, one file at a time):',
-      ...candidates.map((name) => `- ${name}`),
+      'These files may be logically related to the anchor file (sorted by relevance; ones mentioned by `#include` come first).',
+      '**To read one, put the alias in the left column into `path`** (e.g. `f1`). The list **IS** every file ' +
+        'you can read this run — anything outside it will be rejected, so **do not invent paths**.',
+      'The name on the right is only there so you can tell which file is which; copying it is accepted, ' +
+        'but it is not a path (do not rewrite it).',
+      ...describeCandidates(candidates),
       '',
     );
   }

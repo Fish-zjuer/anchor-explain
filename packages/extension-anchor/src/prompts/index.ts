@@ -24,7 +24,8 @@
 
 import type { Anchor } from '@anchor/core';
 import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel, pdfSegmentsOf, segmentsOf } from '@anchor/core';
-import { EXPLANATION_JSON_SHAPE, EXPLANATION_JSON_SHAPE_PDF, FETCH_CONTEXT_TOOL } from '../orchestrator/toolSchema.ts';
+import { EXPLANATION_JSON_SHAPE, EXPLANATION_JSON_SHAPE_PDF, FETCH_CONTEXT_TOOL, FIND_FILES_TOOL } from '../orchestrator/toolSchema.ts';
+import { describeCandidates, type CandidateFile } from '../relatedFiles.ts';
 import { CONCISE_EXEMPLAR, DETAILED_EXEMPLAR, STANDARD_EXEMPLAR } from './exemplars.ts';
 import {
   buildRepairPromptEn,
@@ -283,7 +284,11 @@ const TIER_RULES: Record<ExplainStyle, string> = {
  *         用户的原话是"没有跨文件的理解啊，像是嵌入式等等，很多分散的代码"——
  *         所以这里明确点名嵌入式最常见的三样：**宏、结构体、调用者**。
  */
-function fetchSection(crossFile: boolean, maxFetchLines?: number): string {
+function fetchSection(
+  crossFile: boolean,
+  maxFetchLines?: number,
+  listMode: 'alias' | 'path' = 'alias',
+): string {
   if (!crossFile) {
     return [
       '# 取件（扩展环境的工具）',
@@ -301,6 +306,38 @@ function fetchSection(crossFile: boolean, maxFetchLines?: number): string {
   // 想读的范围比上限大时不会被拒，只会截到上限（回灌的内容头部写着真实行范围）——
   // 所以这里不必教它"别超"，只要把它想要的如实写出来。
   const limit = typeof maxFetchLines === 'number' && maxFetchLines > 0 ? maxFetchLines : null;
+
+  /**
+   * 「`path` 该怎么写」这一条**按范围分两种**（S9a-fix10，D119）。
+   *
+   * @anchor 两种范围能做的事根本不同，提示词必须跟着变 —— 上一版只有一套说法
+   *         （"写相对路径，按锚点文件所在目录算，例如 `../Inc/dshot_dma.h`"），
+   *         而模型照着那个例子的**形状**把文件名换掉，写出了一串不存在的路径
+   *         （用户实测：6 次取件 5 次 `ENOENT`）。举一个具体例子就是发一个模板。
+   *         现在清单驱动的档位只说**假名**，`any` 档只说"写真实路径 / 自己查"。
+   */
+  const howToName =
+    listMode === 'alias'
+      ? [
+          '- **可以读锚点文件之外的相关文件** —— `path` 写「可能相关的文件」清单里**第一列的假名**' +
+            '（`f1`、`f2`…）。**那个清单就是这次能取的全部文件**，写得对不对由它说了算；' +
+            '`path` 省略才是"锚点这个文件"。',
+          '  宏定义、类型/结构体、以及**调用它或被它调用的代码**通常不在同一个文件里 ——',
+          '  讲不清"数据从哪来、给谁用"时就去读，这是被鼓励的。用户给过一句原话："没有跨文件的理解啊，' +
+            '像是嵌入式等等，很多分散的代码。"',
+          '- **不要自己拼路径**（`../Inc/xxx.h` 这一类）。清单里假名与文件是一一对应的，' +
+            '直接写假名即可；拼出来的路径取不到，白费一轮。清单里没有你要的文件时，' +
+            '就用现有信息作答。',
+        ]
+      : [
+          '- **可以读锚点文件之外的文件，而且范围不限** —— `path` 可以写绝对路径' +
+            '（也可以写相对**锚点文件所在目录**的路径），工作区之外的文件同样读得到。',
+          '- 不知道有哪些文件可读时，先用 `' + FIND_FILES_TOOL.name + '` 工具列一下' +
+            '（给它一段文件名里的关键词），再挑要读的。**不要凭印象拼路径** —— 不确定就查，' +
+            '或者基于现有信息作答。',
+          '- 读工作区外的文件时**必须写绝对路径**：相对写法一律按锚点文件所在目录算。',
+        ];
+
   return [
     '# 取件（扩展环境的工具）',
     '',
@@ -308,15 +345,9 @@ function fetchSection(crossFile: boolean, maxFetchLines?: number): string {
     `可以调用工具 \`${FETCH_CONTEXT_TOOL.name}\` 请求额外上下文。规则：`,
     '- 只在**真的需要**时调用。能凭现有信息讲清楚的，不要为了保险而多取一次。',
     '- 一次最多请求一小段（代码按行、PDF 按页），并且 `start` / `end` 都要给。',
-    '- **可以读锚点文件之外的相关文件** —— 用 `path` 点名要读哪个文件（写相对路径时按**锚点文件所在目录**算，' +
-      '例如 `ring_buffer.h`），`path` 省略才是"锚点这个文件"。',
-    '  宏定义、类型/结构体、以及**调用它或被它调用的代码**通常不在同一个文件里 ——',
-    '  讲不清"数据从哪来、给谁用"时就去读，这是被鼓励的。用户给过一句原话："没有跨文件的理解啊，' +
-      '像是嵌入式等等，很多分散的代码。"',
+    ...howToName,
     '- 一次读**一个**文件的一段：**只取你真的需要的那一段**（不要因为"反正能读"就整份要）' +
       (limit === null ? '；读完就该给出结论。' : `，单次最多 ${limit} 行 —— 要多了只会给你前 ${limit} 行。`),
-    '- **不要猜路径** —— `path` 要么照抄「可能相关的文件」清单里的写法，要么用你在读过的内容里' +
-      '亲眼见过的路径。自己拼出来的目录（比如构建产物目录）多半不存在；路径不存在会得到「取件失败」，白费一轮。',
     '- 密钥、依赖目录（`node_modules`）、构建产物读不到，也不用试。',
     '- 你**只能在讲解里引用你读过的文件**（或锚点文件）—— 没读过的文件不许出现在 location 里。',
     '- 取件次数有上限，且已经取过的区间不会重复给你。',
@@ -431,6 +462,11 @@ export function buildSystemPrompt(
     examples?: boolean;
     /** 锚点来源（D98）。`'pdf'` 时整套换成释义面：教材/论文不是代码，档位与示范都不适用 */
     sourceType?: 'code' | 'pdf';
+    /**
+     * `path` 该怎么写（S9a-fix10）：`'alias'` = 只能写清单里的假名（`related` / `same-dir`）；
+     * `'path'` = 写真实路径、并可以用 `find_files` 自己查（`any`）。默认 `'alias'`。
+     */
+    candidateMode?: 'alias' | 'path';
   } = {},
 ): string {
   // 英文面（D97）：整套段落与示范都换成 en.ts 的版本，骨架（五节 + 只实例化当前档）不变。
@@ -450,7 +486,7 @@ export function buildSystemPrompt(
     outputShapeSection(crossFile),
     GENERAL_RULES_SECTION,
     `# 档位规则\n\n${TIER_RULES[style]}`,
-    fetchSection(crossFile, options.maxFetchLines),
+    fetchSection(crossFile, options.maxFetchLines, options.candidateMode ?? 'alias'),
   ];
   if (withExamples) parts.push(examplesSection(style));
   return parts.join('\n\n');
@@ -521,7 +557,12 @@ export function describeAnchor(anchor: Anchor, language: ExplainLanguage = DEFAU
  */
 export function buildUserPrompt(
   anchor: Anchor,
-  options: { language?: ExplainLanguage; candidates?: readonly string[]; focus?: string; crossFile?: boolean } = {},
+  options: {
+    language?: ExplainLanguage;
+    candidates?: readonly CandidateFile[];
+    focus?: string;
+    crossFile?: boolean;
+  } = {},
 ): string {
   if (options.language === 'en') return buildUserPromptEn(anchor, options);
   const parts = ['## 锚点', describeAnchor(anchor), ''];
@@ -549,14 +590,16 @@ export function buildUserPrompt(
   if (options.crossFile === true && candidates.length > 0) {
     parts.push(
       '## 可能相关的文件',
-      // D117：不再说"工作区里" —— 清单里可能是锚点周边（甚至工作区之外）的文件，
-      // 而**名字一律是相对锚点文件所在目录**的写法（`ring_buffer.h` / `../Inc/dshot_dma.h`），
-      // 照抄即可（闸门解析相对路径就是这个基准）。说错基准会让模型自己改写名字、白烧一轮。
-      '这些是可能和锚点文件逻辑相关的文件（按相关性排序，`#include` 提到过的排最前）。',
-      '名字都按**锚点文件所在目录**算（`ring_buffer.h`、`../Inc/dshot_dma.h`），照抄即可。',
-      '清单只是**线索**，不代表你一定要用；但如果讲解要说到它们里面的东西（宏、结构体、调用者），',
-      '**先用取件工具读一次再说**（`path` 写下面这些名字，一次一个文件）：',
-      ...candidates.map((name) => `- ${name}`),
+      // S9a-fix10（D119）：清单**就是**这次能取的全部文件，模型该写的是**假名**。
+      // @anchor 为什么不写"按锚点文件所在目录算"那一套了：上一版举了 `../Inc/dshot_dma.h`
+      //         这个具体例子，模型照着它的**形状**把文件名换掉了（写成 `../Inc/transport.h`），
+      //         而真正的那几个文件在别的子树里 —— 举例子就是发模板。
+      //         现在左边给假名（唯一可写的东西），右边给名字（只为认得出是哪一个）。
+      '这些文件可能和锚点文件逻辑相关（按相关性排序，`#include` 提到过的排最前）。',
+      '**要读它们时，`path` 写每行左边那个假名**（例如 `f1`）。清单**就是**这次能取的全部文件；',
+      '清单之外的东西一律取不到 —— 所以**不要自己拼路径**。右边那串名字只是让你认得出是哪一个，',
+      '照抄它也认，但它不是路径（不要拿它去改）。',
+      ...describeCandidates(candidates),
       '',
     );
   }

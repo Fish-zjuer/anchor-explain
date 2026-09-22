@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import { parseSidebarMessage } from '../protocol.ts';
 import type { HostToSidebar } from '../protocol.ts';
 import type { ExplainLanguage } from '../prompts/index.ts';
+import type { TokenUsage } from '../orchestrator/providers/types.ts';
 import type { ResolvedChords } from './keybindingResolve.ts';
 import { renderSidebarHtml } from './ui/html.ts';
 
@@ -46,6 +47,12 @@ export class SidebarPanel {
   #fontScale: number;
   /** 面板文案的语言（D97）。建面板那一刻的设置值就是初值；讲解中途切换要下一次讲解才生效。 */
   readonly #language: ExplainLanguage;
+  /**
+   * 本次讲解累计的 token 用量（D120）。**只活在内存里**：不落盘、不进讲解历史、
+   * 不进 `workspaceState`。存一份的理由与 `#fontScale` 相同 —— `ui:ready` 之后要补发，
+   * 面板重建（折叠再展开）时不至于把那行数字丢掉。
+   */
+  #usage: TokenUsage | null = null;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -72,6 +79,8 @@ export class SidebarPanel {
           // 重放里那条 ui:fontScale 可能已经被挤出去（缓冲只有 50 条），
           // 所以 ready 之后**总是**补发一次当前的值 —— 面板不需要自己持久化任何状态
           void this.#panel.webview.postMessage({ type: 'ui:fontScale', scale: this.#fontScale });
+          // token 那一行同理（D120）：它可能在面板存在之前就已经发过一轮
+          void this.#panel.webview.postMessage({ type: 'ui:usage', usage: this.#usage });
           break;
         case 'ui:next':
           this.#handlers.onNext();
@@ -154,6 +163,15 @@ export class SidebarPanel {
   setFontScale(scale: number): void {
     this.#fontScale = scale;
     this.post({ type: 'ui:fontScale', scale });
+  }
+
+  /**
+   * token 用量更新了（D120）。与 `setFontScale` 同一个套路：**存一份再发**。
+   * `null` = 这次一个数都没拿到（端点没返回 `usage`），面板据此说"未提供"。
+   */
+  setUsage(usage: TokenUsage | null): void {
+    this.#usage = usage;
+    this.post({ type: 'ui:usage', usage });
   }
 
   reveal(): void {

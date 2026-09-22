@@ -19,6 +19,12 @@ import {
   describeStyle,
   explainOutputContract,
 } from '../src/prompts/index.ts';
+import type { CandidateFile } from '../src/relatedFiles.ts';
+
+/** 清单里的一条（S9a-fix10）。假名给模型写，`path` 是真身，`label` 只用于辨认。 */
+function cand(alias: string, path: string, label: string): CandidateFile {
+  return { alias, path, label };
+}
 
 const CODE_ANCHOR: Anchor = {
   sourceType: 'code',
@@ -155,18 +161,19 @@ test('输出契约与取件规则没有被风格改动影响（§3.3 与 §8 的
 
 test('候选文件清单必须真的进 user prompt（不是签名上的装饰）', () => {
   const prompt = buildUserPrompt(CODE_ANCHOR, {
-    candidates: ['ring_buffer.h', 'src/config.h'],
+    candidates: [cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'), cand('f2', 'C:/repo/src/config.h', 'src/config.h')],
     crossFile: true,
   });
 
   assert.match(prompt, /## 可能相关的文件/);
-  assert.match(prompt, /- ring_buffer\.h/);
-  assert.match(prompt, /- src\/config\.h/);
-  assert.match(prompt, /先用取件工具读一次/, '给清单的同时必须说清"要引用就先读"');
+  // S9a-fix10（D119）：清单给的是**假名**，模型该写的也是假名 —— 不再给可套用的路径形状
+  assert.match(prompt, /- `f1`  ring_buffer\.h/);
+  assert.match(prompt, /- `f2`  src\/config\.h/);
+  assert.match(prompt, /清单\*\*就是\*\*这次能取的全部文件/, '必须说清"清单即范围"，否则它还会去猜');
 });
 
 test('候选清单只在跨文件时才给（不然是邀请它去撞拒绝）', () => {
-  const off = buildUserPrompt(CODE_ANCHOR, { candidates: ['ring_buffer.h'] });
+  const off = buildUserPrompt(CODE_ANCHOR, { candidates: [cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h')] });
   assert.doesNotMatch(off, /可能相关的文件/);
   assert.doesNotMatch(off, /ring_buffer\.h/);
 });
@@ -250,8 +257,8 @@ test('英文 prompt 钉住与中文对应的硬要求（改英文面时这些不
   assert.match(prompt, /A program reads this JSON: `location` decides which lines get highlighted/);
   assert.match(prompt, /1-based counted from the first line of the file/);
   assert.match(prompt, /never write the words "Key point \/ Context \/ Definition \/ Caveat"/i);
-  // D96 的"不要猜路径"两种语言同口径
-  assert.match(buildSystemPrompt('standard', { language: 'en', crossFile: true }), /Do not guess paths/);
+  // D96 / D119 的"不要猜路径"两种语言同口径（S9a-fix10 起英文措辞是 Do not invent paths）
+  assert.match(buildSystemPrompt('standard', { language: 'en', crossFile: true }), /Do not invent paths/);
 });
 
 test('英文档位规则只进当前档的一节（与中文版同一条纪律）', () => {
@@ -303,7 +310,7 @@ test('英文 repair 与英文 system 同口径（D67 的规矩两种语言都成
 test('英文 user prompt：锚点描述与标题换成英文，候选清单照常进', () => {
   const prompt = buildUserPrompt(CODE_ANCHOR, {
     language: 'en',
-    candidates: ['ring_buffer.h'],
+    candidates: [cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h')],
     crossFile: true,
     focus: 'the boundary checks',
   });
@@ -313,7 +320,7 @@ test('英文 user prompt：锚点描述与标题换成英文，候选清单照�
   assert.match(prompt, /Directory: C:\/repo\/test\/fixtures/);
   assert.match(prompt, /## The line the user wants to follow/);
   assert.match(prompt, /## Files that may be related/);
-  assert.match(prompt, /- ring_buffer\.h/);
+  assert.match(prompt, /- `f1`  ring_buffer\.h/);
   assert.match(prompt, /Now produce the explanation JSON as required by the system prompt\./);
 });
 

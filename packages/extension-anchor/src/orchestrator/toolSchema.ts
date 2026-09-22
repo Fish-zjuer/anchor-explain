@@ -35,7 +35,9 @@ export const FETCH_CONTEXT_TOOL = {
         type: 'string',
         description:
           'request_type 为 file 时要读的文件；省略 = 锚点所在的文件。' +
-          '写相对路径时按锚点文件所在目录算，例如 ring_buffer.h。' +
+          '**默认档（相关文件/同目录）下只能写「可能相关的文件」清单里第一列的假名**（`f1`、`f2`…）' +
+          '—— 那个清单就是这次能取的全部文件，写清单之外的任何东西都会被拒。' +
+          '**范围设为「不限」时改为写真实路径**（可以用 `find_files` 先查），工作区外也能读。' +
           'page_range 时可省略（默认就是锚点这份 PDF）；写了必须与锚点文档的路径逐字相同',
       },
       reason: { type: 'string', description: '为什么需要这段上下文' },
@@ -44,10 +46,50 @@ export const FETCH_CONTEXT_TOOL = {
   },
 } as const;
 
-/** OpenAI 兼容端点期望的 `tools` 数组形状。 */
-export function openAITools(): readonly unknown[] {
-  return [{ type: 'function', function: FETCH_CONTEXT_TOOL }];
+/**
+ * 「自己查有哪些文件」——**只在"不限"档给**（S9a-fix10，D119）。
+ *
+ * @anchor 用户提的第 1 条要求里那句话："any 给一个接口让它自己查"。不限档的取件范围是
+ *         整个文件系统，**列不成一份清单**（那正是它不能走假名的原因）；但把模型扔进
+ *         一个没有地图的空间里，它的行为就是瞎拼路径 —— 实测里 5 次 `ENOENT` 就是这么来的。
+ *         所以这一档不发明细，改发一个**查询口**：给它一段关键词，还给它匹配到的真实路径，
+ *         再由它自己去 `fetch_context`。
+ *
+ *         只在 `any` 档出现（`openAITools` 的开关）—— 清单驱动的档位给这个工具是多余的，
+ *         而且会诱导它绕过清单（那正是我们要堵的路）。
+ */
+export const FIND_FILES_TOOL = {
+  name: 'find_files',
+  description:
+    '列出当前可读的文件路径（按文件名/路径里的关键词过滤）。不知道有哪些文件可读时先用它查，' +
+    '再挑要读的去 fetch_context。只在取件范围为「不限」时可用。',
+  parameters: {
+    type: 'object',
+    properties: {
+      keyword: {
+        type: 'string',
+        description: '关键词，按文件名或路径的大小写不敏感匹配（例如 `transport`、`dshot`、`.h`）。留空则列出前若干个。',
+      },
+      reason: { type: 'string', description: '为什么需要知道有哪些文件' },
+    },
+    required: ['reason'],
+  },
+} as const;
+
+/**
+ * OpenAI 兼容端点期望的 `tools` 数组形状。
+ *
+ * `withFindFiles` 由**档位**决定（只有 `any` 给）—— 工具清单是模型能看见的能力全集，
+ * 给多了它会去用（与 S9a 那条"许可必须可执行"同一条纪律，方向相反：**不该有的许可不要发**）。
+ */
+export function openAITools(options: { withFindFiles?: boolean } = {}): readonly unknown[] {
+  const tools: unknown[] = [{ type: 'function', function: FETCH_CONTEXT_TOOL }];
+  if (options.withFindFiles === true) tools.push({ type: 'function', function: FIND_FILES_TOOL });
+  return tools;
 }
+
+/** `find_files` 一次最多回多少条。够了就够挑；再多只是把 prompt 撑大。 */
+export const FIND_FILES_MAX_HITS = 60;
 
 /** 输出契约：模型必须吐这个形状的 JSON（§3.3 会逐条校验，不合规就重试一次）。 */
 export const EXPLANATION_JSON_SHAPE = `{

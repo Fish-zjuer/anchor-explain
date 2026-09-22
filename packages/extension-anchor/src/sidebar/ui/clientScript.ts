@@ -67,6 +67,13 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       unknownRequest: "未知请求",
       traceTitle: "取件日志",
       traceEmpty: "本次讲解没有请求额外上下文。",
+      usageTitle: "本次用量",
+      usageIn: "输入",
+      usageOut: "输出",
+      usageCached: "其中命中缓存",
+      usageUncached: "未命中缓存",
+      usageUnknown: "端点没有返回 token 用量，这一项无法显示（不猜）",
+      usageNote: "只显示这一次，不保存",
       accepted: "接受",
       rejected: "拒绝",
       chars: function (n) { return " · " + n + " 字"; },
@@ -108,6 +115,13 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       unknownRequest: "unknown request",
       traceTitle: "Context fetches",
       traceEmpty: "No extra context was requested for this explanation.",
+      usageTitle: "Usage this run",
+      usageIn: "in",
+      usageOut: "out",
+      usageCached: "cached",
+      usageUncached: "uncached",
+      usageUnknown: "The endpoint did not report token usage (not guessing)",
+      usageNote: "this run only, not saved",
       accepted: "accepted",
       rejected: "rejected",
       chars: function (n) { return " · " + n + " chars"; },
@@ -130,6 +144,11 @@ export const SIDEBAR_CLIENT_SCRIPT = `
 
   var snapshot = null;
   var trace = [];
+  /**
+   * 本次讲解累计的 token 用量（D120）。**宿主不保存它**，面板也只印不存 ——
+   * 它是"这一眼想看的东西"，不是记录。null = 端点没返回 usage（那就明说没提供）。
+   */
+  var usage = null;
   /** 本次会话的锚点文件（session:update 带来的）。判断"这个位置要不要标文件名"用它。 */
   var anchorPath = null;
 
@@ -411,6 +430,40 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return row;
   }
 
+  /**
+   * 面板**最下面**那一行：本次用掉的 token（D120）。用户原话是"不保存，显示在讲解页最下面"。
+   *
+   * 三条纪律：
+   *   1. **拿不到就说拿不到** —— 端点没返回 usage 时印一句"没有返回"，绝不画 0。
+   *      把"不知道"写成 0 是编一个看起来很确定的数（D67 的同一条纪律）。
+   *   2. 缓存命中**单独列**：它跟未命中的价钱差着倍数，只报一个总数等于把"贵在哪"掩掉。
+   *      细项也拿不到时（有的端点只给总输入）就不印那两栏，不硬凑。
+   *   3. 它**不参与任何计算**，也不存档 —— 面板重建时由宿主补发（见 SidebarPanel.setUsage）。
+   */
+  function buildUsage() {
+    var box = mk("section", "usage");
+    box.appendChild(mk("span", "usage-title", L.usageTitle));
+    if (!usage) {
+      box.appendChild(mk("span", "usage-unknown", L.usageUnknown));
+      return box;
+    }
+    var num = function (v) { return typeof v === "number" && isFinite(v) ? String(v) : null; };
+    var item = function (label, value) {
+      var text = num(value);
+      if (text === null) return;
+      var one = mk("span", "usage-item");
+      one.appendChild(mk("span", "usage-key", label));
+      one.appendChild(mk("span", "usage-val", text));
+      box.appendChild(one);
+    };
+    item(L.usageIn, usage.input);
+    item(L.usageOut, usage.output);
+    item(L.usageCached, usage.cachedInput);
+    item(L.usageUncached, usage.uncachedInput);
+    box.appendChild(mk("span", "usage-note", L.usageNote));
+    return box;
+  }
+
   function render() {
     var root = document.getElementById("root");
     if (!root) return;
@@ -418,6 +471,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
 
     if (!snapshot) {
       root.appendChild(mk("p", "empty", L.waiting));
+      // 讲解还在跑（还没有 snapshot）时，用量那一行**照样显示** ——
+      // 大家伙盯着"讲解中…"的这几十秒里，token 数字在涨正是"它还在动"的证据（D120）
+      if (usage) root.appendChild(buildUsage());
       return;
     }
 
@@ -450,6 +506,8 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     root.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
     root.appendChild(buildTools());
     root.appendChild(buildTrace());
+    // 最下面那一行：本次 token 用量（D120）
+    if (usage) root.appendChild(buildUsage());
 
     // render() 每次都重建整个 DOM，容器高度归零后 scrollTop 会被夹回顶部 ——
     // 不补这一下，用户每按一次"下一步"都会被弹回面板最上面，看不到正在讲的那一行。
@@ -533,6 +591,11 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       // 字号变了（D89）。只改 CSS 变量、不重画 DOM —— 重画会把滚动位置弹回顶部，
       // 而字号这件事对现有内容的唯一影响就是这条变量（styles.ts 的 calc）。
       applyFontScale(msg.scale);
+    } else if (msg.type === "ui:usage") {
+      // token 用量更新（D120）。这一行在最下面，重画不影响用户正在读的那一段
+      // （滚动只在 anchor-scanning 不可见时才动，见 render 末尾）—— 所以直接重画最省事。
+      usage = msg.usage && typeof msg.usage === "object" ? msg.usage : null;
+      render();
     }
   }
 

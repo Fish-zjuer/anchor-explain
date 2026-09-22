@@ -265,7 +265,7 @@ test('describeConfig：取件范围报的是**人话 + 档位 id**（"我这次�
     fetchScope: 'any',
   });
   const line = describeConfig(cfg);
-  assert.match(line, /取件范围 不限（工作区内外都读）（any）/);
+  assert.match(line, /取件范围 不限（工作区内外都读）（any，清单 40 条）/, '档位后面还要报清单条数（S9a-fix10：清单即范围）');
 });
 
 // ── D97：讲解语言 ─────────────────────────────────────────────────────────
@@ -298,4 +298,32 @@ test('describeConfig：English 时状态行报「输出语言 English」，中�
   const enLine = describeConfig(resolveConfig({ ...base, language: 'en' }));
   assert.match(enLine, /输出语言 English/);
   assert.match(enLine, new RegExp(describeLanguage('en')));
+});
+
+// ── S9a-fix10（D119）：清单条数可配 ──────────────────────────────────────
+
+test('clampCandidateFiles：默认 40，下限 1（0 条等于跨文件全关，那是 `off` 档的语义），上限 400', async () => {
+  const { clampCandidateFiles, DEFAULT_MAX_CANDIDATE_FILES, MAX_CANDIDATE_FILES_CEILING } = await import('../src/config.ts');
+  assert.equal(DEFAULT_MAX_CANDIDATE_FILES, 40, '默认值与 relatedFiles 的 MAX_CANDIDATES 同源');
+  assert.equal(clampCandidateFiles(undefined), 40);
+  assert.equal(clampCandidateFiles(120), 120);
+  assert.equal(clampCandidateFiles(0), 1, '写 0 不该顺手把跨文件关掉 —— 关它有 `off` 档这条路');
+  assert.equal(clampCandidateFiles(-5), 1);
+  assert.equal(clampCandidateFiles(9999), MAX_CANDIDATE_FILES_CEILING);
+  assert.equal(clampCandidateFiles(Number.NaN), 40);
+  assert.equal(clampCandidateFiles('80'), 40, '类型不对回落默认，而不是让讲解不可用');
+});
+
+test('describeConfig：档位 id 与清单条数都报出来', async () => {
+  const { resolveConfig, describeConfig } = await import('../src/config.ts');
+  const cfg = resolveConfig({
+    providers: { default: { baseUrl: 'https://a.test/v1', tier1Model: 'm' } },
+    activeProvider: 'default',
+    maxFetchRounds: 2,
+    preferSecretStorage: true,
+    fetchScope: 'same-dir',
+    maxCandidateFiles: 120,
+  });
+  assert.equal(cfg.maxCandidateFiles, 120);
+  assert.match(describeConfig(cfg), /取件范围 同目录（same-dir，清单 120 条）/);
 });

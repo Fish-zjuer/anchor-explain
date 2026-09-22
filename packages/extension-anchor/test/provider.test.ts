@@ -153,3 +153,71 @@ test('失败路径一律 PROVIDER_ERROR，且带上可排查的信息', async ()
     );
   }
 });
+
+// ─────────────────────────────────────────────────────────────
+// D120：token 用量（输入 / 输出 / 缓存命中与未命中）
+// ─────────────────────────────────────────────────────────────
+
+/** 造一个只回一段 JSON 的假端点。 */
+function usageImpl(usage: unknown): typeof fetch {
+  return () =>
+    Promise.resolve(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage }), { status: 200 }),
+    );
+}
+
+test('D120：DeepSeek 形状的 usage（prompt_cache_hit_tokens / miss）原样读出来', async () => {
+  const turn = await createOpenAICompatibleProvider({
+    baseUrl: 'https://x/v1',
+    fetchImpl: usageImpl({
+      prompt_tokens: 1000,
+      completion_tokens: 200,
+      prompt_cache_hit_tokens: 800,
+      prompt_cache_miss_tokens: 200,
+    }),
+  }).chat({ model: 'm', messages: [] });
+
+  assert.deepEqual(turn.usage, { input: 1000, output: 200, cachedInput: 800, uncachedInput: 200 });
+});
+
+test('D120：OpenAI 形状的 usage（prompt_tokens_details.cached_tokens）也认，未命中 = 输入 − 命中', async () => {
+  const turn = await createOpenAICompatibleProvider({
+    baseUrl: 'https://x/v1',
+    fetchImpl: usageImpl({ prompt_tokens: 500, completion_tokens: 50, prompt_tokens_details: { cached_tokens: 300 } }),
+  }).chat({ model: 'm', messages: [] });
+
+  assert.deepEqual(turn.usage, { input: 500, output: 50, cachedInput: 300, uncachedInput: 200 });
+});
+
+test('D120：端点没给 usage 时 `usage` 是 undefined —— 不猜、不补 0', async () => {
+  const turn = await createOpenAICompatibleProvider({
+    baseUrl: 'https://x/v1',
+    fetchImpl: usageImpl(undefined),
+  }).chat({ model: 'm', messages: [] });
+
+  assert.equal(turn.usage, undefined, '把"不知道"写成 0 是编一个看起来很确定的数');
+});
+
+test('D120：usage 字段形状不对（字符串/null）时当"没给"，不让它变成 NaN', async () => {
+  const turn = await createOpenAICompatibleProvider({
+    baseUrl: 'https://x/v1',
+    fetchImpl: usageImpl({ prompt_tokens: '1000', completion_tokens: null }),
+  }).chat({ model: 'm', messages: [] });
+
+  assert.equal(turn.usage, undefined);
+});
+
+test('D120：addUsage 逐项累加，undefined 不参与（全 undefined 仍是 undefined）', async () => {
+  const { addUsage } = await import('../src/orchestrator/providers/types.ts');
+  const u = (over: Record<string, number | undefined>) => ({
+    input: undefined as number | undefined,
+    output: undefined as number | undefined,
+    cachedInput: undefined as number | undefined,
+    uncachedInput: undefined as number | undefined,
+    ...over,
+  });
+  assert.deepEqual(addUsage({ input: 10, output: 2 }, { input: 5, output: 1 }), u({ input: 15, output: 3 }));
+  // 一边有一边没有：有的那项照加，没有的留 undefined（不是 0 —— 0 是"端点说了是 0"）
+  assert.deepEqual(addUsage({ input: 10, cachedInput: 8 }, { output: 3 }), u({ input: 10, output: 3, cachedInput: 8 }));
+  assert.deepEqual(addUsage({}, {}), u({}));
+});

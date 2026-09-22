@@ -18,11 +18,12 @@ import {
   isCodeLocation,
   isInsidePath,
   isPDFLocation,
-  normPath,
   resolveCandidatePaths,
   resolveUnrestrictedPaths,
   samePath,
 } from '@anchor/core';
+import { isDeniedPath } from '../fetchDeny.ts';
+import { findCandidate, type CandidateFile } from '../relatedFiles.ts';
 
 /**
  * 跨文件取件的范围（`anchorExplain.fetchScope`，S9a）。
@@ -49,6 +50,16 @@ export interface ContextFetchPolicy {
   roots: readonly string[];
   /** 单次取件最多几行（防"把这个文件整个给我"）。**由配置给**（`anchorExplain.maxFetchLines`） */
   maxLines: number;
+  /**
+   * 本次给模型的候选清单（S9a-fix10）。**它就是"可取范围"本身**：
+   * `related` / `same-dir` 档下，只有清单里的文件取得动，清单外的写法一律拒。
+   *
+   * @anchor 为什么把清单塞进 policy 而不是另开一个 dep：它是**边界的一部分**。
+   *         边界写在两处（闸门一处、prompt 一处）时，"清单里点得到、取件却读不到"
+   *         迟早会出现 —— 用户实测里白烧 5 轮就是这个形状。
+   *         `any` 档不给清单（整个文件系统列不完）：那一档走"自己查"的接口。
+   */
+  candidates?: readonly CandidateFile[];
 }
 
 /**
@@ -105,35 +116,50 @@ export function relatedRoots(anchorFile: string, workspaceRoots: readonly string
   return out;
 }
 
-/** 依赖、构建产物、版本控制目录：不读。它们是噪音，且常常巨大。 */
-const DENIED_DIR_SEGMENTS = ['.git', 'node_modules', 'dist', 'build', 'out', '.vscode-test', '.tmp-preview'];
+/**
+ * 黑名单（密钥 / 依赖 / 构建产物）搬到了 `../fetchDeny.ts`（S9a-fix10）——
+ * 因为**候选清单也要用它**，而两边各写一份早晚会差一条，差的那一条就是
+ * "清单里列着、取件时被拒"（或更糟的反向）。判据只有一处，见那个文件。
+ */
 
 /**
- * 按文件名不读的：密钥与凭据。
+ * "写的不是清单里的东西"该怎么说（S9a-fix10）。**这是模型最容易撞到的一句**，
+ * 所以它得同时说清四件事：边界在哪、正确写法是什么、这次一共有几个可选、以及真不够用时往哪调。
  *
- * @anchor 这一条不是"洁癖"，是这个功能**必须有**的：模型能读工作区里的任意文件之后，
- *         `.env`、私钥、`.npmrc` 里的 token 都在它的射程内。宁可少读一个文件，
- *         也不要让一次讲解把密钥发到远端模型去。
+ * @anchor 第一句以句号收尾：进度通知只取第一句（`commands.ts` 的 `briefReason`），
+ *         边界信息必须落在第一句里。剩下的部分是给模型看的（它读全文）。
+ *         措辞刻意不提"相对哪个目录算" —— 那正是上一版把模型引偏的地方
+ *         （它照着例子把文件名换掉，写了一串不存在的路径）。
  */
-const DENIED_FILE_PATTERNS: readonly RegExp[] = [
-  /^\.env/i,
-  /\.pem$/iu,
-  /\.key$/iu,
-  /\.p12$/iu,
-  /\.pfx$/iu,
-  /\.jks$/iu,
-  /^id_(rsa|dsa|ecdsa|ed25519)/iu,
-  /^\.npmrc$/iu,
-  /^\.netrc$/iu,
-  /^credentials(\.|$)/iu,
-];
-
-function isDeniedPath(filePath: string): boolean {
-  const segments = normPath(filePath).split('/');
-  if (segments.some((segment) => DENIED_DIR_SEGMENTS.includes(segment))) return true;
-  const name = basenameOf(filePath);
-  return DENIED_FILE_PATTERNS.some((pattern) => pattern.test(name));
+function notInListReason(
+  written: string,
+  scope: FetchScope,
+  list: readonly CandidateFile[],
+  roots: readonly string[],
+): string {
+  const head = `${JSON.stringify(written)} 不在这次可取的清单里（当前取件范围 ${JSON.stringify(scope)}）。`;
+  if (list.length === 0) {
+    // 清单为空时**必须把根写出来**：这是"为什么一个文件都没有"的唯一线索。
+    // 有清单的时候不写 —— 那时模型的正确动作是照清单写假名，根在它那儿不是可操作的信息。
+    return (
+      head +
+      `这次**一个别的文件都取不到**（允许的根：${roots.length === 0 ? '（无）' : roots.join('、')}）—— ` +
+      '「可能相关的文件」清单是空的（多半是没打开文件夹、或工作区里没有可读的代码文件）。' +
+      '请基于锚点自身的原文作答；要放开范围，把设置 `anchorExplain.fetchScope` 改成 `"any"`。'
+    );
+  }
+  // 只有一个候选时不举两个例子（`例如 \`f1\`、\`f1\`` 读起来像出了 bug）
+  const example =
+    list.length === 1 ? `\`${list[0]!.alias}\`` : `\`${list[0]!.alias}\`、\`${list[1]!.alias}\``;
+  return (
+    head +
+    `这次能取的只有清单里那 ${list.length} 个文件，\`path\` 请写它们的**假名**（例如 ${example}）。` +
+    '不要自己拼路径 —— 拼出来的多半不存在，白费一轮。' +
+    '要读清单之外的文件：把设置 `anchorExplain.fetchScope` 改成 `"any"`（不限，写绝对路径即可），' +
+    '或把 `anchorExplain.maxCandidateFiles` 调大（清单能列更多）。'
+  );
 }
+
 
 /** 已经取过的区间。用于规则 4 的去重 —— 连同**内容**一起存，好回灌给模型。 */
 export interface FetchedSpan {
@@ -317,49 +343,69 @@ export function validateContextRequest(
       resolvedFile = anchorFile;
     } else if (policy.scope === 'off') {
       return reject(`只允许取锚点所在的文件（${anchorFile}），收到 ${JSON.stringify(span.path)}`);
+    } else if (policy.scope === 'any') {
+      /**
+       * 不限档：走**真实路径**（这是它存在的唯一理由），黑名单照挡。
+       * 这一档**不给清单** —— 整个文件系统列不完，改为让模型用 `find_files` 自己查（S9a-fix10）。
+       */
+      const resolved = resolveUnrestrictedPaths(span.path, anchorFile, policy.roots);
+      const denied = resolved.find((candidate) => isDeniedPath(candidate));
+      if (denied !== undefined) {
+        // 密钥/依赖/构建产物：不读，并说清是哪一类，免得模型反复试
+        return reject(`${basenameOf(denied)} 按约定不读（密钥、依赖或构建产物）`);
+      }
+      if (resolved.length === 0) {
+        return reject(`${JSON.stringify(span.path)} 解析不出可读的路径。`);
+      }
+      resolvedFile = resolved[0]!;
     } else {
       /**
-       * 解析成绝对路径，并且**只用闸门批准过的那一个**（候选里剩下的同样都在允许范围内）。
+       * `related` / `same-dir`：**清单即范围**（S9a-fix10，D119）。
        *
-       * `any` 档不过滤根（D117）—— 那是它存在的唯一理由：写绝对路径就按绝对路径读。
-       * 黑名单不在这条路上分档：它与"范围"是两件事，见下面的 `isDeniedPath`。
+       * @anchor 为什么改成"只认清单"：用户实测里模型连写 5 个不存在的路径（`../Inc/transport.h`、
+       *         `../Src/esc.h` …），而它想要的那几个文件**清单里全都写着**（第 1/2/3/5 条）。
+       *         根因不是范围太窄，是"清单"与"能取的集合"**本来是两套东西** ——
+       *         清单是提示、闸门按根判，两者交集之外的写法都能过闸门，模型自然一直猜。
+       *         现在把两者合成一件事：**闸门批准的就是清单里那几条**，
+       *         清单外的写法一律拒，并且回灌里明说"这次只有这几个"。
+       *
+       *         三种写法都认，前提都是**落回清单里的某一条**：
+       *         假名（`f3`，正路）／标签照抄／按锚点目录算的相对写法（解析回清单即可）。
+       *         这样既不奖励猜路径，也不至于"抄错一个字符就白烧一轮"。
        */
-      const candidates =
-        policy.scope === 'any'
-          ? resolveUnrestrictedPaths(span.path, anchorFile, policy.roots)
-          : resolveCandidatePaths(span.path, anchorFile, policy.roots);
-      if (candidates.length === 0) {
-        /**
-         * 拒绝文案要说**三件**事（D117）：边界在哪（档位 + 实际生效的根）、
-         * 怎么改写法、以及范围真的不够时该怎么办。
-         *
-         * @anchor 原来只有中间那件"怎么写相对路径"。用户在真工程上拿到的就是那句，而它
-         *         **恰好把线索引到反方向**：它说"按锚点文件所在目录算"，可锚点不在工作区里时
-         *         那条规则根本不生效 —— 照着它改写法只会一次次被拒。档位与根写出来，
-         *         "为什么它说按锚点目录算却读不到"当场就自明（D67「报错要说实话」的同一条纪律）。
-         *         第一句以句号收尾：进度通知只取第一句（`briefReason`），边界信息必须落在第一句里。
-         */
-        return reject(
-          `${JSON.stringify(span.path)} 不在允许的范围内（当前取件范围 ${JSON.stringify(policy.scope)}）。` +
-            `允许的根：${policy.roots.length === 0 ? '（无）' : policy.roots.join('、')}。` +
-            '只能取锚点所在的文件，或者允许范围内的其他文件 —— 写相对路径时按锚点文件所在目录算，' +
-            '例如 "ring_buffer.h" 或 "../Inc/dshot_dma.h"。' +
-            (policy.scope === 'any'
-              ? ''
-              : '锚点不在工作区里时，范围就是锚点所在的这一层；要读更远的地方，' +
-                '把设置 `anchorExplain.fetchScope` 改成 "any"。'),
-        );
-      }
-      const target = candidates[0]!;
+      const list = policy.candidates ?? [];
 
-      if (policy.scope === 'same-dir' && !samePath(dirnameOf(target), dirnameOf(anchorFile))) {
-        return reject(
-          `当前设置下只允许取锚点所在目录（${dirnameOf(anchorFile)}）里的文件，收到 ${target}`,
-        );
+      /**
+       * 两种写法都认，前提都是**落回清单里的某一条**。
+       *
+       * 顺序是刻意的：**先确定性解析，再用模糊匹配兜底**。
+       * `resolveCandidatePaths` 给出的答案是确定的（同一个写法任何时候都解析到同一个绝对路径），
+       * 而"清单里的标签"可能带 `..`、也可能与别的条目末尾重名 ——
+       * 让一个模糊匹配抢先决定"读哪个文件"，是这个闸门最不该有的行为。
+       */
+      let target: string | undefined;
+      for (const candidate of resolveCandidatePaths(span.path, anchorFile, policy.roots)) {
+        const found = list.find((c) => samePath(c.path, candidate));
+        if (found !== undefined) {
+          target = found.path;
+          break;
+        }
       }
+
+      if (target === undefined) {
+        // 假名（`f3`）或把清单里的标签照抄回来 —— 抄对了也认，不让"抄错一个字符"变成一次白烧
+        const hit = findCandidate(list, span.path);
+        if (hit !== undefined && 'ambiguous' in hit) {
+          return reject(
+            `${JSON.stringify(span.path)} 在清单里对上了多条（${hit.ambiguous.map((c) => `\`${c.alias}\``).join('、')}）。` +
+              `请直接写假名，例如 \`${hit.ambiguous[0]!.alias}\`。`,
+          );
+        }
+        if (hit !== undefined) target = hit.entry.path;
+      }
+
+      if (target === undefined) return reject(notInListReason(span.path, policy.scope, list, policy.roots));
       if (isDeniedPath(target)) {
-        // 密钥/依赖/构建产物：不读，并说清是哪一类，免得模型反复试。
-        // `any` 档也照样挡（D117）：那是"不许把密钥发到远端模型"的底线，不是范围问题。
         return reject(`${basenameOf(target)} 按约定不读（密钥、依赖或构建产物）`);
       }
       resolvedFile = target;

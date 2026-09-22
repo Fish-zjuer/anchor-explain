@@ -14,6 +14,7 @@
 
 import { coerceBBox, isCodeLocation, isPDFLocation, isValidBBox } from '@anchor/core';
 import type { Anchor, ContextRequestLogEntry, ExplanationResult, Location } from '@anchor/core';
+import type { TokenUsage } from './orchestrator/providers/types.ts';
 import type { StartModel } from './start/startModel.ts';
 
 /** §5.3 会话状态。`done`/`error` 都会让 `anchorExplain.walkthroughActive` 落回 false（§4.2）。 */
@@ -85,7 +86,18 @@ export type HostToSidebar =
    * 被 A−/A+ 或快捷键改掉 —— 面板收到就更新 `--anchor-font-scale`。`ui:ready` 重放之后
    * 宿主会补发一条当前的值（`SidebarPanel` 存着它），重建的面板因此不会丢样式。
    */
-  | { type: 'ui:fontScale'; scale: number };
+  | { type: 'ui:fontScale'; scale: number }
+  /**
+   * 【D120 新增】本次讲解累计的 token 用量，显示在面板**最下面**那一行。
+   *
+   * 为什么走消息而不是塞进 `session:update`：它是**几轮模型调用累出来的**，
+   * 而 `session:update` 只在讲解结束时有值 —— 讲解跑几十秒的过程中，
+   * 用户盯着面板时就能看见数字在涨，那是"它还在动"的一条额外证据。
+   *
+   * `null` = 这次一个 token 数都没拿到（端点没返回 `usage`），面板据此说"未提供"
+   * 而不是画一排 0（把"不知道"写成 0 是在编一个看起来很确定的数）。
+   */
+  | { type: 'ui:usage'; usage: TokenUsage | null };
 
 /**
  * 【新增，非追加之外无改动】`ui:ready` 是 S1 加的握手消息。

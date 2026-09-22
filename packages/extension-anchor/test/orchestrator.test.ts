@@ -17,7 +17,8 @@ import { parseContextRequest } from '../src/orchestrator/toolSchema.ts';
 import { createOrchestrator } from '../src/orchestrator/Orchestrator.ts';
 import type { OrchestratorAdapter } from '../src/orchestrator/Orchestrator.ts';
 import type { ContextFetchPolicy } from '../src/orchestrator/validateContextRequest.ts';
-import type { AssistantTurn, ChatMessage, ChatProvider, ChatRequest } from '../src/orchestrator/providers/types.ts';
+import type { CandidateFile } from '../src/relatedFiles.ts';
+import type { AssistantTurn, ChatMessage, ChatProvider, ChatRequest, TokenUsage } from '../src/orchestrator/providers/types.ts';
 
 const FILE = 'C:\\repo\\test\\fixtures\\main.c';
 const DOC_LINES = 75;
@@ -67,17 +68,27 @@ interface Harness {
   logger: ReturnType<typeof createContextRequestLogger>;
 }
 
+/** 清单里的一条（S9a-fix10）。假名是给模型写的，`path` 是真身，`label` 只用于辨认。 */
+function cand(alias: string, path: string, label?: string): CandidateFile {
+  return { alias, path, label: label ?? path.split('/').slice(-2).join('/') };
+}
+
 /** 把一个 turn 列表变成 ChatProvider；用完之后再被调用就抛（能抓住"多问了一轮"） */
 function harness(
   turns: readonly AssistantTurn[],
   opts: {
     maxFetchRounds?: number;
     fetchPolicy?: ContextFetchPolicy;
-    candidates?: readonly string[];
+    /** 清单（S9a-fix10 起它是**范围本身**，不只是提示） */
+    candidates?: readonly CandidateFile[];
     /** 换掉适配器的取件实现（D96：模拟"文件不存在"这类读取失败） */
     fetchImpl?: (req: ContextRequest) => Promise<string>;
     /** PDF 形态（D98）：能力矩阵换 page_range、outline 给 pageCount、PDF 位置才合法 */
     pdf?: boolean;
+    /** `find_files` 的回话池（D119）：只在 `any` 档有用 */
+    workspaceFiles?: readonly string[];
+    /** token 用量的落点（D120） */
+    onUsage?: (total: TokenUsage) => void;
   } = {},
 ): Harness {
   const requests: ChatRequest[] = [];
@@ -116,6 +127,8 @@ function harness(
       logger,
       ...(opts.fetchPolicy ? { fetchPolicy: opts.fetchPolicy } : {}),
       ...(opts.candidates ? { candidateFiles: opts.candidates } : {}),
+      ...(opts.workspaceFiles ? { workspaceFiles: opts.workspaceFiles } : {}),
+      ...(opts.onUsage ? { onUsage: opts.onUsage } : {}),
     })(anchor);
 
   return { provider, requests, fetches, adapter, run, logger };
@@ -208,10 +221,12 @@ test('取件被拒（漫游到别的文件）：**不抛错**，回灌拒绝原�
   assert.match(toolMsg?.content ?? '', /请基于现有信息作答/);
 });
 
-test('D96：取件的文件不存在（ENOENT）→ 不中止，回灌失败说明 + 候选清单，模型改用正确名字后照常出讲解', async () => {
-  // 用户实测的形状：模型把构建目录当前缀拼进 path，字符串解析能过闸门，文件却在磁盘上不存在
+test('D119：写在清单外的路径（构建目录那种）→ 在闸门就被拒，回灌里给出清单与正确写法', async () => {
+  // 用户实测的形状：模型把构建目录当前缀拼进 path。S9a-fix10 之前它会**过闸门**，
+  // 然后在适配器里以 ENOENT 炸出来（D96 才没让它炸穿）。现在它在闸门就停下 ——
+  // 那一轮仍然算白烧，但代价从"一次真实读取 + 一段失败说明"降到一句拒绝，
+  // 而且回灌里直接写着**正确的写法**（照清单写假名），它下一轮不必再猜。
   const MISSING = 'C:\\repo\\test\\_build_tmp\\transport_uart.c';
-  let call = 0;
   const h = harness(
     [
       toolTurn({ request_type: 'file', start: 1, end: 30, reason: '看发送函数', path: MISSING }, 'call_bad'),
@@ -219,8 +234,53 @@ test('D96：取件的文件不存在（ENOENT）→ 不中止，回灌失败说�
       { content: validJson(), toolCalls: [] },
     ],
     {
-      fetchPolicy: { scope: 'related', roots: ['C:\\repo\\test'], maxLines: 400 },
-      candidates: ['ring_buffer.h', 'uart.h'],
+      fetchPolicy: {
+        scope: 'related',
+        roots: ['C:\\repo\\test'],
+        maxLines: 400,
+        candidates: [
+          cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
+          cand('f2', 'C:/repo/test/fixtures/uart.h', 'uart.h'),
+        ],
+      },
+      fetchImpl: (req) => Promise.resolve(`文件：${req.params.path}\n行 1-10：\n 1\tvoid uart_send(uint8_t b);`),
+    },
+  );
+  const result = await h.run();
+
+  assert.equal(result.summary, '这是一段出队逻辑。', '被拒不等于整次讲解失败（拒绝不抛错，§3.2）');
+  const feedback = (h.requests[1]?.messages ?? []).find((m: ChatMessage) => m.role === 'tool');
+  assert.ok(feedback, '拒绝也要以 role=tool 回灌，不能抛出循环');
+  assert.match(feedback?.content ?? '', /请求被拒绝/);
+  assert.match(feedback?.content ?? '', /_build_tmp/, '要点名它写的那个路径（形状 `C:\\repo\\…\\…`）');
+  assert.match(feedback?.content ?? '', /transport_uart\.c/, '要点名它写的那个文件');
+  assert.match(feedback?.content ?? '', /清单里那 2 个文件/, '要说清这次一共几个可选');
+  assert.match(feedback?.content ?? '', /假名/);
+  assert.match(feedback?.content ?? '', /anchorExplain\.fetchScope/, '给出路：改档位或调大清单');
+  assert.equal(h.fetches.length, 1, '被拒的那次**不该**走到适配器（这是"清单即范围"的直接体现）');
+});
+
+test('D96：清单里的文件在扫描之后读不到（放行 ≠ 读得到）→ 不中止，回灌失败说明 + 清单', async () => {
+  // 清单是**扫描时**的结果，而文件可能在扫描之后被删掉、或根本没有读权限 ——
+  // 那道缝隙依然存在，这一条守着它。（另外：清单可能来自一份过期的缓存，
+  // 所以"放行 ≠ 读得到"这条纪律不因为闸门收紧而失效。）
+  let call = 0;
+  const h = harness(
+    [
+      toolTurn({ request_type: 'file', start: 1, end: 30, reason: '看发送函数', path: 'uart.h' }, 'call_bad'),
+      toolTurn({ request_type: 'file', start: 1, end: 10, reason: '看另一个', path: 'ring_buffer.h' }, 'call_good'),
+      { content: validJson(), toolCalls: [] },
+    ],
+    {
+      fetchPolicy: {
+        scope: 'related',
+        roots: ['C:\\repo\\test'],
+        maxLines: 400,
+        candidates: [
+          cand('f1', 'C:/repo/test/fixtures/uart.h', 'uart.h'),
+          cand('f2', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
+        ],
+      },
       fetchImpl: (req) => {
         call += 1;
         if (call === 1) {
@@ -236,13 +296,13 @@ test('D96：取件的文件不存在（ENOENT）→ 不中止，回灌失败说�
   const feedback = (h.requests[1]?.messages ?? []).find((m: ChatMessage) => m.role === 'tool');
   assert.ok(feedback, '失败也要以 role=tool 回灌，不能抛出循环');
   assert.match(feedback?.content ?? '', /取件失败/);
-  assert.match(feedback?.content ?? '', /_build_tmp.transport_uart\.c/, '要点名解析出来的那个路径');
+  assert.match(feedback?.content ?? '', /fixtures\\\\uart\.h|fixtures\/uart\.h/, '要点名解析出来的那个路径');
   assert.match(feedback?.content ?? '', /不要猜路径/);
-  assert.match(feedback?.content ?? '', /- uart\.h/, '候选清单原样列出（模型才有活路）');
-  assert.match(feedback?.content ?? '', /- ring_buffer\.h/);
+  assert.match(feedback?.content ?? '', /`f1`/, '清单要再给一遍（写假名），模型才有活路');
+  assert.match(feedback?.content ?? '', /`f2`/);
 
   // 失败的那次**不消耗**取件预算：第二次取件照常放行（失败没有内容可回灌，不该罚它）
-  assert.equal(h.fetches.length, 2);
+  assert.equal(h.fetches.length, 2, '两次都真的走到适配器了');
   // 日志里必须留得住这次失败（§7：每次取件都要落日志，包括没读成的）
   const failed = h.logger.entries().find((e) => e.accepted === false && (e.rejectReason ?? '').includes('文件打不开'));
   assert.ok(failed, '读取失败要进取件日志');
@@ -254,7 +314,14 @@ test('D96：取件连续打不开也会收场，报错里说清"打不开 N 次"
   );
   const h = harness(forever, {
     maxFetchRounds: 1,
-    fetchPolicy: { scope: 'related', roots: ['C:\\repo\\test'], maxLines: 400 },
+    // 清单是**扫描时**的结果，而"放行 ≠ 读得到"（D96）：文件可能在扫描之后被删掉、
+    // 或者根本没有读权限。所以这里刻意给一份"指向不存在文件"的清单来模拟那个缝隙。
+    fetchPolicy: {
+      scope: 'related',
+      roots: ['C:\\repo\\test'],
+      maxLines: 400,
+      candidates: Array.from({ length: 8 }, (_, i) => cand(`f${i + 1}`, `C:/repo/test/nope_${i}.h`, `nope_${i}.h`)),
+    },
     fetchImpl: () => Promise.reject(new Error('ENOENT: no such file or directory, open \'C:\\repo\\test\\nope.h\'')),
   });
 
@@ -424,7 +491,17 @@ test('ModelRouter：没有原文 / 要看图 → 升级，并说明理由', () =
 // 输出契约仍写死"必须与锚点同一个文件"（连 repair 也说这句）、
 // 内部闸门收绝对路径而第二道闸门收模型原样写的相对路径（必然互相打架）。
 
-const RELATED: ContextFetchPolicy = { scope: 'related', roots: ['C:\\repo'], maxLines: 60 };
+const RELATED: ContextFetchPolicy = {
+  scope: 'related',
+  roots: ['C:\\repo'],
+  maxLines: 60,
+  // S9a-fix10（D119）：`related` 档下**清单就是范围** —— 策略里没有清单，就等于"一个别的文件都取不到"。
+  // `ring_buffer.h` 按锚点目录解析成 `C:/repo/test/fixtures/ring_buffer.h`，所以清单里要有这一条。
+  candidates: [
+    cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
+    cand('f2', 'C:/repo/test/fixtures/config.h', 'config.h'),
+  ],
+};
 /**
  * 锚点文件同目录的兄弟文件（`ring_buffer.h` 解析出来的绝对路径）。
  * **分隔符是 `/`**：core 的路径函数（`joinPath`/`dirnameOf`）刻意统一输出 `/` —— 与 `samePath`
@@ -506,7 +583,13 @@ test('S9a 修复：跨文件时 system / user / repair 三处口径一致（不�
       { content: JSON.stringify({ summary: '', confidence: 2, steps: [] }), toolCalls: [] },
       { content: validJson(), toolCalls: [] },
     ],
-    { fetchPolicy: RELATED, candidates: ['ring_buffer.h', 'config.h'] },
+    {
+      fetchPolicy: RELATED,
+      candidates: [
+        cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h'),
+        cand('f2', 'C:/repo/test/fixtures/config.h', 'config.h'),
+      ],
+    },
   );
   await h.run();
 
@@ -526,7 +609,9 @@ test('S9a 修复：跨文件时 system / user / repair 三处口径一致（不�
 });
 
 test('S9a 修复：候选清单只在跨文件时给（不然等于邀请它去撞拒绝）', async () => {
-  const h = harness([{ content: validJson(), toolCalls: [] }], { candidates: ['ring_buffer.h'] });
+  const h = harness([{ content: validJson(), toolCalls: [] }], {
+    candidates: [cand('f1', 'C:/repo/test/fixtures/ring_buffer.h', 'ring_buffer.h')],
+  });
   await h.run();
 
   const user = String(h.requests[0]?.messages[1]?.content ?? '');
@@ -668,4 +753,92 @@ test('D98 PDF：system prompt 换释义面（文档讲解生成器），user pro
   assert.match(system, /"page"/, '输出契约教的是 PDF 位置形状');
   assert.match(system, /照抄/);
   assert.match(user, /文件路径：C:\/repo\/docs\/sample\.pdf/, 'page_range 的 path 只有这里能抄');
+});
+
+// ─────────────────────────────────────────────────────────────
+// D119：`find_files`（only in `any`）+ D120：token 累计
+// ─────────────────────────────────────────────────────────────
+
+test('D119 any：`find_files` 只列文件、不占取件轮次，回话里给的是**真实路径**', async () => {
+  const h = harness(
+    [
+      { content: '', toolCalls: [{ id: 'call_find', name: 'find_files', arguments: JSON.stringify({ keyword: 'transport', reason: '找找有哪些相关文件' }) }] },
+      { content: validJson(), toolCalls: [] },
+    ],
+    {
+      fetchPolicy: { scope: 'any', roots: [], maxLines: 400 },
+      workspaceFiles: [
+        'C:/fw/Driver/transport/Inc/transport.h',
+        'C:/fw/Driver/transport/Src/transport_uart.c',
+        'C:/fw/Core/Src/main.c',
+        'C:/fw/.env', // 黑名单：列表里也不给
+      ],
+    },
+  );
+  await h.run();
+
+  const toolMsg = (h.requests[1]?.messages ?? []).find((m: ChatMessage) => m.role === 'tool');
+  assert.match(toolMsg?.content ?? '', /transport\.h/);
+  assert.match(toolMsg?.content ?? '', /transport_uart\.c/);
+  assert.doesNotMatch(toolMsg?.content ?? '', /main\.c/, '关键词没命中的不列');
+  assert.doesNotMatch(toolMsg?.content ?? '', /\.env/, '黑名单文件不进列表（`any` 档也照挡）');
+  assert.equal(h.logger.entries().length, 0, '列文件不是"读了哪个文件"，不该进取件日志');
+});
+
+test('D119：非 any 档调用 `find_files` 会被拒，并告诉它该走清单', async () => {
+  const h = harness(
+    [
+      { content: '', toolCalls: [{ id: 'call_find', name: 'find_files', arguments: JSON.stringify({ keyword: 'x', reason: '找文件' }) }] },
+      { content: validJson(), toolCalls: [] },
+    ],
+    {
+      fetchPolicy: RELATED,
+      workspaceFiles: ['C:/repo/test/fixtures/ring_buffer.h'],
+    },
+  );
+  await h.run();
+
+  const toolMsg = (h.requests[1]?.messages ?? []).find((m: ChatMessage) => m.role === 'tool');
+  assert.match(toolMsg?.content ?? '', /只在取件范围为 "any" 时可用/, '清单驱动的档位不该能绕过清单去列文件');
+  assert.match(toolMsg?.content ?? '', /假名/);
+});
+
+test('D119 any：`find_files` 缺 reason 时当拒绝处理，不抛', async () => {
+  const h = harness(
+    [
+      { content: '', toolCalls: [{ id: 'call_find', name: 'find_files', arguments: JSON.stringify({ keyword: 'x' }) }] },
+      { content: validJson(), toolCalls: [] },
+    ],
+    { fetchPolicy: { scope: 'any', roots: [], maxLines: 400 }, workspaceFiles: ['C:/fw/a.c'] },
+  );
+  await h.run();
+  const toolMsg = (h.requests[1]?.messages ?? []).find((m: ChatMessage) => m.role === 'tool');
+  assert.match(toolMsg?.content ?? '', /合法 JSON|reason/);
+});
+
+test('D120：onUsage 收到的是**累计值**（每轮模型调用都加进来）', async () => {
+  const seen: TokenUsage[] = [];
+  const h = harness(
+    [
+      {
+        content: '',
+        toolCalls: [{ id: 'call_1', name: 'fetch_context', arguments: JSON.stringify({ request_type: 'file', start: 1, end: 10, reason: '看头部' }) }],
+        usage: { input: 100, output: 10, cachedInput: 80, uncachedInput: 20 },
+      },
+      { content: validJson(), toolCalls: [], usage: { input: 300, output: 40, cachedInput: 100, uncachedInput: 200 } },
+    ],
+    { onUsage: (t) => seen.push(t) },
+  );
+  await h.run();
+
+  assert.equal(seen.length, 2, '两次模型调用各报一次');
+  assert.deepEqual(seen[0], { input: 100, output: 10, cachedInput: 80, uncachedInput: 20 });
+  assert.deepEqual(seen[1], { input: 400, output: 50, cachedInput: 180, uncachedInput: 220 }, '第二次是累计，不是单轮');
+});
+
+test('D120：端点不给 usage 时 onUsage 一次都不被调用（面板会说"未提供"）', async () => {
+  const seen: TokenUsage[] = [];
+  const h = harness([{ content: validJson(), toolCalls: [] }], { onUsage: (t) => seen.push(t) });
+  await h.run();
+  assert.equal(seen.length, 0);
 });

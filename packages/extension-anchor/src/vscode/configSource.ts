@@ -37,6 +37,7 @@ export async function readAnchorConfig(context: vscode.ExtensionContext): Promis
     temperature: settings.get('temperature'),
     style: settings.get('style'),
     fetchScope: settings.get('fetchScope'),
+    maxCandidateFiles: settings.get('maxCandidateFiles'),
   };
 
   const config = resolveConfig(raw);

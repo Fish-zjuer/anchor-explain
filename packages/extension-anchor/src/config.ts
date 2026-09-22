@@ -13,6 +13,7 @@ import { DEFAULT_LANGUAGE, DEFAULT_STYLE, coerceLanguage, coerceStyle, describeL
 import type { ExplainLanguage, ExplainStyle } from './prompts/index.ts';
 import { MAX_FETCH_LINES_CEILING, DEFAULT_MAX_FETCH_LINES } from './orchestrator/validateContextRequest.ts';
 import type { FetchScope } from './orchestrator/validateContextRequest.ts';
+import { MAX_CANDIDATES } from './relatedFiles.ts';
 
 /** §6 的 `providers[id]`。`apiKey` 允许留空 —— 那表示"去 SecretStorage 取"。 */
 export interface ProviderSettings {
@@ -49,6 +50,15 @@ export interface AnchorConfig {
    * 只看锚点文件讲不出"数据从哪来、给谁用"（用户的原话）。
    */
   fetchScope: FetchScope;
+  /**
+   * 一次给模型列几条候选文件（S9a-fix10）。
+   *
+   * @anchor 为什么它是设置项而不是常量：清单**就是**可取范围（D119），于是它的长度
+   *         直接等于"这次最多能读到几个别的文件"。写死的 40 在 CubeMX 那种工程里
+   *         会被 STM32 官方库吃掉大半（实测 40 条里 25 条是 `Drivers/CMSIS/**`），
+   *         用户自己的文件反而挤不进去 —— 那种工程就该把它调大。
+   */
+  maxCandidateFiles: number;
   temperature?: number;
 }
 
@@ -146,6 +156,8 @@ export interface RawConfigInputs {
   language?: unknown;
   /** `anchorExplain.fetchScope` 的原始值（可空） */
   fetchScope?: unknown;
+  /** `anchorExplain.maxCandidateFiles` 的原始值（可空，S9a-fix10） */
+  maxCandidateFiles?: unknown;
 }
 
 export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
@@ -168,12 +180,28 @@ export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
     // 语言同理（D97）：写错一个词回落中文，而不是让讲解不可用
     language: coerceLanguage(raw.language),
     fetchScope: coerceFetchScope(raw.fetchScope),
+    maxCandidateFiles: clampCandidateFiles(raw.maxCandidateFiles),
   };
   if (temperature !== undefined) config.temperature = temperature;
   return config;
 }
 
 export const DEFAULT_FETCH_SCOPE: FetchScope = 'related';
+
+/** 清单条数的默认值与硬上限（S9a-fix10）。默认值与 `relatedFiles.ts` 的 `MAX_CANDIDATES` 同源。 */
+export const DEFAULT_MAX_CANDIDATE_FILES = MAX_CANDIDATES;
+export const MAX_CANDIDATE_FILES_CEILING = 400;
+
+/**
+ * 清单条数的边界。**下限 1**：0 条等于"跨文件全关"，那是 `off` 档的语义，
+ * 不该由一个数字顺手达成（两个地方都能关，用户就分不清是哪一处关的）。
+ */
+export function clampCandidateFiles(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_MAX_CANDIDATE_FILES;
+  const n = Math.trunc(raw);
+  if (n < 1) return 1;
+  return Math.min(n, MAX_CANDIDATE_FILES_CEILING);
+}
 
 /** 只有四个合法值；写错一个词不该让讲解不可用，一律退化成默认档。 */
 export function coerceFetchScope(raw: unknown): FetchScope {
@@ -206,7 +234,7 @@ export function describeConfig(config: AnchorConfig): string {
   // 风格用 describeStyle 的人话名（D93）：档位 id 是英文，"一眼看出当前是哪档"靠的是中文。
   // 语言只在非默认时出现（D97）：默认中文是常态，每一行状态都带"输出语言 中文"反而是噪音。
   const language = config.language === 'en' ? `；输出语言 ${describeLanguage(config.language)}` : '';
-  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${describeFetchScope(config.fetchScope)}（${config.fetchScope}）${language}`;
+  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${describeFetchScope(config.fetchScope)}（${config.fetchScope}，清单 ${config.maxCandidateFiles} 条）${language}`;
 }
 
 /**

@@ -15,7 +15,7 @@
  */
 
 import { AnchorError } from '@anchor/core';
-import type { AssistantTurn, ChatMessage, ChatProvider, ChatRequest, ToolCall } from './types.ts';
+import type { AssistantTurn, ChatMessage, ChatProvider, ChatRequest, TokenUsage, ToolCall } from './types.ts';
 
 export interface OpenAICompatibleOptions {
   baseUrl: string;
@@ -66,6 +66,40 @@ function readToolCalls(raw: unknown): ToolCall[] {
 function snippet(text: string, max = 300): string {
   const one = text.replace(/\s+/g, ' ').trim();
   return one.length > max ? `${one.slice(0, max)}…` : one;
+}
+
+/** 只认数字；端点偶尔把 token 数写成字符串或 null，那种一律当"没给"。 */
+function num(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * 读 `usage`（D120）。**只读，不猜**：端点没给就返回 `undefined`。
+ *
+ * @anchor 两种缓存字段形状都要认 —— 实测里各家不一样：
+ *   - DeepSeek：`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`（两个都给）
+ *   - OpenAI：  `prompt_tokens_details.cached_tokens`（只给命中），未命中 = 输入 − 命中
+ * 都拿不到时 `cachedInput` / `uncachedInput` 留 `undefined`，由展示层写"未提供"。
+ * 把"不知道"写成 0 会编出一个看起来很确定的数（D67 的同一条纪律）。
+ */
+function readUsage(raw: unknown): TokenUsage | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const u = raw as Record<string, unknown>;
+  const input = num(u.prompt_tokens);
+  const output = num(u.completion_tokens);
+  const hit = num(u.prompt_cache_hit_tokens);
+  const miss = num(u.prompt_cache_miss_tokens);
+  const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
+  const cached = hit ?? num(details?.cached_tokens);
+  const uncached = miss ?? (cached !== undefined && input !== undefined ? input - cached : undefined);
+
+  if (input === undefined && output === undefined && cached === undefined) return undefined;
+  return {
+    ...(input !== undefined ? { input } : {}),
+    ...(output !== undefined ? { output } : {}),
+    ...(cached !== undefined ? { cachedInput: cached } : {}),
+    ...(uncached !== undefined ? { uncachedInput: uncached } : {}),
+  };
 }
 
 export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): ChatProvider {
@@ -123,9 +157,11 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): C
         throw new AnchorError('PROVIDER_ERROR', `模型端点的返回里没有 choices[0].message：${snippet(text)}`);
       }
 
+      const usage = readUsage((payload as { usage?: unknown }).usage);
       return {
         content: typeof message.content === 'string' ? message.content : '',
         toolCalls: readToolCalls(message.tool_calls),
+        ...(usage !== undefined ? { usage } : {}),
       };
     },
   };

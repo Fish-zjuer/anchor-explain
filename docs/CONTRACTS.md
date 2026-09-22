@@ -363,12 +363,31 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
    （`../Inc/dshot_dma.h`，`candidateDisplayName`），不是工作区相对路径 ——
    后者被闸门按锚点目录解析会得到一个不存在的路径，白烧一轮（D96 的 ENOENT 就是这个形状）。
 
+**S9a-fix10（D119）：清单即范围 + 假名。** 用户拿自己的 CubeMX 工程实测：6 次取件只成 1 次，
+另外 5 次 `ENOENT`，**而它想要的那几个文件清单里全都写着**（第 1/2/3/5 条）——
+它在套 CubeMX 惯例（先试 `../Inc/` 再试 `../Src/`），不是在抄清单。
+根因是"清单"与"能取的集合"**本来是两套东西**：清单是提示、闸门按根判，
+交集之外的写法都能过闸门，模型自然一直猜。现在合成一件事：
+
+3. **清单就是可取范围，一条不差**。`ContextFetchPolicy.candidates` 与 **prompt 里那份清单是同一个数组**；
+   它的过滤判据（`roots` + 黑名单）与闸门**同一份**（`isDeniedPath` 因此搬到 `fetchDeny.ts` 共用）。
+   `related` / `same-dir` 档下，只有清单里的文件取得动；清单外的一律拒。
+   清单位置在 `relatedFiles.ts` 的 `buildCandidateFiles`（纯函数）。
+4. **清单给假名**（`f1`、`f2`…），真实路径不出现在 prompt 里。三种写法都认，**前提都是落回清单里某一条**：
+   ① 假名（正路）；② 标签原样照抄；③ 按锚点目录算的相对写法（`resolveCandidatePaths` 解析回清单即可）。
+   **顺序是先确定性解析、再用后缀模糊匹配兜底** —— 模糊匹配不许抢先决定"读哪个文件"；
+   后缀命中多条时返回"对上了多条"，让模型写假名（把选择权还给它）。
+5. **`any` 档不给清单**（整个文件系统列不完），改为多给一个工具 `find_files`（见 §8）让模型自己查。
+
 **路径解析**：相对路径**先按锚点文件所在目录**解析，再按各个 root；绝对路径只做归一化；
 **落在所有 root 之外的候选一律丢掉**（闸门批准的就是适配器会读的 —— 不给自己留第二条路）；
-`any` 档是唯一不过滤的档（它存在的全部理由）。
-**拒绝文案（D117）**：范围不足时必须说清**当前档位**与**实际生效的根**，并给出下一步
-（`anchorExplain.fetchScope` 可以改成 `any`）—— 只回一句"写相对路径时按锚点文件所在目录算"
-会把线索引到反方向：锚点不在工作区里时那条规则不生效，照它改写法只会一次次被拒（D67 的同一条纪律）。
+`any` 档是唯一不过滤的档（它存在的全部理由）。S9a-fix10 起 `related` / `same-dir` 还多一道：
+解析出来的路径**必须命中清单里的某一条**，否则照样拒。
+
+**拒绝文案（D117 → D119 改写）**：范围不足时必须说清四件事 —— **当前档位**、
+**这次一共有几个可选**、**正确写法（假名）**、以及**真不够用时往哪调**
+（`anchorExplain.fetchScope` = `any`，或把 `anchorExplain.maxCandidateFiles` 调大）。
+**清单为空时**改报「一个别的文件都取不到 + 允许的根」—— 那一刻根是"为什么一个都没有"的唯一线索。
 **第一句以句号收尾且带上档位**：进度通知只取第一句（`briefReason`）。
 **两道闸门的分工**：名字与范围这类**形状**判断在 `validateContextRequest`（同步纯函数，可单测）；
 大小与二进制这类**内容**判断在适配器（那里才有字节）。
@@ -969,7 +988,8 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 | 配置 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `anchorExplain.maxFetchLines` | number | `400` | **S9a 修新增（D71）**。单次取件最多几行。**超出不会拒绝，只会截到这个数**（回灌内容头部写着真实行范围）。上限 2000；与 `DEFAULT_MAX_FETCH_LINES`（闸门侧的默认值）**同一个来源**，提示词里那句也用它 |
-| `anchorExplain.fetchScope` | `"related"` \| `"same-dir"` \| `"off"` \| `"any"` | `"related"` | **S9a 新增（D66），`"any"` 由 D117 加**。允许读锚点文件之外哪些文件（四档的边界见 §3.2 那张表）。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖、构建产物目录**始终不读**（`"any"` 也挡） |
+| `anchorExplain.fetchScope` | `"related"` \| `"same-dir"` \| `"off"` \| `"any"` | `"related"` | **S9a 新增（D66），`"any"` 由 D117 加**。允许读锚点文件之外哪些文件（四档的边界见 §3.2 那张表）。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖、构建产物目录**始终不读**（`"any"` 也挡）。**S9a-fix10（D119）起它同时决定 prompt 里那份清单**（清单即范围）；命令 `Anchor: 选择这次的取件范围` 可以只给本次会话换一档（内存覆盖，重载窗口还原） |
+| `anchorExplain.maxCandidateFiles` | number | `40` | **S9a-fix10 新增（D119）**。一次给模型列几条候选文件。它同时是**这次能读到几个别的文件**的上限（清单即范围）。CubeMX / STM32 这类工程里官方库会吃掉大半名额，那就把它调大。下限 1（0 条等于跨文件全关，那是 `off` 档的语义，不该由一个数字顺手达成）、上限 400；默认值与 `relatedFiles.ts` 的 `MAX_CANDIDATES` 同源 |
 | `anchorExplain.style` | `"standard"` \| `"concise"` \| `"detailed"` | `"standard"` | **S8 新增（D65），D93 起三档全部示范驱动，D94 起按用户模板组织 system prompt**：# 角色 → # 输出形状 → # 通用规则 → # 档位规则（只进当前档一节）→ # 取件（工具循环必需）→ # 示例（few-shot，只进当前档示范；正文 `scripts/style-lab/exemplar/<档位名>.md`，线上常量有同步锁）。标准（默认）：数据流视角、每步讲清因果 / 精简：几句话讲清目标与边界 / 详细：逐行讲解 + 具体推演。旧值 `rigorous` 自动按 `detailed` 处理 |
 | `anchorExplain.language` | `"zh"` \| `"en"` | `"zh"` | **D97 新增**。讲解语言：影响**讲解内容链** —— prompt 与示范（`en.ts` 的英文面 + `exemplar/<档位>.en.md`，同样有同步锁）、侧边栏讲解面板文案、导出的 Markdown（存档 `LastRun.language` 跟着那一次讲解走，旧存档按中文）。命令 `Anchor: 切换讲解语言` 一键翻转（Global 落点、写后验读）；扩展的命令与通知不跟随，取件工具层的回灌文案保持中文（模型侧指令，见 `prompts/index.ts` 的 `ExplainLanguage` 注释） |
 | `anchorExplain.temperature` | number | 未设置 | 透传给端点。留空就用端点的默认值 —— 不给默认值是刻意的：不同端点对 temperature 的合理取值不一样 |
@@ -1051,13 +1071,39 @@ function createContextRequestLogger(opts?: {
       },
       "start": { "type": "number", "description": "起始页/行（1-based，必须给）" },
       "end": { "type": "number", "description": "结束页/行（1-based，必须给）" },
-      "path": { "type": "string", "description": "request_type 为 file 时要读的文件；省略 = 锚点所在的文件。写相对路径时按锚点文件所在目录算，例如 ring_buffer.h。page_range 时可省略（默认就是锚点这份 PDF）；写了必须与锚点文档的路径逐字相同" },
+      "path": { "type": "string", "description": "request_type 为 file 时要读的文件；省略 = 锚点所在的文件。默认档（相关文件/同目录）下只能写「可能相关的文件」清单里第一列的假名（f1、f2…）—— 那个清单就是这次能取的全部文件，写清单之外的任何东西都会被拒。范围设为「不限」时改为写真实路径（可以用 find_files 先查），工作区外也能读。page_range 时可省略（默认就是锚点这份 PDF）；写了必须与锚点文档的路径逐字相同" },
       "reason": { "type": "string", "description": "为什么需要这段上下文" }
     },
     "required": ["request_type", "start", "end", "reason"]
   }
 }
 ```
+
+**S9a-fix10 新增的第二个工具**（`FIND_FILES_TOOL`，D119）——**只在 `any` 档给**：
+
+```json
+{
+  "name": "find_files",
+  "description": "列出当前可读的文件路径（按文件名/路径里的关键词过滤）。不知道有哪些文件可读时先用它查，再挑要读的去 fetch_context。只在取件范围为「不限」时可用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "keyword": { "type": "string", "description": "关键词，按文件名或路径的大小写不敏感匹配（例如 transport、dshot、.h）。留空则列出前若干个。" },
+      "reason": { "type": "string", "description": "为什么需要知道有哪些文件" }
+    },
+    "required": ["reason"]
+  }
+}
+```
+
+@anchor **为什么它是一个独立工具、而且只在 `any` 档出现**（用户提的第 1 条要求里那句
+"any 给一个接口让它自己查"）：不限档的取件范围是整个文件系统，**列不成一份清单**
+（那正是它不能走假名的原因）；但把模型扔进一个没有地图的空间里，它的行为就是瞎拼路径 ——
+用户实测里 5 次 `ENOENT` 就是这么来的。所以这一档不发明细、改发一个**查询口**。
+反向同样重要：**清单驱动的档位不给它** —— 给了模型一个列文件的工具，它就会绕开清单，
+而"清单即范围"正是这次要立的东西（工具清单是模型能看见的能力全集，
+不该有的许可不要发）。回话**只列池子**（`deps.workspaceFiles`，宿主侧一次扫描的结果），
+黑名单照滤；列文件**不占取件轮次、也不进取件日志**（它不是"读了哪个文件的哪几段"）。
 
 **S9a 修订（这一节的两处改动都记在 `DECISIONS.md` D67）**：
 
@@ -1130,9 +1176,9 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/paths.ts` | **只是转发**（S5 起实现在 `@anchor/core`）：让线1 内部的 `from '../paths.ts'` 继续成立。**新增代码直接从 `@anchor/core` 导入** | — |
 | `packages/extension-anchor/src/adapters/CodeAdapter.ts` | **S2 落 `capture`，S3 落 `fetchContext`，S9a 加内容护栏**（大小/二进制、读不到给人话）。代码来源适配器：把「选区 / 整文件」变成 `Anchor`、按行取件。零 vscode 依赖 | `CaptureScope`:34 `CodeAdapter`:46 `CodeAdapterDeps`:64 `createCodeAdapter`:69 `fetchContext`:116 |
 | `packages/extension-anchor/src/orchestrator/Orchestrator.ts` | **S3 落地，S9a 修 D67**。编排循环：取件循环（≤maxFetchRounds）→ §3.3 闸门 → repair 一次。**它就是 S1/S2 里那个 `fakeProvider` 的真身** | `REJECT_PREFIX`:39 `OrchestratorAdapter`:41 `OrchestratorDeps`:46 `createOrchestrator`:80 |
-| `packages/extension-anchor/src/orchestrator/validateContextRequest.ts` | **S3 落地，S9a 改写规则 3，D117 加 `any` 档与 `relatedRoots`**。§3.2 五条规则的实现 + 跨文件边界（`ContextFetchPolicy`，缺省 `RESTRICTED_POLICY` = 只允许锚点文件）；"范围"怎么算收在 `relatedRoots` 一处（锚点在工作区里吗 → 两种边界） | `FetchScope`:40 `ContextFetchPolicy`:42 `DEFAULT_MAX_FETCH_LINES`:63 `MAX_FETCH_LINES_CEILING`:64 `RESTRICTED_POLICY`:67 `relatedRoots`:95 `FetchedSpan`:139 `ContextFetchState`:170 `ContextDecision`:186 `validateContextRequest`:226 |
+| `packages/extension-anchor/src/orchestrator/validateContextRequest.ts` | **S3 落地，S9a 改写规则 3，D117 加 `any` 档与 `relatedRoots`，S9a-fix10 改成"清单即范围"**。§3.2 五条规则的实现 + 跨文件边界（`ContextFetchPolicy`，缺省 `RESTRICTED_POLICY` = 只允许锚点文件）；"范围"怎么算收在 `relatedRoots` 一处（锚点在工作区里吗 → 两种边界）；`related` / `same-dir` 档下**闸门只认清单里的文件**（`policy.candidates`，解析优先、后缀兜底，见 `findCandidate`） | `FetchScope`:41 `ContextFetchPolicy`:43 `DEFAULT_MAX_FETCH_LINES`:74 `MAX_FETCH_LINES_CEILING`:75 `RESTRICTED_POLICY`:78 `relatedRoots`:106 `FetchedSpan`:165 `describeFetched`:185 `ContextFetchState`:196 `ContextDecision`:212 `validateContextRequest`:252 |
 | `packages/extension-anchor/src/orchestrator/ModelRouter.ts` | **S3 落地**。tier1/tier2 的成本分层（ARCHITECTURE §5） | `ModelTier`:11 `ModelRouteInput`:13 `ModelChoice`:22 `ModelRouterConfig`:29 `createModelRouter`:35 |
-| `packages/extension-anchor/src/orchestrator/toolSchema.ts` | **S3 落地，S9a 修订（D67：声明 `path`、`required` 补 `start`/`end`、描述去掉"当前文档"）**。§8 的工具定义 + 参数解析（自定义键一并带过） | `FETCH_CONTEXT_TOOL`:19 `openAITools`:47 `EXPLANATION_JSON_SHAPE`:52 `parseContextRequest`:86 |
+| `packages/extension-anchor/src/orchestrator/toolSchema.ts` | **S3 落地，S9a 修订（D67），S9a-fix10 加 `find_files`（D119）**。§8 的工具定义 + 参数解析（自定义键一并带过）。`openAITools({ withFindFiles })` 按**档位**决定给几个工具 —— 只有 `any` 给 `find_files`（不该有的许可不要发） | `FETCH_CONTEXT_TOOL`:19 `FIND_FILES_TOOL`:61 `openAITools`:85 `FIND_FILES_MAX_HITS`:92 `EXPLANATION_JSON_SHAPE`:95 `parseContextRequest`:207 |
 | `packages/extension-anchor/src/orchestrator/providers/{types,openAICompatible}.ts` | **S3 落地**。LLM 调用面的抽象 + OpenAI 兼容实现（一个实现覆盖 OpenAI/DeepSeek/通义/Ollama） | `ChatMessage`:11 `ToolCall`:20 `AssistantTurn`:27 `ChatRequest`:33 `ChatProvider`:44；`OpenAICompatibleOptions`:20 `createOpenAICompatibleProvider`:71 |
 | `packages/extension-anchor/src/prompts/index.ts` | **S3 落地，S8 加风格、S9a 加跨文件（D67 修：契约按 `crossFile` 换口径、候选清单真的进 prompt）**。system / user / repair 三段指令 + 输出契约（**prompt 是产品的一部分**） | `explainOutputContract`:56 `buildSystemPrompt`:81 `describeAnchor`:191 `buildUserPrompt`:214 `buildRepairPrompt`:262 |
 | `packages/extension-anchor/src/config.ts` | **S3 落地，S8 加 `style`、S9a 加 `fetchScope`、S9a 修加 `maxFetchLines`（D71）**。§6 配置的**纯映射**（可单测），vscode 读取在 `vscode/configSource.ts` | `ProviderSettings`:18 `AnchorConfig`:27 `DEFAULT_MAX_FETCH_ROUNDS`:50 `apiKeySecretName`:56 `resolveProvider`:82 `clampRounds`:107 `clampFetchLines`:118 `resolveConfig`:144 `describeConfig`:175 |
@@ -1145,8 +1191,11 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/sidebar/statusBar.ts` | §5.4 状态栏提示（读用户实际绑定，并**交给侧边栏复用**）+ `probe()` 自检。**S8 起状态词来自 `protocol.ts`**，这里只剩图标表 | `StatusBarHandle`:24 `createStatusBar`:61 |
 | `packages/extension-anchor/src/sidebar/keybindingResolve.ts` | 键位表（**S8 起两张：线1 的 `WALKTHROUGH_CHORDS` + 线2 的 `LINE2_CHORDS`，各有各的镜像锁**）+ JSONC 解析 + 显示格式化（vscode-free） | `ChordId`:19 `WalkthroughChordSpec`:21 `WALKTHROUGH_CHORDS`:36 `LINE2_CHORDS`:105 `ResolvedChord`:119 `ResolvedChords`:120 `KeyBindingEntry`:122 `defaultChords`:129 `keybindingsPathFrom`:142 `stripJsonc`:159 `parseKeybindings`:218 `resolveChords`:234 `formatChord`:301 |
 | `packages/extension-anchor/src/sidebar/ui/{styles,clientScript,html}.ts` | 侧边栏 webview 资源，**全部内联进产物**（D42）；客户端自己派发按键（D47） | `SIDEBAR_STYLES`:9 `SIDEBAR_CLIENT_SCRIPT`:15 `renderSidebarHtml`:25 |
-| `packages/extension-anchor/src/relatedFiles.ts` | **S9a 新增，D117 加 `candidateDisplayName`**。候选文件清单的**纯逻辑**（`#include` / 同目录优先、封顶 40 条；名字怎么写 —— 基准一律是**锚点文件所在目录**，见 §3.2 的 D117 不变量 2）。宿主侧取文件在 `vscode/relatedFiles.ts` | `MAX_CANDIDATES`:16 `includeNamesIn`:25 `orderRelatedFiles`:39 `candidateDisplayName`:67 |
-| `packages/extension-anchor/src/vscode/relatedFiles.ts` | **S9a 新增**。`listRelatedFiles(anchor, text, { onError })`：在工作区里找代码类文件 → 交给纯逻辑排序。扫不出来时**降级但不静默**（D67：写一行输出通道，否则"空清单"与"真没有相关文件"分不出来） | `listRelatedFiles`:25 |
+| `packages/extension-anchor/src/relatedFiles.ts` | **S9a 新增，D117 加 `candidateDisplayName`，S9a-fix10 加"清单即范围 + 假名"**。清单的**纯逻辑**：过滤（与闸门同一份 `roots` 与黑名单）→ 排序（`#include` 优先、同目录次之、封顶 `limit` 条）→ 编假名 `f1`…；`findCandidate` 认出三种写法（假名 / 标签照抄 / 唯一后缀），多义时把选择权还给模型。宿主侧只扫文件（`vscode/relatedFiles.ts`） | `MAX_CANDIDATES`:34 `includeNamesIn`:46 `orderRelatedFiles`:60 `candidateDisplayName`:88 `CandidateFile`:96 `CandidateInput`:105 `buildCandidateFiles`:127 `findCandidate`:174 `describeCandidates`:199 |
+| `packages/extension-anchor/src/vscode/relatedFiles.ts` | **S9a 新增，S9a-fix10 退成“只扫文件”**。`scanCodeFiles({ unbounded, onError })`：在工作区里找出代码类文件（绝对路径）交给纯逻辑 —— **过滤 / 排序 / 编假名一概不在这里**：那样纯逻辑才测得完，而“清单与闸门同一份判据”也才守得住。扫不出来时**降级但不静默**（D67：写一行输出通道，否则“空清单”与“真没有相关文件”分不出来） | `scanCodeFiles`:33 |
+| `packages/extension-anchor/src/fetchDeny.ts` | **S9a-fix10 新增（D119）**。取件的**黑名单**（密钥 / 依赖 / 构建产物）：闸门与候选清单**共用这一份** —— 两处各写一份早晚会差一条，差的那条就是“清单里列着、取件时被拒”（或更糟的反向） | `DENIED_DIR_SEGMENTS`:19 `DENIED_FILE_PATTERNS`:30 `isDeniedPath`:44 |
+| `packages/extension-anchor/src/session/lastFocus.ts` | **D121 新增**。上一次那句额外提示词的存与读（`workspaceState`，**按工作区隔离**、不进 settings）。用户在输入框里会看到它被**预填**，直接回车就是用它的原话 | `LAST_FOCUS_KEY`:21 `coerceStoredFocus`:24 `readLastFocus`:29 |
+| `packages/extension-anchor/src/orchestrator/providers/types.ts` | **S3 落地，D120 加 `TokenUsage` / `addUsage`**。LLM 调用面的最小抽象；`AssistantTurn.usage` 是**可选**的 —— 端点给什么就记什么，不给就 `undefined`（不猜、不补 0） | `AssistantTurn`:27 `TokenUsage`:48 `addUsage`:60 |
 | `packages/extension-anchor/src/describe.ts` | **S8 新增**。「说给用户听的一句话」的唯一格式化处：`Anchor: 显示状态` 与开始面板共用，两处不许各写一份 | `captureSummary`:22 |
 | `packages/extension-anchor/src/start/startModel.ts` | **S8 新增**。开始面板的内容模型：动作表（**每个动作只指向一条已声明的命令**）+ 状态→面板的纯映射。零 vscode 依赖，因此面板里没有一条业务判断 | `StartActionSpec`:27 `START_ACTIONS`:58 `findStartAction`:111 `StartModel`:139 `buildStartModel`:175 |
 | `packages/extension-anchor/src/start/StartViewProvider.ts` | **S8 新增**。活动栏里「开始」视图的宿主侧：握手 / 推模型 / 收 `start:run` / 转给命令层。**视图没被打开过就是空操作** | `StartViewHandlers`:23 `StartViewProvider`:30 |
