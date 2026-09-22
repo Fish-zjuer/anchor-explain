@@ -214,7 +214,7 @@ export const TIER_RULES_EN: Record<ExplainStyle, string> = {
 export function fetchSectionEn(
   crossFile: boolean,
   maxFetchLines?: number,
-  listMode: 'alias' | 'path' = 'alias',
+  listMode: 'alias' | 'path' | 'none' = 'alias',
 ): string {
   if (!crossFile) {
     return [
@@ -236,7 +236,17 @@ export function fetchSectionEn(
   // different things, and the previous single wording handed the model a concrete example
   // (`../Inc/dshot_dma.h`) which it then used as a **template**, inventing paths that do not exist.
   const howToName =
-    listMode === 'alias'
+    listMode === 'none'
+      ? [
+          // See the Chinese version in `index.ts` (S9a-fix11 / D123): the list can be genuinely
+          // empty (no workspace folder and nothing found near the anchor). Teaching aliases then
+          // makes the model **invent** an alias (`f1`) and burn its turns on rejections.
+          '- **No file other than the anchor file can be read this run** (there is no "Files that may be related" list).',
+          '  So **do not request other files**, and do not invent file names (anything like `f1` will be rejected) —',
+          '  explain from the anchor text itself; if you do not know what a macro or struct really is, say what it does',
+          '  in general, but do not pretend you have read its definition.',
+        ]
+      : listMode === 'alias'
       ? [
           '- **You may read files other than the anchor file** — put the **alias in the first column** ' +
             '(`f1`, `f2`, …) of the "Files that may be related" list into `path`. **That list IS every file ' +
@@ -383,8 +393,8 @@ export function buildSystemPromptEn(
     maxFetchLines?: number;
     examples?: boolean;
     sourceType?: 'code' | 'pdf';
-    /** See `buildSystemPrompt` in `index.ts` (S9a-fix10 / D119). */
-    candidateMode?: 'alias' | 'path';
+    /** See `buildSystemPrompt` in `index.ts` (S9a-fix10 / D123). */
+    candidateMode?: 'alias' | 'path' | 'none';
   } = {},
 ): string {
   // PDF 释义面（D98）：角色/输出形状/通用规则/取件换成 PDF 版；档位与示范不进（代码特有）。

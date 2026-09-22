@@ -74,6 +74,37 @@ export function filterWorkspaceFiles(pool: readonly string[], keyword: string): 
 const REJECT_PREFIX = '请求被拒绝：';
 
 /**
+ * 被拒之后**额外**给几轮（S9a-fix11，D123）。
+ *
+ * @anchor 用户的原话："读到一个不允许的文件就死了，有点问题，建议给2次机会？"
+ *         —— 这个诊断是对的。被拒**不消耗取件预算**（规则 5 只管放行的那些），但它**消耗轮次**：
+ *         一次写错就把剩下的轮数挤掉，最后以 `MAX_ROUNDS_EXCEEDED` 收场，
+ *         用户**什么都拿不到** —— 而那份讲解本来可以基于锚点自身的原文给出来。
+ *         "写错了 → 看回灌 → 改对"这条自纠路径是我们自己设计的（§3.2「拒绝不抛错」），
+ *         那就得让它在轮数上真的走得完。
+ *
+ *         为什么是 2：给一次改写法、再给一次"算了，就按现有信息作答"。
+ *         再多的边际收益很小，而每一轮都是真金白银的模型调用。
+ *         上限仍然是死的（`maxFetchRounds + 2 + 本值`），不会变成无限循环。
+ */
+const REJECTED_GRACE_TURNS = 2;
+
+/**
+ * `path` 该怎么写 —— **由档位与清单一起决定**，system prompt 与闸门必须是同一套事实（D123）。
+ *
+ * @anchor `'none'` 这一档非有不可：跨文件开着、可清单是空的（没有工作区文件夹、锚点邻域也扫不到），
+ *         这种情况上一版仍然在教模型"写清单里第一列的假名"，而清单根本不存在 ——
+ *         于是它**编了一个 `f1`**，被拒、再编、把轮数烧完。提示词只要和闸门说的不是同一件事，
+ *         模型就会按提示词去试，而闸门一定拒它。
+ */
+function candidateModeOf(deps: OrchestratorDeps): 'alias' | 'path' | 'none' {
+  const scope = deps.fetchPolicy?.scope ?? 'off';
+  if (scope === 'any') return 'path';
+  if (scope === 'off') return 'none';
+  return (deps.candidateFiles ?? []).length > 0 ? 'alias' : 'none';
+}
+
+/**
  * 取件读取失败时回灌给模型的说明（D96）。
  *
  * @anchor 要点不是道歉，是**给活路**：光说"打不开"，模型只会再猜一个路径，猜一次烧一轮。
@@ -242,8 +273,9 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
           crossFile,
           maxFetchLines: deps.fetchPolicy?.maxLines,
           sourceType: anchor.sourceType === 'pdf' ? 'pdf' : 'code',
-          // `any` 档写真实路径、可以自己查（`find_files`）；其余档只写清单里的假名（S9a-fix10）
-          candidateMode: deps.fetchPolicy?.scope === 'any' ? 'path' : 'alias',
+          // `any` 档写真实路径、可以自己查（`find_files`）；清单驱动的档位只写假名；
+          // **清单为空时要明说"这次一个别的文件都读不到"**（D123，见 `candidateModeOf`）
+          candidateMode: candidateModeOf(deps),
         }),
       },
       {
@@ -269,8 +301,9 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
     let lastFeedbackWasFailure = false;
     let lastRejectReason: string | undefined;
     // 初次 + 每轮取件后都还要有一次机会给答案，所以是 取件上限 + 1；
-    // 再多留一轮，是为了让"被拒之后模型仍然只想着取件"这种情况也能收场（届时抛 MAX_ROUNDS_EXCEEDED）
-    const turnLimit = deps.maxFetchRounds + 2;
+    // 再多留一轮，是为了让"被拒之后模型仍然只想着取件"这种情况也能收场（届时抛 MAX_ROUNDS_EXCEEDED）；
+    // D123 起再加"被拒的宽限"——被拒不消耗取件预算，但消耗轮次，不额外给就会"写错一次就什么都拿不到"
+    const turnLimit = deps.maxFetchRounds + 2 + REJECTED_GRACE_TURNS;
 
     /** §3.3 闸门 + 规则 5 的一次修复重试 */
     async function validateOrRepair(model: string, candidate: string): Promise<ExplanationResult> {

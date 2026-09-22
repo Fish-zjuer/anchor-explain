@@ -127,6 +127,11 @@ function harness(
       logger,
       ...(opts.fetchPolicy ? { fetchPolicy: opts.fetchPolicy } : {}),
       ...(opts.candidates ? { candidateFiles: opts.candidates } : {}),
+      // 生产里 `candidateFiles` 就是 `policy.candidates` 那**同一个数组**（D119：清单即范围）。
+      // 测试若只给 policy 不给这个 dep，测到的组合是**产品里不存在的**（提示词与闸门各说各话）。
+      ...(opts.candidates === undefined && opts.fetchPolicy?.candidates !== undefined
+        ? { candidateFiles: opts.fetchPolicy.candidates }
+        : {}),
       ...(opts.workspaceFiles ? { workspaceFiles: opts.workspaceFiles } : {}),
       ...(opts.onUsage ? { onUsage: opts.onUsage } : {}),
     })(anchor);
@@ -385,7 +390,8 @@ test('轮数用尽仍在请求取件 → MAX_ROUNDS_EXCEEDED（不无限循环�
     (err: unknown) => err instanceof AnchorError && err.code === 'MAX_ROUNDS_EXCEEDED',
   );
   assert.equal(h.fetches.length, 1, '上限是 1，就只许真读一次');
-  assert.ok(h.requests.length <= 4, `调用次数必须有界，实际 ${h.requests.length}`);
+  // 上限 = maxFetchRounds + 2 + 被拒宽限 2（D123）= 5。宽限是**死的**：多给两轮，不等于不封顶。
+  assert.ok(h.requests.length <= 5, `调用次数必须有界，实际 ${h.requests.length}`);
 });
 
 // ── 输出闸门与修复 ────────────────────────────────────────────────────────
@@ -841,4 +847,81 @@ test('D120：端点不给 usage 时 onUsage 一次都不被调用（面板会说
   const h = harness([{ content: validJson(), toolCalls: [] }], { onUsage: (t) => seen.push(t) });
   await h.run();
   assert.equal(seen.length, 0);
+});
+
+test('D123：清单为空时，system prompt 必须说"这次读不到别的文件"，且**不再教假名**', async () => {
+  // 用户实测的形状：跨文件开着、但清单是空的，提示词仍在教"写清单里的假名" ——
+  // 模型的反应是**编一个 `f1`**，然后被拒、再编、把轮数烧完。
+  const h = harness([{ content: validJson(), toolCalls: [] }], {
+    fetchPolicy: { scope: 'related', roots: ['C:/repo'], maxLines: 400, candidates: [] },
+  });
+  await h.run();
+
+  const system = String(h.requests[0]?.messages[0]?.content ?? '');
+  assert.doesNotMatch(system, /假名/, '清单为空时不该再提假名 —— 提了它就会编一个出来');
+  assert.match(system, /这次读不到锚点文件之外的任何文件/);
+  assert.match(system, /不要请求别的文件/);
+});
+
+test('D123：清单非空时仍然教假名（两种口径按事实切换）', async () => {
+  const h = harness([{ content: validJson(), toolCalls: [] }], { fetchPolicy: RELATED });
+  await h.run();
+  const system = String(h.requests[0]?.messages[0]?.content ?? '');
+  assert.match(system, /假名/);
+  assert.doesNotMatch(system, /这次读不到锚点文件之外的任何文件/);
+});
+
+test('D123：被拒之后额外给 2 轮 —— 写错几次仍然能拿到讲解，不会"就死了"', async () => {
+  // 用户的原话："读到一个不允许的文件就死了，有点问题，建议给2次机会？"
+  // 被拒**不消耗取件预算**，但消耗轮次：不给宽限的话，一次写错就把剩下的轮数挤掉，
+  // 最后以 MAX_ROUNDS_EXCEEDED 收场，用户什么都拿不到。
+  // maxFetchRounds 默认 3 ⇒ 老口径 turnLimit = 5。这里准备 6 次被拒 + 1 次作答 = 7 轮：
+  // 宽限没生效的话第 6 轮就抛 MAX_ROUNDS_EXCEEDED 了。
+  const bad = (i: number): AssistantTurn => ({
+    content: '',
+    toolCalls: [
+      { id: `bad_${i}`, name: 'fetch_context', arguments: JSON.stringify({ request_type: 'file', start: 1, end: 5, reason: '再试', path: `nope_${i}.h` }) },
+    ],
+  });
+  const h = harness([...Array.from({ length: 6 }, (_, i) => bad(i)), { content: validJson(), toolCalls: [] }], {
+    fetchPolicy: RELATED,
+  });
+
+  const result = await h.run();
+  assert.equal(result.summary, '这是一段出队逻辑。', '被拒 6 次之后仍然拿到了讲解');
+  assert.equal(h.logger.entries().filter((e) => e.accepted).length, 0, '一次都没取件成功（全是拒绝）');
+  assert.equal(h.requests.length, 7, '6 轮被拒 + 1 轮作答');
+});
+
+test('D123：宽限是**死的上限**，不是无限循环（一直取件仍然会收场）', async () => {
+  const forever = Array.from({ length: 20 }, (_, i) => ({
+    content: '',
+    toolCalls: [
+      { id: `c${i}`, name: 'fetch_context', arguments: JSON.stringify({ request_type: 'file', start: i * 10 + 1, end: i * 10 + 5, reason: '还不够', path: FILE }) },
+    ],
+  }));
+  const h = harness(forever, { fetchPolicy: RELATED, maxFetchRounds: 1 });
+  await assert.rejects(
+    () => h.run(),
+    (err: unknown) => err instanceof AnchorError && err.code === 'MAX_ROUNDS_EXCEEDED',
+  );
+});
+
+test('D123：没有工作区文件夹时，`find_files` 依然能用（池子来自"走了锚点邻域"）', async () => {
+  // `scanCodeFiles` 的两块：工作区文件夹里（findFiles）+ 盖不住的根（直接走目录树）。
+  // 这里只测编排层拿到的池子能被 `find_files` 用起来（走树的实现在冒烟里验）。
+  const h = harness(
+    [
+      { content: '', toolCalls: [{ id: 'find', name: 'find_files', arguments: JSON.stringify({ keyword: 'ring', reason: '找找' }) }] },
+      { content: validJson(), toolCalls: [] },
+    ],
+    {
+      fetchPolicy: { scope: 'any', roots: [], maxLines: 400 },
+      workspaceFiles: ['C:/fw/Core/Src/main.c', 'C:/fw/Core/Inc/ring_buffer.h'],
+    },
+  );
+  await h.run();
+  const toolMsg = (h.requests[1]?.messages ?? []).find((m: ChatMessage) => m.role === 'tool');
+  assert.match(toolMsg?.content ?? '', /ring_buffer\.h/);
+  assert.doesNotMatch(toolMsg?.content ?? '', /main\.c/);
 });

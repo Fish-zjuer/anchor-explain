@@ -207,7 +207,9 @@ function toolCallTurn() {
                   ? 'C:/Windows/win.ini'
                   : fetchMode === 'secret'
                     ? '.env'
-                    : MAIN_C,
+                    : fetchMode === 'alias'
+                      ? 'f1'
+                      : MAIN_C,
           }),
         },
       },
@@ -542,6 +544,17 @@ const vscodeStub = {
     fs: {
       readFile: (uri) => Promise.resolve(readFileSync(uri.fsPath)),
       stat: (uri) => (existsSync(uri.fsPath) ? Promise.resolve(statSync(uri.fsPath)) : Promise.reject(new Error('ENOENT'))),
+      // S9a-fix11（D123）：候选池在"工作区盖不住的根"上要**自己去走目录树** —— 桩必须真的走，
+      // 否则那条路在冒烟里永远走的是"读不动 → 跳过"分支，而它正是用户实测失败的那条路。
+      // `1` = File、`2` = Directory（与 `vscode.FileType` 一致，源码里也是按这两个数判的）。
+      readDirectory: (uri) =>
+        new Promise((resolve, reject) => {
+          try {
+            resolve(readdirSync(uri.fsPath, { withFileTypes: true }).map((e) => [e.name, e.isDirectory() ? 2 : 1]));
+          } catch (err) {
+            reject(err);
+          }
+        }),
     },
   },
 
@@ -1868,13 +1881,49 @@ check(
 check(webviews[0].webview.posted.at(-1)?.type === 'session:update', '被拒之后整次讲解仍然继续（不是整段失败）');
 check(outputLines.some((l) => l.includes('拒绝')), '被拒的取件也落了日志（被拒原因正是要看的）');
 
+// ③b S9a-fix11（D123）：**只打开一个文件**（没有工作区文件夹）+ 模型写假名 `f1`。
+//     这是用户实测的那次失败：范围正确退化成"锚点所在的这一层"，可池子来自 `findFiles`，
+//     而那个 API 只在工作区文件夹里找 —— 于是清单是空的 ⇒ 一个别的文件都读不到，
+//     比 D117 修之前还糟。模型那边还照着提示词**编了个 `f1`**（提示词在教它写假名，
+//     而清单根本不存在）。这一条同时钉住两件事：清单非空、假名能取到。
+workspaceFoldersValue = [];
+settingsValues = { ...settingsValues, fetchScope: 'related' };
+fetchMode = 'alias';
+fetchCalls.length = 0;
+outputLines.length = 0;
+await registered.get('anchorExplain.capture')?.();
+{
+  const userPrompt = String(fetchCalls[0]?.body?.messages?.[1]?.content ?? '');
+  check(
+    /- `f1`  /.test(userPrompt),
+    '没有工作区文件夹时，清单**仍然非空**（锚点邻域被真的走了一遍，S9a-fix11）',
+    userPrompt.includes('可能相关的文件') ? userPrompt.split('\n').find((l) => l.startsWith('- `f1`')) ?? '(有清单但没有 f1)' : '**清单是空的**',
+  );
+  const aliasTool = (fetchCalls[1]?.body?.messages ?? []).find((m) => m.role === 'tool');
+  const aliasText = String(aliasTool?.content ?? '');
+  check(
+    !/请求被拒绝|取件失败/.test(aliasText) && /行 \d+-\d+（共 \d+ 行）/.test(aliasText),
+    '模型写假名 `f1` 就能取到文件（清单驱动的档位走通了，S9a-fix11）',
+    aliasText.slice(0, 140),
+  );
+  // 假名的价值就在这一条：日志里记的是**解析后的绝对路径**，不是模型写的那个字符串
+  check(
+    outputLines.some((l) => l.includes('取件') && l.includes('ring_buffer.h')),
+    '假名在日志里被记成了它指向的那个文件（D67 的口径：日志要能复核"到底读了哪个文件"）',
+    outputLines.find((l) => l.includes('取件')) ?? '(没有取件日志)',
+  );
+}
+workspaceFoldersValue = [{ uri: { fsPath: FIXTURES }, name: 'fixtures', index: 0 }];
+
 // 一直要上下文：必须在有限轮之后收场，并给用户一句人话
 fetchMode = 'always-fetch';
 settingsValues = { ...settingsValues, maxFetchRounds: 1 };
 await registered.get('anchorExplain.capture')?.();
 check(messages.at(-1)?.[0] === 'error', '模型一直要上下文 → 明确报错而不是转圈', messages.at(-1)?.[1] ?? '');
 check(
-  /被拒 2 次/.test(String(messages.at(-1)?.[1] ?? '')) && /maxFetchRounds/.test(String(messages.at(-1)?.[1] ?? '')),
+  // turnLimit = maxFetchRounds(1) + 2 + 被拒宽限(2，D123) = 5：第 1 轮取件放行成功，
+  // 之后 4 轮都因为"取件次数已达上限"被拒。数字要跟着公式走，别写成一个凭印象的数。
+  /被拒 4 次/.test(String(messages.at(-1)?.[1] ?? '')) && /maxFetchRounds/.test(String(messages.at(-1)?.[1] ?? '')),
   '错误里说清了"被拒几次 + 该调哪个设置"（照得做）',
   String(messages.at(-1)?.[1] ?? ''),
 );

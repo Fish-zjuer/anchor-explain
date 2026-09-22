@@ -171,6 +171,10 @@ async function buildFetchBoundary(
         : [...relatedRoots(anchorFile, workspaceRoots)];
 
   const pool = await scanCodeFiles({
+    // S9a-fix11（D123）：把本次允许的根一并交给扫描器 —— 工作区文件夹盖不住的那些根
+    // （**只打开了一个文件**是最常见的形状）必须自己去走一遍，否则范围里有、池子里没有，
+    // 清单就是空的，而清单即范围 ⇒ 一个别的文件都读不到（用户实测的那次失败）。
+    roots,
     // 「不限」档的 `find_files` 拿池子当"文件系统地图"，所以那一档要多扫一些
     unbounded: scope === 'any',
     ...(onScanError !== undefined ? { onError: onScanError } : {}),

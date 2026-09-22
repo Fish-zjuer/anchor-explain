@@ -287,7 +287,7 @@ const TIER_RULES: Record<ExplainStyle, string> = {
 function fetchSection(
   crossFile: boolean,
   maxFetchLines?: number,
-  listMode: 'alias' | 'path' = 'alias',
+  listMode: 'alias' | 'path' | 'none' = 'alias',
 ): string {
   if (!crossFile) {
     return [
@@ -317,7 +317,19 @@ function fetchSection(
    *         现在清单驱动的档位只说**假名**，`any` 档只说"写真实路径 / 自己查"。
    */
   const howToName =
-    listMode === 'alias'
+    listMode === 'none'
+      ? [
+          // S9a-fix11（D123）：跨文件开着、但清单**是空的**（没有工作区文件夹、又扫不到锚点邻域）
+          // ⇒ 这次真的一个别的文件都取不到。
+          // @anchor 这一段非有不可：上一版这种情况仍然教它"写清单里第一列的假名"，
+          //         而清单根本不存在 —— 模型的反应是**编一个 `f1` 出来**（用户实测的截图），
+          //         然后被拒、再编、直到把轮数烧完。**提示词与闸门必须同一套事实**。
+          '- **这次读不到锚点文件之外的任何文件**（没有可用的「可能相关的文件」清单）。',
+          '  所以**不要请求别的文件**，也不要编造文件名（`f1` 之类一律会被拒）——',
+          '  就基于锚点处的原文作答；某个宏/结构体到底是什么，用你的先验知识说明它的**作用**，',
+          '  不要假装看过它的定义。',
+        ]
+      : listMode === 'alias'
       ? [
           '- **可以读锚点文件之外的相关文件** —— `path` 写「可能相关的文件」清单里**第一列的假名**' +
             '（`f1`、`f2`…）。**那个清单就是这次能取的全部文件**，写得对不对由它说了算；' +
@@ -463,10 +475,12 @@ export function buildSystemPrompt(
     /** 锚点来源（D98）。`'pdf'` 时整套换成释义面：教材/论文不是代码，档位与示范都不适用 */
     sourceType?: 'code' | 'pdf';
     /**
-     * `path` 该怎么写（S9a-fix10）：`'alias'` = 只能写清单里的假名（`related` / `same-dir`）；
-     * `'path'` = 写真实路径、并可以用 `find_files` 自己查（`any`）。默认 `'alias'`。
+     * `path` 该怎么写（S9a-fix10 / D123）：`'alias'` = 只能写清单里的假名（`related` / `same-dir` 且有清单）；
+     * `'path'` = 写真实路径、并可以用 `find_files` 自己查（`any`）；
+     * `'none'` = 这次**一个别的文件都读不到**（跨文件开着但清单是空的）——
+     * 那就得明说"不要请求别的文件"，否则它会编一个假名出来。默认 `'alias'`。
      */
-    candidateMode?: 'alias' | 'path';
+    candidateMode?: 'alias' | 'path' | 'none';
   } = {},
 ): string {
   // 英文面（D97）：整套段落与示范都换成 en.ts 的版本，骨架（五节 + 只实例化当前档）不变。
