@@ -14,10 +14,15 @@
  *    若这个字符只存在于那一行，那一行整体会被顶右 3–4px，上下两行的标签就对不齐了。
  *    所有行都占同样宽的槽（空行也留着），`▸` 只是往槽里填内容。
  *
- * ## 一条层级纪律（用户实测提过"布局不够鲜明、没有突出点"）
+ * ## 两条层级纪律
  *
- * **非当前步骤一律压暗**（`.step:not(.current)`），不管它在当前步之前还是之后。
- * 第一版只压暗"已讲过的"，于是还没讲的那些和当前步一样亮 —— 走到第 1 步时整屏都在喊。
+ * 1. **一次只有一块**（D125）。非当前步**折叠成一行索引**（序号 + 标题 + 位置），
+ *    正文由客户端**根本不生成** —— 所以"只显示一块"是结构上的，
+ *    不是靠调暗做出来的。从前是全部铺开、只把非当前步压到 0.62，
+ *    那等于"所有内容都还在屏幕上"，翻到第 5 步时前 4 步的正文全在眼前（用户原话：
+ *    "右侧列表不再是一次性展示出所有讲解内容。只显示一块"）。
+ * 2. **当前块要明显压过索引行**：左侧粗色条 + 焦点描边 + 选中底色 + 更大的标题 +
+ *    上下留白。索引行之间只用细虚线分；当前块两侧是留白，不参与"列表"的观感。
  */
 
 export const SIDEBAR_STYLES = `
@@ -111,32 +116,61 @@ body {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
-/* ── 步骤列表 ───────────────────────────────────────────────── */
+/* ── 步骤列表：一次只铺开一块（D125）───────────────────────── */
 
 .steps { list-style: none; margin: 0; padding: 0; }
 
+/**
+ * **非当前步 = 索引行**：一行高，只有序号 + 标题 + 位置（正文节点由客户端不生成）。
+ * 它就是这块面板的目录 —— 点一下跳到那一步，那一步随即成为当前步并展开。
+ */
 .step {
   border: 1px solid transparent;
   border-left: var(--anchor-accent-w) solid transparent;
   border-radius: var(--anchor-radius);
-  padding: 8px 10px;
-  margin-bottom: 6px;
+  padding: 3px 8px;
+  margin-bottom: 2px;
   cursor: pointer;
-  /* 非当前步压暗：之前和之后的一视同仁，否则"当前步"没有焦点可言。
-     0.62 是兼顾的：再低读起来费劲（面板是阅读面），再高当前步就不突出了。 */
-  opacity: 0.62;
+  opacity: 0.55;
 }
 
-.step + .step { border-top: 1px dashed var(--vscode-panel-border); }
+/* 只在**索引行之间**画分隔线：当前块上下要留白，画进去就成了"列表里的又一项" */
+.step.index-row + .step.index-row { border-top: 1px dashed var(--vscode-panel-border); }
 
-.step:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+.step.index-row:hover {
+  opacity: 1;
+  background: var(--vscode-list-hoverBackground);
+}
 
+/* 索引行必须**占死一行**：标题过长就省略，位置标签留在右边不参与挤压 */
+.step.index-row .step-head { flex-wrap: nowrap; }
+
+.step.index-row .step-title {
+  flex: 1 1 auto;
+  /* min-width:0 是 flex 省略号那条经典的必需项：不给它，标题会把容器顶宽而不是省略 */
+  min-width: 0;
+  font-size: 0.92em;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.step.index-row .loc { flex: 0 0 auto; }
+
+/**
+ * **当前步 = 唯一铺开的那一块**，而且要一眼压过上面那些索引行：
+ * 粗色条 + 焦点描边 + 选中底色 + 更大的标题 + 上下留白。
+ * 只用主题变量（本文件的纪律）：描边走 focusBorder、底色走 list-inactiveSelectionBackground。
+ * 注意这段注释在模板字符串**里面** —— 一个反引号都不能写（写了就是把文件切成两半）。
+ */
 .step.current {
   opacity: 1;
+  margin: 6px 0 8px;
+  padding: 12px 12px 14px;
   border-color: var(--vscode-focusBorder);
-  border-left-width: var(--anchor-accent-w);
+  border-left-width: 5px;
   background: var(--vscode-list-inactiveSelectionBackground);
-  padding-bottom: 12px;
 }
 
 .step-head {
@@ -151,7 +185,7 @@ body {
   font-weight: 600;
 }
 
-.step.current .step-title { font-size: 1.08em; }
+.step.current .step-title { font-size: 1.15em; font-weight: 700; }
 
 /* 位置标签做成小胶囊：比下划线更像"可点的东西"，也和标题在同一基线上 */
 .loc {

@@ -168,6 +168,16 @@ function findByAttr(node: FakeNode, key: string, value: string): FakeNode | unde
   return undefined;
 }
 
+/** 按 class 找一个元素（D125 起用它认"哪一块是当前步"）。 */
+function findByClass(node: FakeNode, cls: string): FakeNode | undefined {
+  if (node.className.split(' ').includes(cls)) return node;
+  for (const child of node.children) {
+    const hit = findByClass(child, cls);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 const ANCHOR = 'C:\\repo\\Core\\Src\\main.c';
 
 function sessionUpdate(over: Record<string, unknown> = {}): unknown {
@@ -319,6 +329,69 @@ test('实测数据形状：反斜杠路径 + 两个外部文件 + 两条取件�
   assert.match(text, /第 227-263 行/, '锚点文件里的步骤不带文件名前缀');
   assert.doesNotMatch(text, /_build_tmp\fw\App\Inc\protocol\.h 第/, '不许把整条绝对路径印进标签');
   assert.match(text, /Inc\/esc\.h 1-60 行 接受 · 1296 字/, '取件日志同样按末两段显示');
+});
+
+// ── 三·五、一次只有一块（D125）─────────────────────────────────────────────
+//
+// 用户的原话："右侧列表不再是一次性展示出所有讲解内容。只显示一块，
+// 然后对当前讲解的进行更强的突出。"
+//
+// 这条锁守的是"只显示一块"必须是**结构上**的：非当前步的正文节点根本不该被创建。
+// 若哪天有人把它改回"全部渲染 + CSS 压暗"，屏幕上又会变成所有内容都在眼前 ——
+// 而那正是用户这次要改掉的东西。所以这里断言的是**节点在不在**，不是"亮不亮"。
+
+function twoStepSession(index: number): unknown {
+  return sessionUpdate({
+    result: {
+      title: 't',
+      summary: 's',
+      confidence: 0.5,
+      steps: [
+        {
+          location: { filePath: ANCHOR, lineStart: 1, lineEnd: 2 },
+          title: '第一步标题',
+          text: '第一步正文',
+          highlights: [{ location: { filePath: ANCHOR, lineStart: 1, lineEnd: 1 }, narration: '第一点', emphasis: 'primary' }],
+        },
+        {
+          location: { filePath: ANCHOR, lineStart: 3, lineEnd: 4 },
+          title: '第二步标题',
+          text: '第二步正文',
+          highlights: [{ location: { filePath: ANCHOR, lineStart: 3, lineEnd: 3 }, narration: '第二点', emphasis: 'primary' }],
+        },
+      ],
+    },
+    index,
+  });
+}
+
+test('D125：只有当前步铺开正文，其余步骤只留一行索引', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(twoStepSession(1));
+
+  const text = client.root.text;
+  assert.match(text, /第二步正文/, '当前步（第 2 步）的正文要铺开');
+  assert.match(text, /第二点/, '当前步的逻辑点也要铺开');
+  assert.doesNotMatch(text, /第一步正文/, '非当前步的正文一个节点都不该建 —— 这才是"只显示一块"');
+  assert.doesNotMatch(text, /第一点/, '非当前步的逻辑点同理');
+  assert.match(text, /第一步标题/, '但索引行要留着（它是指回那一步的把手）');
+
+  const current = findByClass(client.root, 'current');
+  const indexRow = findByClass(client.root, 'index-row');
+  assert.equal(current?.attrs['data-index'], '1', '当前步那一个块的 data-index 必须落在当前步上');
+  assert.equal(indexRow?.attrs['data-index'], '0', '非当前步落到索引行');
+  assert.equal(current?.attrs['data-act'], 'goto', '索引行与当前块都得能点回去（goto）');
+});
+
+test('D125：换到哪一步，铺开的就是哪一步（不是永远铺第一步）', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(twoStepSession(0));
+  assert.match(client.root.text, /第一步正文/, '第 1 步当前时铺开它');
+  assert.doesNotMatch(client.root.text, /第二步正文/);
+
+  client.send(twoStepSession(1));
+  assert.match(client.root.text, /第二步正文/, '换到第 2 步之后铺开的要跟着换');
+  assert.doesNotMatch(client.root.text, /第一步正文/, '上一块要收回去 —— 否则屏幕上会越积越多');
 });
 
 test('D70：内联脚本里零反斜杠 —— 这条不变量比"出一次错修一次"划算', () => {

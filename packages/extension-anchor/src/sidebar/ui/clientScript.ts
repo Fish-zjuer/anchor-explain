@@ -252,10 +252,22 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return wrap;
   }
 
+  /**
+   * 一步。**只有当前步渲染正文**（D125）；其余步骤只留一行索引（序号 + 标题 + 位置）。
+   *
+   * @anchor 用户的原话是"右侧列表不再是一次性展示出所有讲解内容。只显示一块，
+   *         然后对当前讲解的进行更强的突出"。
+   *         从前是**全部铺开**、靠 CSS 把非当前步压到 0.62 —— 那等于"所有内容都还在屏幕上"，
+   *         当前步只是没那么暗，焦点是拿亮度差撑出来的；翻到第 5 步时前 4 步的正文全在眼前。
+   *         现在改成**结构上只有一块**：非当前步根本不生成正文节点。
+   *
+   *         点索引行 = 派发 goto 到那一步的第一拍 → 它成为当前步 → 立刻展开。
+   *         所以"回看前面讲过什么"这条路一点没断，只是要把那一块**调出来**才看。
+   *
+   *         压暗那件事同时取消：索引行本来就只是一行标题，不再需要"压暗"来让位。
+   */
   function buildStep(step, i, current, pointIndex) {
-    // 压暗交给 CSS 的 .step:not(.current)：之前和之后的步骤一视同仁，
-    // 否则"还没讲到的"会和当前步一样亮，屏幕上就没有焦点可言
-    var li = mk("li", "step" + (i === current ? " current" : ""));
+    var li = mk("li", "step" + (i === current ? " current" : " index-row"));
     li.setAttribute("data-act", "goto");
     li.setAttribute("data-index", String(i));
 
@@ -271,6 +283,10 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     loc.title = isPdfLoc(step.location) ? L.titleRevealPdf : L.titleRevealCode;
     head.appendChild(loc);
     li.appendChild(head);
+
+    // 不是当前步：到此为止。正文、引导句、逻辑点**一个节点都不建** ——
+    // "只显示一块"就是这一行（CSS 那边只负责让索引行排成一行）。
+    if (i !== current) return li;
 
     if (step.intro) li.appendChild(mk("p", "intro", step.intro));
     if (step.text) li.appendChild(mk("p", "text", step.text));

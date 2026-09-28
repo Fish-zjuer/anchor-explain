@@ -1465,3 +1465,49 @@ manifest `Version` 均 = `0.1.1`。（`release/` 被 `.gitignore` 忽略，分�
 装新包后看两处：**只打开一个文件**时第 2 轮能不能读到一个别的文件；
 以及**它照抄清单里的名字**是否一次就中（这是 fix12 去掉假名之后最值得观察的一件事——
 如果它又开始自己改写名字，假名这条就得重新考虑）。
+
+
+## S10 侧边栏一次只铺开一块（用户"我要求大改"的 ⑧）
+
+**背景**：用户一次性提了三条改动（他自己编号 ⑧⑨⑩）。这是第 ⑧ 条，他标了"可选"：
+"右侧列表不再是一次性展示出所有讲解内容。只显示一块，然后对当前讲解的进行更强的突出。"
+三片拆开做，本片只动渲染，⑨（追问）与⑩（历史留档）各自另起一片。
+
+**目标**：把"只显示一块"做成**结构上**的 —— 非当前步的正文节点根本不生成，
+而不是"全都渲染出来再压暗"。
+
+**范围**：
+
+- `sidebar/ui/clientScript.ts`：`buildStep` 在非当前步处提前 return（只留序号 + 标题 + 位置）；
+  新增 `index-row` class；当前步照旧铺开 `intro` / `text` / `highlights`
+- `sidebar/ui/styles.ts`：`index-row` 压成一行（标题省略号、位置标签不参与挤压）；
+  `.current` 加强（5px 左色条 + 焦点描边 + 选中底色 + 标题 1.15em/700 + 上下留白）；
+  删掉 `.step:not(.current)` 的压暗与 `.step + .step` 的通用虚线（改成只画在索引行之间）
+- `test/sidebarClient.test.ts`：`findByClass` 帮手 + 两条新锁
+
+**不做**：不改 `protocol.ts`、不改 `SidebarPanel.ts`、不改宿主、不动 `ExplanationResult` 契约。
+面板仍收整份 `result`（重放缓冲要靠它），"铺开几块"是纯渲染决策。
+
+**验收标准**：
+
+| 验收 | 靠什么 |
+|---|---|
+| 非当前步的正文/逻辑点**节点不存在** | 单测：`doesNotMatch(第一步正文)` / `doesNotMatch(第一点)`；当前步的 `match` |
+| 索引行与当前块都带正确的 `data-index` / `data-act="goto"` | 单测 `findByClass('current'/'index-row')` |
+| 换一步就换铺开的那一块，上一块收回去 | 单测：`index:0` → `index:1` 两次喂消息 |
+| 面板脚本仍能解析（模板字符串里不许有反引号） | 既有那条解析锁 + `pnpm check:inline` |
+| 排版好看 | ⚠ **用户看 `pnpm preview:sidebar`**（沙箱看不了像素） |
+
+**回退点**：`slice-S9c-fix12`。整片是本地的：还原 `buildStep` 的提前 return 与
+`styles.ts` 的步骤列表那一节即可 —— 不涉协议、不涉存储。
+
+**状态**：**完成（自动化）**，待用户看排版确认。
+
+### S10 落地结果（2026-09-28）
+
+- **单测**：`packages/extension-anchor` **367 例全过**（新增 2 例）。
+- **冒烟**：**smoke 83 / chain 212 / fileswitch 18**，全过；
+  唯一 FAIL 仍是那条要 `spawn` 子进程的（本沙箱一律 `EBUSY`，与本次改动无关）。
+- **typecheck / build**：`tsc --noEmit` 过；`esbuild` 两个产物都出。
+- **踩到并已修**：新增的 CSS 注释里写了反引号 → 模板字符串被截断（`styles.ts` 的
+  **第四次**）—— 由 `pnpm check:inline` 与 `tsc` 各拦了一次，已改成文字描述。
