@@ -239,10 +239,33 @@ const PDF_EXPLANATION_JSON = JSON.stringify({
   ],
 });
 
+/**
+ * D126：追问那一轮的回答。**只有一步**，位置落在 main.c 里（与追问锚点同一个文件）——
+ * 这正是"补充讲解"该长的样子：短、就事论事。
+ */
+const FOLLOW_UP_EXPLANATION_JSON = JSON.stringify({
+  title: '为什么先判断满再判断空',
+  summary: '补充：两个判断的顺序能换，但换完要改的地方不止一处。',
+  confidence: 0.7,
+  steps: [
+    {
+      location: { filePath: MAIN_C, lineStart: 41, lineEnd: 41 },
+      title: '补充',
+      text: '判断顺序本身可以换，但满/空各自走的分支不同 —— 换了顺序，两个分支里的处理也要跟着调。',
+      highlights: [],
+    },
+  ],
+});
+
 /** 假端点：只看"对话里有没有 tool 结果"来决定回哪一轮，因此无状态、可重入 */
 function cannedCompletion(body) {
   const seen = (body.messages ?? []).map((m) => m.role);
   if (fetchMode === 'always-fetch') return toolCallTurn();
+  // D126：追问那一轮的 user prompt 里有「这是对第 N 步的追问」—— **必须先认它**。
+  // 追问的对话里同样没有 tool 结果，落到下面那条"没 tool 就去取件"的分支上，
+  // 这一轮会白烧一次取件（而那正是用户要的"只给当前块"的反面）。
+  const userPrompt = String(body.messages?.[1]?.content ?? '');
+  if (userPrompt.includes('这是对第')) return { content: FOLLOW_UP_EXPLANATION_JSON };
   if (!seen.includes('tool')) return toolCallTurn();
   if (fetchMode === 'related-ref') return { content: SIBLING_EXPLANATION_JSON };
   // PDF 锚点的 prompt 里写的是「页码：第 N 页」，拿它区分两条线
@@ -2097,6 +2120,94 @@ check(
   declaredKeys.length > 0 && unread.length === 0,
   `声明了 ${declaredKeys.length} 个设置，全部都被读过（漏读的：${unread.join(', ') || '无'}）`,
   unread.join(', '),
+);
+
+// ---- 12. D126：追问（只喂当前块 + 当前讲解，补充插进队列）--------------------
+//
+// 用户的原话："然后可以追问，追问时，只提供给AI当前代码块（或一函数等）和当前讲解，
+// 补充讲解可以插入讲解队列。"
+//
+// 这一节验的是**接线**：面板那一格发 ui:ask → 宿主拿"当前那一步"包一个锚点 →
+// 走同一条编排链路（闸门 / 校验 / repair / 取件日志 / token 记账）→ 结果插进队列 →
+// 存档跟着改写。两段 prompt 的文本、插入算法、消息守卫各有单测，这里只补"它们真的连起来了"。
+
+/** 等一个条件成立（最多 2 秒）。追问是"消息 → 若干次 await"，只能轮询。 */
+async function waitFor(predicate, ms = 2000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return false;
+}
+
+fetchMode = 'with-fetch';
+focusAnswer = undefined;
+quickPickAnswer = '讲解这段';
+await registered.get('anchorExplain.capture')?.();
+
+const beforeAsk = [...webviews[0].webview.posted].reverse().find((m) => m?.type === 'session:update');
+const stepsBefore = beforeAsk?.result?.steps?.length ?? 0;
+check(stepsBefore === 3, 'D126：追问之前先有一份 3 步的讲解', `${stepsBefore}`);
+
+fetchCalls.length = 0;
+receiveFromWebview?.({ type: 'ui:ask', index: 1, question: '为什么先判断满再判断空？' });
+
+check(
+  webviews[0].webview.posted.some((m) => m?.type === 'ask:state' && m.state === 'running' && m.index === 1),
+  'D126：按下追问立刻给"追问中"（这一问要跑几十秒，屏幕上必须有东西在动）',
+);
+
+const askSettled = await waitFor(() =>
+  webviews[0].webview.posted.some(
+    (m) => m?.type === 'session:update' && (m.result?.steps?.length ?? 0) > stepsBefore,
+  ),
+);
+check(askSettled, 'D126：追问完成后推了新队列（补充已经插进去）', `${webviews[0].webview.posted.at(-1)?.type}`);
+
+const afterAsk = [...webviews[0].webview.posted].reverse().find((m) => m?.type === 'session:update');
+check(
+  afterAsk?.result?.steps?.length === stepsBefore + 1,
+  'D126：队列正好多一步（【3】【补充】【4】，不是把后面的顶掉）',
+  `${afterAsk?.result?.steps?.length}`,
+);
+check(afterAsk?.result?.steps?.[2]?.title === '补充', 'D126：补充插在被追问那一步（下标 1）之后', `${afterAsk?.result?.steps?.[2]?.title}`);
+check(
+  afterAsk?.result?.steps?.[3]?.title === '维护计数并报告成功',
+  'D126：原来的第 3 步只是被顶后，没有被顶掉',
+  `${afterAsk?.result?.steps?.[3]?.title}`,
+);
+check(afterAsk?.index === 2, 'D126：游标跟着落到新插入的那一步（不然看起来像追问没反应）', `${afterAsk?.index}`);
+check(
+  webviews[0].webview.posted.some((m) => m?.type === 'ask:state' && m.state === 'idle'),
+  'D126：结束之后清掉"追问中"',
+);
+
+const askBody = fetchCalls[0]?.body ?? {};
+const askSystem = String(askBody.messages?.[0]?.content ?? '');
+const askPrompt = String(askBody.messages?.[1]?.content ?? '');
+check(askPrompt.includes('## 这是对第 2 步的追问'), 'D126：发给模型的是"追问"口径，且问的是第 2 步', askPrompt.slice(0, 100));
+check(askPrompt.includes('不要重讲整段'), 'D126：明说不要重讲整段（这是"补充"这个词的全部含义）');
+check(askPrompt.includes('为什么先判断满再判断空？'), 'D126：用户那一问真的进了 prompt');
+check(askSystem.includes('# 这一次是追问'), 'D126：system 也换了口径（只改一处的话模型会照另一处重讲一遍）');
+check(
+  askPrompt.includes('锚点处的原文'),
+  'D126：当前那一块的代码原文在 prompt 里（"只给当前代码块"靠的就是它）',
+);
+check(
+  !askPrompt.includes('## 可能相关的文件'),
+  'D126：追问那一轮**没有候选清单**（"只给当前块"是结构性的，不靠模型自觉）',
+);
+check(
+  !askSystem.includes('find_files'),
+  'D126：追问那一轮连 find_files 也不给（不给清单却给查询口，等于让它绕开这条约束）',
+);
+
+const storedAfterAsk = workspaceStateStore.get('anchorExplain.lastRun');
+check(
+  storedAfterAsk?.result?.steps?.length === stepsBefore + 1,
+  'D126：留档被追问**改写**（下次「重放上次讲解」放出来的就是含补充的那一版）',
+  `${storedAfterAsk?.result?.steps?.length}`,
 );
 
 // ---- 收尾 -----------------------------------------------------------------

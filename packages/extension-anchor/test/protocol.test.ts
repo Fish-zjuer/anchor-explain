@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { STATE_WORD, isAnchorLike, parseSidebarMessage, parseStartMessage } from '../src/protocol.ts';
+import { MAX_ASK_CHARS, STATE_WORD, isAnchorLike, parseSidebarMessage, parseStartMessage } from '../src/protocol.ts';
 
 test('isAnchorLike：合法的代码锚点放行', () => {
   assert.equal(
@@ -152,4 +152,46 @@ test('STATE_WORD 是 WalkthroughState 的满射（加状态时漏了词会在这
     assert.notEqual(STATE_WORD[state], '', state);
   }
   assert.equal(Object.keys(STATE_WORD).length, states.length, '状态词表与状态联合类型的条数不一致');
+});
+
+// ── 追问（D126）：`ui:ask` 是 webview 发来的，所以它必须当成外部输入 ──────────
+//
+// 三条判据各有代价，所以逐条钉住：空问题放行 = 白花一次模型调用；
+// 负下标放行 = 宿主那边找不到那一步（而"找不到"只能报错，用户看不懂）；
+// 不截断 = 面板可以把任意长的东西塞进 prompt。
+
+test('parseSidebarMessage：合法的一句追问放行', () => {
+  assert.deepEqual(parseSidebarMessage({ type: 'ui:ask', index: 2, question: '为什么先判断再取值？' }), {
+    type: 'ui:ask',
+    index: 2,
+    question: '为什么先判断再取值？',
+  });
+});
+
+test('parseSidebarMessage：追问的问题**两端去空白**（用户手滑多敲的空格不该进 prompt）', () => {
+  assert.deepEqual(parseSidebarMessage({ type: 'ui:ask', index: 0, question: '  这里有锁吗？  ' }), {
+    type: 'ui:ask',
+    index: 0,
+    question: '这里有锁吗？',
+  });
+});
+
+test('parseSidebarMessage：空问题 / 纯空白一律丢（那是误触，不是"追问了个空"）', () => {
+  assert.equal(parseSidebarMessage({ type: 'ui:ask', index: 0, question: '' }), null);
+  assert.equal(parseSidebarMessage({ type: 'ui:ask', index: 0, question: '   \n\t ' }), null);
+  assert.equal(parseSidebarMessage({ type: 'ui:ask', index: 0 }), null);
+  assert.equal(parseSidebarMessage({ type: 'ui:ask', index: 0, question: 42 }), null);
+});
+
+test('parseSidebarMessage：下标必须是**非负整数**（面板可以报越界，但形状得先像话）', () => {
+  assert.equal(parseSidebarMessage({ type: 'ui:ask', index: -1, question: 'x' }), null);
+  assert.equal(parseSidebarMessage({ type: 'ui:ask', index: 1.5, question: 'x' }), null);
+  assert.equal(parseSidebarMessage({ type: 'ui:ask', index: '2', question: 'x' }), null);
+});
+
+test('parseSidebarMessage：超长的问题**夹断**而不是丢掉（粘一大段代码进来说"这里怎么理解"是正当用法）', () => {
+  const long = 'あ'.repeat(MAX_ASK_CHARS + 500);
+  const parsed = parseSidebarMessage({ type: 'ui:ask', index: 0, question: long });
+  assert.equal(parsed?.type, 'ui:ask');
+  assert.equal((parsed as { question: string }).question.length, MAX_ASK_CHARS, '夹到上限，不是拒收');
 });

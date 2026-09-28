@@ -925,3 +925,52 @@ test('D123：没有工作区文件夹时，`find_files` 依然能用（池子来
   assert.match(toolMsg?.content ?? '', /ring_buffer\.h/);
   assert.doesNotMatch(toolMsg?.content ?? '', /main\.c/);
 });
+
+// ── D126：追问那一轮的口径真的传到了 prompt 上 ────────────────────────────────
+//
+// `prompts.test.ts` 已经单独验了那两段文本；这里验的是**管道**：`deps.followUp`
+// 有没有真的进到 system 与 user 里。少了这条，两段文本写得再对也可能一次都没被用上
+// （S9a 的候选清单就出过这个错：签名收了 `candidates`，函数体从没读过 —— D67）。
+
+const FOLLOW_UP_STEP_FIXTURE = {
+  location: { filePath: 'C:/repo/main.c', lineStart: 40, lineEnd: 48 },
+  title: '空/满边界',
+  text: '这里先判断满，再判断空。',
+};
+
+test('D126：deps.followUp 给了 → system 与 user 都换成追问口径', async () => {
+  const requests: ChatRequest[] = [];
+  const provider: ChatProvider = {
+    chat(req) {
+      requests.push(req);
+      return Promise.resolve({ content: validJson(), toolCalls: [] });
+    },
+  };
+
+  await createOrchestrator({
+    chat: provider,
+    routeModel: createModelRouter({ tier1Model: 'cheap' }),
+    adapter: { capabilities: { contextTypes: ['file'], maxSpan: 5 }, fetchContext: () => Promise.resolve('') },
+    makeOutline: () => Promise.resolve({ documentLineCount: DOC_LINES, pageCount: null }),
+    maxFetchRounds: 3,
+    followUp: { step: FOLLOW_UP_STEP_FIXTURE, index: 4, question: '为什么要先判断满？' },
+  })(anchorWith());
+
+  const system = String(requests[0]?.messages[0]?.content ?? '');
+  const user = String(requests[0]?.messages[1]?.content ?? '');
+
+  assert.match(system, /# 这一次是追问，不是重新讲一遍/);
+  assert.match(user, /## 这是对第 5 步的追问/, 'index 是 0-based，人话里要说第 5 步');
+  assert.match(user, /为什么要先判断满？/);
+  assert.match(user, /这里先判断满，再判断空。/, '这一步原来的讲解也要进 prompt');
+});
+
+test('D126：不给 deps.followUp → 两处都不出现追问那一节（正式讲解那一轮不受影响）', async () => {
+  const h = harness([{ content: validJson(), toolCalls: [] }]);
+  await h.run();
+
+  const system = String(h.requests[0]?.messages[0]?.content ?? '');
+  const user = String(h.requests[0]?.messages[1]?.content ?? '');
+  assert.doesNotMatch(system, /这一次是追问/);
+  assert.doesNotMatch(user, /这是对第/);
+});

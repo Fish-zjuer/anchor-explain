@@ -487,3 +487,83 @@ test('D72：按住不放（键盘自动重复）不许变成连发', () => {
     '真正的按键仍然要转发（面板有焦点时工作台的键位到不了这儿，D47）',
   );
 });
+
+// ── 四·五、追问那一格（D126）──────────────────────────────────────────────
+//
+// 用户的原话："然后可以追问，追问时，只提供给AI当前代码块（或一函数等）和当前讲解，
+// 补充讲解可以插入讲解队列。"
+//
+// 这一格只在**当前步**下面 —— 与"只显示一块"（D125）是一致的：追问的对象永远是
+// 屏幕上铺开的那一块。会话收掉（ended）之后不给这一格：宿主那边没有会话可插，
+// 摆一个能打字、按下去却没反应的框，比"没有这个框"更坏。
+
+test('D126：当前步下面有追问那一格，且 act 名与协议消息成对（改名只改一边会静默失效）', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+
+  const input = findByAttr(client.root, 'data-act', 'askInput');
+  const button = findByAttr(client.root, 'data-act', 'ask');
+  assert.ok(input, '当前步下面要有追问输入框');
+  assert.ok(button, '以及那颗「追问」按钮');
+  assert.match(client.root.text, /补充讲解会插在这一步后面/, '要说清结果插在哪里');
+
+  // 客户端脚本是字符串常量、不参与类型检查，所以这层对应关系只能这样钉。
+  // **分两段钉**而不是"两个词挨得近"：提交走的是 submitAsk，中间隔着几十行 ——
+  // 只查距离的话，把 postMessage 挪进别的函数里也照样绿，而那正是会出错的情形。
+  assert.match(SIDEBAR_CLIENT_SCRIPT, /act === "ask"\)\s*submitAsk\(/, '那颗按钮要落到 submitAsk 上');
+  assert.match(SIDEBAR_CLIENT_SCRIPT, /vscode\.postMessage\(\{ type: "ui:ask"/, '而 submitAsk 要发 ui:ask');
+});
+
+test('D125+D126：追问那一格只长在当前步下面，索引行上没有', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(twoStepSession(1));
+
+  const boxes = findByAttr(client.root, 'data-act', 'askInput');
+  assert.ok(boxes, '当前步（第 2 步）下面有');
+  assert.equal(
+    boxes.attrs['data-index'],
+    '1',
+    '而且它认的是当前那一步 —— 宿主拿这个下标找步骤，认错了就插错位置',
+  );
+});
+
+test('D126：追问在跑时按钮禁用并改成「追问中…」（不然用户会再按一次）', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+  client.send({ type: 'ask:state', index: 0, state: 'running' });
+
+  const button = findByAttr(client.root, 'data-act', 'ask');
+  const input = findByAttr(client.root, 'data-act', 'askInput');
+  assert.equal(button?.disabled, true, '跑的时候按不动');
+  assert.equal(button?.textContent, '追问中…', '按钮自己要说在做什么');
+  assert.equal(input?.disabled, true, '输入框同理');
+});
+
+test('D126：追问失败要显示在**那一格下面**（通知说不清是哪一次失败的）', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+  client.send({ type: 'ask:state', index: 0, state: 'error', message: '端点没有返回内容' });
+
+  assert.match(client.root.text, /追问失败：端点没有返回内容/);
+  const button = findByAttr(client.root, 'data-act', 'ask');
+  assert.equal(button?.disabled, false, '失败之后要能再试一次（那不是死路）');
+});
+
+test('D126：拿不准的 ask:state 形状一律不当成状态（宁可不画，也不画一个我们不知道的结论）', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+  client.send({ type: 'ask:state', index: 0, state: '说不清的状态' });
+
+  const button = findByAttr(client.root, 'data-act', 'ask');
+  assert.equal(button?.disabled, false, '不认识的状态 = 没在跑');
+  assert.doesNotMatch(client.root.text, /追问失败/);
+});
+
+test('D126：按过「退出」之后不再给追问那一格（宿主那边会话已经收了）', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+  assert.ok(findByAttr(client.root, 'data-act', 'ask'), '会话还在时有');
+
+  client.send({ type: 'session:end' });
+  assert.equal(findByAttr(client.root, 'data-act', 'ask'), undefined, '结束之后不该留一个按不动的框');
+});

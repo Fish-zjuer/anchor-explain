@@ -234,3 +234,90 @@ test('onDidChange 返回的退订函数真的能退订；dispose 之后不再通
   s.next();
   assert.equal(calls, beforeDispose, 'dispose 之后不应再有通知');
 });
+
+// ── 追问：往队列中间插一步（D126）─────────────────────────────────────────
+//
+// 用户的原话："比如这个块，有如下结构：【总结】【1】【2】【3（我在这里追问）】【4】……，
+// 那解释完变为【总结】【1】【2】【3】【补充】【4】……"
+//
+// 这一段锁的是"插入"这件事本身：位置对不对、总数有没有涨、游标跟没跟过去。
+// 播放器/状态栏/导出/重放四个面读的都是同一份 steps，所以它们一行都不用改 ——
+// 前提正是"插入只改这一个数组"，而这条锁守的就是那个前提。
+
+/** 第 3 个位置之后的补充步骤（位置落在原第 3 步那一行上，形状与真产出一致） */
+function supplementStep(): ExplanationResult['steps'][number] {
+  return {
+    location: { filePath: 'C://repo//main.c', lineStart: 42, lineEnd: 42 },
+    text: '补充：这一行之所以先判断再取值，是因为……',
+    title: '补充',
+    highlights: [],
+  };
+}
+
+test('D126：insertStepsAfter 把补充插在指定步之后，总数 +1', () => {
+  const s = new WalkthroughSession(makeResult());
+  assert.equal(s.total, 3, '开头是 3 步');
+
+  assert.equal(s.insertStepsAfter(2, [supplementStep()]), true);
+
+  assert.equal(s.total, 4, '插入之后总共 4 步');
+  const steps = s.snapshot.result.steps;
+  assert.equal(steps[2]!.title, '步骤 3', '第 3 步还在原来的位置上');
+  assert.equal(steps[3]!.title, '补充', '补充插在它后面');
+  assert.equal(steps[3]!.text, '补充：这一行之所以先判断再取值，是因为……');
+});
+
+test('D126：插在中间不许把后面的步骤顶掉（【3】【补充】【4】，不是【3】【补充】）', () => {
+  const s = new WalkthroughSession(makeResult());
+  s.insertStepsAfter(0, [supplementStep()]);
+
+  const titles = s.snapshot.result.steps.map((step) => step.title);
+  assert.deepEqual(titles, ['步骤 1', '补充', '步骤 2', '步骤 3'], '后两步必须原样跟在后面');
+});
+
+test('D126：游标跟着落到**新插入的那一步**上（否则看起来像追问没反应）', () => {
+  const s = new WalkthroughSession(makeResult());
+  s.goto(0);
+  assert.equal(s.snapshot.index, 0);
+
+  s.insertStepsAfter(0, [supplementStep()]);
+
+  assert.equal(s.snapshot.index, 1, '插入之后当前步应当是那一步补充');
+  assert.equal(s.snapshot.step.title, '补充');
+  assert.equal(s.snapshot.pointIndex, -1, '落在它的第一拍（先铺整块底色）');
+});
+
+test('D126：连续追问是同一条规则（第二个补充跟在第一个后面）', () => {
+  const s = new WalkthroughSession(makeResult());
+  s.insertStepsAfter(0, [supplementStep()]);
+  s.insertStepsAfter(1, [{ ...supplementStep(), title: '补充二' }]);
+
+  assert.deepEqual(
+    s.snapshot.result.steps.map((step) => step.title),
+    ['步骤 1', '补充', '补充二', '步骤 2', '步骤 3'],
+  );
+});
+
+test('D126：越界下标与空数组都不改队列（外部输入不许把 result 弄坏）', () => {
+  const s = new WalkthroughSession(makeResult());
+
+  assert.equal(s.insertStepsAfter(3, [supplementStep()]), false, '下标等于 length 是越界');
+  assert.equal(s.insertStepsAfter(-1, [supplementStep()]), false);
+  assert.equal(s.insertStepsAfter(1.5, [supplementStep()]), false);
+  assert.equal(s.insertStepsAfter(1, []), false, '模型给了空数组 = 这次没有补充，不该悄悄改队列');
+
+  assert.equal(s.total, 3, '以上四种都不该动到 steps');
+});
+
+test('D126：讲完之后追问，会话要重新回到 running（不然面板按不动下一步）', () => {
+  const s = new WalkthroughSession(makeResult());
+  // 推到最后一拍，让它自己落成 done
+  while (s.next()) {
+    /* 一直推到收尾 */
+  }
+  assert.equal(s.snapshot.state, 'done');
+
+  s.insertStepsAfter(2, [supplementStep()]);
+  assert.equal(s.snapshot.state, 'running', '有了新内容就该能继续往前推');
+  assert.equal(s.snapshot.beatTotal, totalBeats(s.snapshot.result.steps), '总拍数要跟上新队列');
+});

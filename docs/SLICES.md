@@ -1511,3 +1511,54 @@ manifest `Version` 均 = `0.1.1`。（`release/` 被 `.gitignore` 忽略，分�
 - **typecheck / build**：`tsc --noEmit` 过；`esbuild` 两个产物都出。
 - **踩到并已修**：新增的 CSS 注释里写了反引号 → 模板字符串被截断（`styles.ts` 的
   **第四次**）—— 由 `pnpm check:inline` 与 `tsc` 各拦了一次，已改成文字描述。
+
+
+## S11 追问：只喂当前块 + 当前讲解，补充插进队列（用户"我要求大改"的 ⑨）
+
+**目标**：讲解到某一步时，就这一步再问一句；回答作为**补充**插进队列，位置在它之后。
+
+**范围**：
+
+- `protocol.ts`：`ui:ask`（上行）+ `ask:state`（下行）+ 守卫（非负整数下标、问题去空白、
+  空问题丢弃、`MAX_ASK_CHARS` 夹断）
+- `sidebar/ui/clientScript.ts`：当前步下面那一格（输入框 + 按钮 + 回车提交）、
+  草稿按步骤存、`ask:state` 三态渲染、`session:end` 之后不给这一格
+- `sidebar/ui/styles.ts`：那一格的样式（虚线分隔 + 输入框走主题变量 + 失败用 errorForeground）
+- `sidebar/SidebarPanel.ts`：`onAsk` 回调 + `setAskState`（存一份，`ui:ready` 补发）
+- `playback/WalkthroughSession.ts`：`insertStepsAfter(index, steps)`（换新数组 + 换新 result
+  + 游标落到新插入那一步；`#result` / `#steps` 去掉 readonly）
+- `prompts/index.ts` + `en.ts`：`buildSystemPrompt` 的 `followUp` 段、
+  `buildUserPrompt` 的 `followUp` 一节 + `followUpSection` / `followUpSectionEn`
+- `orchestrator/Orchestrator.ts`：`deps.followUp`，两处 prompt 转口径；`tools` 那一路不变
+- `commands.ts`：`sessionAnchor` / `asking`、`askFollowUp`、`buildFollowUpAnchor`、
+  `makeProvider` 的 opts（追问不扫工作区 + 用量累加）、`rememberRun` 的 `autoSave`
+
+**不做**：不动 `ExplanationResult` / `Anchor` 契约、不动 §3.3、不加新的设置项
+（追问的取件范围**刻意**不给开关 —— 见 D126 第 2 条的代价说明）。
+
+**验收标准**：
+
+| 验收 | 靠什么 |
+|---|---|
+| 补充插在指定步之后，后面的步骤不被顶掉 | 单测 6 条（含越界 / 空数组 / 连续追问 / done→running） |
+| 两处 prompt 同时换口径，且正式讲解那几个字一个不多 | 单测 5 条（中英各一遍 + 前缀包含关系） |
+| 空问题 / 越界下标 / 超长问题 | 单测 5 条 |
+| 那一格只在当前步、会话结束后消失、跑时禁用、失败就地显示 | 单测 6 条 |
+| **接线真的连起来了**（面板 → 追问 → 新队列 → 留档） | 链路冒烟 16 条 |
+| 追问那一轮真的没有候选清单 / 没有 find_files | 链路冒烟 2 条 |
+
+**回退点**：`slice-S10`。整片是本地的：去掉 `ui:ask` / `ask:state` 两条消息与守卫、
+那一格与 `onAsk`、`insertStepsAfter`、两处 `followUp` 口径、`askFollowUp` /
+`buildFollowUpAnchor` 与 `makeProvider` 的 opts 即可 —— 不涉契约、不涉存储格式。
+
+**状态**：**完成（自动化）**，待用户实操。
+
+### S11 落地结果（2026-09-28）
+
+- **单测**：四包 **525 例全过**（core 50 / pdf-blocks 58 / extension-anchor **391**（+24） / anchor-pdf 26）。
+- **冒烟**：**smoke 83 / chain 228（+16）/ fileswitch 18 / pdf 80** 全过；
+  唯一 FAIL 仍是那条要 `spawn` 子进程的（本沙箱一律 `EBUSY`，与本次改动无关）。
+- **typecheck / build**：`tsc --noEmit` 过；`esbuild` 两个产物都出。
+- **踩到并已修**：新写的注释里又出现反引号 → 模板字符串被截断（`clientScript.ts`），
+  由 `check-inline-strings` 与 `tsc` 各拦一次；`prompts/index.ts` 的常量串漏了收尾反引号，
+  由 `tsc` 拦下。

@@ -28,6 +28,7 @@ import type {
   ContextRequestLogger,
   ExplainProvider,
   ExplanationResult,
+  WalkthroughStep,
 } from '@anchor/core';
 import { buildRepairPrompt, buildSystemPrompt, buildUserPrompt } from '../prompts/index.ts';
 import type { ExplainLanguage, ExplainStyle } from '../prompts/index.ts';
@@ -186,6 +187,16 @@ export interface OrchestratorDeps {
    * 且它应当**边跑边更新**（讲解要跑几十秒，用户盯着面板时就能看见在涨）。
    */
   onUsage?: (total: TokenUsage) => void;
+  /**
+   * 这一次是**追问**（D126）。给了它，两处 prompt 都会转成"只回答这一问"的口径
+   * （见 `prompts/index.ts` 的 `FOLLOW_UP_SYSTEM_SECTION` 与 `followUpSection`）。
+   *
+   * @anchor 为什么走 deps 而不是另开一个 `createFollowUp`：追问**走的是同一条编排链路**
+   *         （取件闸门、§3.3 校验、repair、token 记账、取件日志全都要）——
+   *         另起一条就是把这五件事各抄一遍，抄错一件的表现是"追问比正式讲解松"，
+   *         而那正是最不该出错的地方。这里只多一个"口径"字段，链路一行没变。
+   */
+  followUp?: { step: WalkthroughStep; index: number; question: string };
   temperature?: number;
   /** 讲解风格（D65）。缺省 = `prompts` 的默认档 */
   style?: ExplainStyle;
@@ -276,6 +287,8 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
           // `any` 档写真实路径、可以自己查（`find_files`）；清单驱动的档位照抄清单里的名字；
           // **清单为空时要明说"这次一个别的文件都读不到"**（D123，见 `candidateModeOf`）
           candidateMode: candidateModeOf(deps),
+          // 追问那一轮（D126）：system 追加一段"只回答这一问，不要重讲整段"
+          followUp: deps.followUp !== undefined,
         }),
       },
       {
@@ -287,6 +300,10 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
           candidates: deps.candidateFiles,
           crossFile,
           focus: anchor.focus,
+          // 追问（D126）：把"这一步原来讲过什么 + 用户这一问"一起给出去。
+          // 锚点的 `extractedText` 就是这一步的代码块（命令层填的），所以"只给当前块"是**结构上**的：
+          // 这一轮 prompt 里根本没有整份讲解，模型想重讲也无从讲起。
+          ...(deps.followUp !== undefined ? { followUp: deps.followUp } : {}),
         }),
       },
     ];

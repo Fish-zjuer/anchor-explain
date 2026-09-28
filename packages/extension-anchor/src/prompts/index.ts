@@ -22,7 +22,7 @@
  * 本文件属 prompts/，**禁止 import 'vscode'**。
  */
 
-import type { Anchor } from '@anchor/core';
+import type { Anchor, WalkthroughStep } from '@anchor/core';
 import { dirnameOf, formatLineRange, isCodeLocation, isPDFLocation, locationLabel, pdfSegmentsOf, segmentsOf } from '@anchor/core';
 import { EXPLANATION_JSON_SHAPE, EXPLANATION_JSON_SHAPE_PDF, FETCH_CONTEXT_TOOL, FIND_FILES_TOOL } from '../orchestrator/toolSchema.ts';
 import { describeCandidates, type CandidateFile } from '../relatedFiles.ts';
@@ -479,6 +479,15 @@ export function buildSystemPrompt(
      * 那就得明说"不要请求别的文件"，否则它会编一个名字出来。默认 `'list'`。
      */
     candidateMode?: 'list' | 'path' | 'none';
+    /**
+     * 这一次是**追问**（D126）：锚点是"被追问的那一步"，用户已经看过整段讲解，
+     * 现在只问其中一点。追加一段，把模型的朝向从"讲一遍"扭到"只回答这一问"。
+     *
+     * @anchor 为什么非加不可：输出契约与档位规则都在教它"按顺序讲清一段代码"——
+     *         不额外说明的话，它会拿这一步的代码块**重新讲一遍**，而那正是用户不要的
+     *         （用户的追问语义是"补充"，补充的前提是别复述）。
+     */
+    followUp?: boolean;
   } = {},
 ): string {
   // 英文面（D97）：整套段落与示范都换成 en.ts 的版本，骨架（五节 + 只实例化当前档）不变。
@@ -500,9 +509,23 @@ export function buildSystemPrompt(
     `# 档位规则\n\n${TIER_RULES[style]}`,
     fetchSection(crossFile, options.maxFetchLines, options.candidateMode ?? 'list'),
   ];
+  if (options.followUp === true) parts.push(FOLLOW_UP_SYSTEM_SECTION);
   if (withExamples) parts.push(examplesSection(style));
   return parts.join('\n\n');
 }
+
+/**
+ * 追问那一轮的系统提示追加段（D126）。**放在示范之前**：示范是"整段该怎么讲"的样子，
+ * 而这一段是"这次不要那样讲"的例外 —— 例外写在被例外的东西前面，读起来才是先立规矩再收紧。
+ */
+const FOLLOW_UP_SYSTEM_SECTION = `# 这一次是追问，不是重新讲一遍
+
+用户已经看过整段讲解，现在只问其中一点。**只回答这一问**：
+
+- 不要重讲整段，也不要复述上面已经说过的内容 —— 那些用户已经看过了。
+- 输出 1~3 步即可。步骤要短，落在**能支持这个回答的那几行**上（同上：location 必须落在给定范围内）。
+- 如果这一问靠现有的信息答不了（比如需要看别的函数，而这次没有取件能力），
+  就**如实说清缺什么**，不要猜一个看起来合理的答案。`;
 
 /**
  * 锚点的人话描述。模型对"第 40-48 行"的理解远好于对一串路径/JSON 的理解。
@@ -574,6 +597,17 @@ export function buildUserPrompt(
     candidates?: readonly CandidateFile[];
     focus?: string;
     crossFile?: boolean;
+    /**
+     * 追问（D126）：`step` 是被追问的那一步，`index` 是它的下标（0-based），
+     * `question` 是用户写的那句话。给了它就在「锚点处的原文」之后追加一节，
+     * 把"这一步原来讲过什么"原样摆给模型，并把任务收窄成"只回答这一问"。
+     *
+     * @anchor 为什么要把**原来的讲解**也带上（而不只给代码块）：用户的追问常常是
+     *         "那这个呢""为什么不是反过来"——**指代的是上一句话**。只给代码，
+     *         模型不知道"这个"是什么，只能把整块重讲一遍，那正是用户不要的
+     *         （他说的是"补充讲解"，补充的前提是别复述）。
+     */
+    followUp?: { step: WalkthroughStep; index: number; question: string };
   } = {},
 ): string {
   if (options.language === 'en') return buildUserPromptEn(anchor, options);
@@ -598,6 +632,13 @@ export function buildUserPrompt(
     );
   }
 
+  // 追问那一节（D126）放在原文**之后**：模型要先看到"这一块是什么"，
+  // 再看到"上一次怎么说的"，最后才是"这一问"—— 顺序反过来它会把问题当成锚点描述的一部分。
+  const followUp = options.followUp;
+  if (followUp !== undefined) {
+    parts.push(followUpSection(followUp.index, followUp.step, followUp.question), '');
+  }
+
   const candidates = options.candidates ?? [];
   if (options.crossFile === true && candidates.length > 0) {
     parts.push(
@@ -615,8 +656,43 @@ export function buildUserPrompt(
     );
   }
 
-  parts.push('请按 system 里的要求，给出讲解 JSON。');
+  parts.push(
+    followUp === undefined
+      ? '请按 system 里的要求，给出讲解 JSON。'
+      : '请只回答上面那一问，按 system 里的要求给出 JSON（1~3 步补充讲解即可）。',
+  );
   return parts.join('\n');
+}
+
+/**
+ * 追问那一节的正文（D126）。**纯函数**：`node --test` 直测（这一段是"补充讲解"能不能
+ * 成为"补充"的全部依据 —— 少了"原来的讲解"，模型就没有'不要复述什么'的基准）。
+ *
+ * @anchor 位置说明为什么逐条列：用户看到的侧边栏就是按这个形状分的
+ *         （标题 / 引导 / 正文 / 逐点），照抄它，模型更容易把补充落到**同一个位置**上，
+ *         而不是另起一段讲别处。
+ */
+export function followUpSection(index: number, step: WalkthroughStep, question: string): string {
+  const lines: string[] = [`## 这是对第 ${index + 1} 步的追问`, ''];
+  lines.push('上面「锚点处的原文」就是那一步涉及的那一块。那一步**原来的讲解**是：');
+
+  const said: string[] = [];
+  if (step.title !== undefined && step.title.trim() !== '') said.push(`- 标题：${step.title.trim()}`);
+  if (step.intro !== undefined && step.intro.trim() !== '') said.push(`- 引导：${step.intro.trim()}`);
+  said.push(`- 正文：${step.text}`);
+  const subs = step.highlights ?? [];
+  if (subs.length > 0) {
+    said.push('- 逐点说明：');
+    for (const h of subs) said.push(`  - ${h.narration}（${locationLabel(h.location)}）`);
+  }
+  lines.push('', said.join('\n'), '');
+
+  lines.push('用户现在追问：', question.trim(), '');
+  lines.push(
+    '只回答这一问：给出 1~3 步**补充**讲解。**不要重讲整段**，也不要复述上面已经说过的内容 ——',
+    '那些用户已经看过了；他要的是这一步没讲到的、或者讲得不清楚的那一部分。',
+  );
+  return lines.join('\n');
 }
 
 /**

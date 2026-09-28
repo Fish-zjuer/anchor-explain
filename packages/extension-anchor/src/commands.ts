@@ -70,6 +70,7 @@ import { scanCodeFiles } from './vscode/relatedFiles.ts';
 import { createOrchestrator } from './orchestrator/Orchestrator.ts';
 import { createModelRouter } from './orchestrator/ModelRouter.ts';
 import { createOpenAICompatibleProvider } from './orchestrator/providers/openAICompatible.ts';
+import { addUsage } from './orchestrator/providers/types.ts';
 import type { TokenUsage } from './orchestrator/providers/types.ts';
 import { describeIssues, validateExplanation } from './orchestrator/validateExplanation.ts';
 import { describeFetched } from './orchestrator/validateContextRequest.ts';
@@ -333,6 +334,21 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   /** 当前会话的锚点文件（D69）。`session:update` 带着它，面板据此决定要不要标文件名。 */
   let sessionAnchorPath: string | null = null;
   /**
+   * 当前会话的那个锚点（D126）。追问要用它当底子 —— 追问锚点是从它派生的
+   * （换 location / extractedText / focus，其余字段照抄：sourceId / sourceName）。
+   *
+   * @anchor 与 `session` 同生共死（`stop()` 一起清）—— 理由与 `sessionAnchorPath` 一样（D78）：
+   *         留着一个上一轮的锚点，下一轮（可能是完全不相干的文件、甚至是 PDF）的追问
+   *         就会拿旧锚点的 sourceName 去讲新东西。
+   */
+  let sessionAnchor: Anchor | undefined;
+  /**
+   * 有一问正在跑（D126）。与 `running` 分开：两者可以同时为真吗？不可以（追问只在讲解结束后发起），
+   * 但它们是两件事 —— 一个是"模型在讲整段"，一个是"模型在答这一问"，
+   * 合成一个变量的话，被挡住时说不清挡的是哪一次。
+   */
+  let asking = false;
+  /**
    * 本次讲解累计的 token 用量（D120）。**只在内存里** —— 不落盘、不进讲解历史、
    * 不进 `workspaceState`（用户原话："程序处理，不保存"）。每次讲解开始时清空。
    */
@@ -461,7 +477,18 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    *         而不是某个中间态。写失败也只是少一个功能，绝不许影响讲解本身
    *         （工作区只读、Memento 满了都可能失败），因此整段包在 try 里。
    */
-  function rememberRun(result: ExplanationResult, anchor: Anchor): void {
+  function rememberRun(
+    result: ExplanationResult,
+    anchor: Anchor,
+    /**
+     * `autoSave: false` = 更新存档但**不另写一份历史 Markdown**（D126）。
+     * 追问会调用它来把"补进队列的那几步"并进存档（用户的选择：一次讲解 = 一份留档，
+     * 追问**改写**它），但 history 文件夹那一份是**按时间戳命名**的 ——
+     * 再写一次只会多出一个几乎相同的文件，而旧的那份仍然缺着补充讲解。
+     * 该由谁承担"留档"，是 ⑩ 那一片的事；在那之前，权威版本是这里的存档（重放读的就是它）。
+     */
+    opts: { autoSave?: boolean } = {},
+  ): void {
     // 语言跟着这一份存档走（D97）：英文讲解导出的历史文件不该顶着中文标题
     const run: LastRun = { result, anchor, savedAt: Date.now(), language: languageOf() };
     lastRun = run;
@@ -473,7 +500,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     }
     // D89：同一份存档**自动**落一份 Markdown 进历史文件夹（扩展私有目录，不进工作区）。
     // 异步、失败只进日志 —— 存历史是"多给一份"的事，没有资格拖住或弄坏讲解本身。
-    void autoSaveRun(run);
+    if (opts.autoSave !== false) void autoSaveRun(run);
     refreshStart();
   }
 
@@ -743,6 +770,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     onFontSmaller: () => changeFontScale('smaller'),
     onExport: () => void exportLast(),
     onOpenHistory: () => void openHistoryFolder(),
+    // D126：追问。面板只回传"哪一步 + 问什么"，能问不能问由宿主判（§5.5 同构）
+    onAsk: (index, question) => void askFollowUp(index, question),
   };
 
   /**
@@ -872,6 +901,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     session?.dispose();
     // 面板要拿它判断"这个位置要不要标文件名"（D69）：PDF 锚点没有文件，给 null
     sessionAnchorPath = isCodeLocation(anchor.location) ? anchor.location.filePath : null;
+    // 追问的底子（D126）：它与 `session` 同生共死，理由见 `sessionAnchor` 的声明处
+    sessionAnchor = anchor;
 
     const fresh = new WalkthroughSession(result);
     session = fresh;
@@ -902,6 +933,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
      *         就能把**这一轮**毫不相干的 PDF 讲解一并杀掉。这正是我们要修的那类误杀的翻版。
      */
     sessionAnchorPath = null;
+    // 追问的底子也跟着走（D126）：留着一个上一轮的锚点，
+    // 下一轮（可能是不相干的文件、甚至是 PDF）的追问就会拿旧锚点的 sourceName 去讲新东西
+    sessionAnchor = undefined;
     pendingAnchorClose = false;
     setActive(false);
     setContextKey('anchorExplain.sessionOpen', false);
@@ -1307,7 +1341,14 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    * 没有可用配置时**明确报错**，不静默退化成"什么都不发生" ——
    * 后者让人以为是扩展坏了，而不是"我还没填 baseUrl"。
    */
-  async function makeProvider(anchor: Anchor): Promise<ReturnType<typeof createOrchestrator>> {
+  async function makeProvider(
+    anchor: Anchor,
+    /**
+     * 追问那一轮（D126）。给了它，编排层会把 prompt 换成"只回答这一问"的口径，
+     * 且 token 用量**累加**到这一整次讲解上（见下面 `onUsage` 的注释）。
+     */
+    opts: { followUp?: { step: WalkthroughStep; index: number; question: string } } = {},
+  ): Promise<ReturnType<typeof createOrchestrator>> {
     const read = await readAnchorConfig(context);
     const provider = read.provider;
     if (!provider) throw new AnchorError('PROVIDER_ERROR', describeConfig(read));
@@ -1317,19 +1358,36 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // 取件边界与清单**一起**算（S9a-fix10）：两者必须同源，分两处建迟早各说各话。
     // 扫描失败「降级但不静默」—— 清单没了跨文件取件仍在（`any` 档模型可以自己写路径），
     // 但它多半**不知道该问哪个文件**，这句话是唯一能解释"它怎么不往外读"的线索（D67）。
-    const boundary = isCodeLocation(anchor.location)
-      ? await buildFetchBoundary(
-          cfg.fetchScope,
-          anchor.location.filePath,
-          anchor.extractedText ?? '',
-          cfg.maxFetchLines,
-          cfg.maxCandidateFiles,
-          (err) =>
-            note(
-              `候选文件清单取不到（${describeError(err)}）—— 不影响讲解，但模型不会知道有哪些相关文件`,
-            ),
-        )
-      : undefined;
+    /**
+     * 追问那一轮**不扫工作区、不给清单**（D126）。
+     *
+     * @anchor 用户的原话是"追问时，**只**提供给AI当前代码块（或一函数等）和当前讲解"。
+     *         不扫之后有两样好处，而且都不只是省事：
+     *           1. **口径一致**：没有清单 → `candidateModeOf` 判成 `'none'` →
+     *              提示词改说"就基于锚点处的原文作答"。清单与提示词仍然同源，不会出现
+     *              "教它照抄一份不存在的清单"那种自相矛盾（D123 修过的那一类）。
+     *           2. **追问立刻开始**：`buildFetchBoundary` 要遍历目录树，
+     *              而"这一步没讲到的部分"那种问题本来就不需要它 —— 让用户为一次提问
+     *              先等一次全工作区扫描，是白等。
+     *
+     *         代价（已与用户确认过口径）：追问**读不到锚点文件之外的文件**。
+     *         要放开的话，把下面这个条件去掉、并把 `fetchPolicy` 那一行接回来即可 ——
+     *         是"接一个开关"，不是"改一套机制"。
+     */
+    const boundary =
+      opts.followUp === undefined && isCodeLocation(anchor.location)
+        ? await buildFetchBoundary(
+            cfg.fetchScope,
+            anchor.location.filePath,
+            anchor.extractedText ?? '',
+            cfg.maxFetchLines,
+            cfg.maxCandidateFiles,
+            (err) =>
+              note(
+                `候选文件清单取不到（${describeError(err)}）—— 不影响讲解，但模型不会知道有哪些相关文件`,
+              ),
+          )
+        : undefined;
 
     return createOrchestrator({
       chat: createOpenAICompatibleProvider({
@@ -1354,9 +1412,20 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       // token 用量（D120）：**只活在内存里**，边跑边刷面板最下面那一行。
       // 面板可能还没建（结果出来才建）—— 那时先记着，建面板时用它当初值。
       onUsage: (total) => {
-        usageThisRun = total;
-        sidebar?.setUsage(total);
+        /**
+         * 追问那一轮要**累加**（D126）。面板那一行的标题是「本次用量」，而"本次"
+         * = 从第一次讲解开始到现在 —— 不累加的话，追问一跑，那一行会从"整段的用量"
+         * 掉成"只这一问的用量"，数字**变小**，看起来像退款。
+         *
+         * 注意"累计"这个词在两侧的含义不同：编排器内部的 `total` 是**它自己那一次调用**
+         * 的累计（每建一个 provider 就重新计账），所以跨 prompt 的累加只能在这里做。
+         */
+        const merged =
+          opts.followUp === undefined || usageThisRun === undefined ? total : addUsage(usageThisRun, total);
+        usageThisRun = merged;
+        sidebar?.setUsage(merged);
       },
+      followUp: opts.followUp,
       logger: loggerOf(),
     });
   }
@@ -1501,6 +1570,118 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // 万一 `startSession` 里的某个渲染面抛了，用户至少还能重放这一份。
     rememberRun(result, anchor);
     startSession(result, anchor);
+  }
+
+  /**
+   * 追问（D126）——「这一步没讲到的部分，再问一句」。
+   *
+   * 用户的原话："然后可以追问，追问时，只提供给AI当前代码块（或一函数等）和当前讲解，
+   * 补充讲解可以插入讲解队列。"
+   *
+   * @anchor 这一条**不新开链路**：它把追问包成一个新的 `Anchor`，走 `makeProvider` 那一套
+   *         （取件闸门、§3.3 校验、repair、取件日志、token 记账一个不少），
+   *         只是多带一个 `followUp` 口径。理由：另起一条就是把这五件事各抄一遍，
+   *         抄漏一件的表现是"追问比正式讲解松" —— 而那正是最不该松的地方。
+   *
+   *         "只给当前代码块 + 当前讲解"是**结构上**做到的：追问锚点的 `extractedText`
+   *         = 这一步那一块代码（现从文件里读），prompt 里根本没有整份讲解，
+   *         模型想重讲也无从讲起。要不要让它还能取件，用的是**既有的**取件范围开关
+   *         （设置 `anchorExplain.fetchScope` / 本次会话的「选择这次的取件范围」命令）——
+   *         没有为它单开第三个旋钮。
+   */
+  async function askFollowUp(index: number, question: string): Promise<void> {
+    if (asking) {
+      note('上一问还在跑 —— 这一次追问被忽略');
+      return;
+    }
+    const live = session;
+    const base = sessionAnchor;
+    if (!live || !base) {
+      void vscode.window.showWarningMessage('Anchor：讲解已经结束了 —— 先重新讲一次，再追问。');
+      return;
+    }
+    const step = live.snapshot.result.steps[index];
+    if (!step) {
+      // 面板报的下标越界（webview 是外部输入）：明说，不猜它想问哪一步
+      void vscode.window.showWarningMessage('Anchor：找不到要追问的那一步（列表可能已经变了）。');
+      return;
+    }
+
+    asking = true;
+    const panel = sidebarOf();
+    panel.setAskState(index, 'running');
+    note(`追问第 ${index + 1} 步：${question.slice(0, 80)}`);
+    try {
+      const followAnchor = await buildFollowUpAnchor(base, step);
+      const provider = await makeProvider(followAnchor, { followUp: { step, index, question } });
+      const produced = await provider(followAnchor);
+      const verdict = validateExplanation(produced, followAnchor, await makeOutline(followAnchor), {
+        /**
+         * 追问只许引用"它读过的文件"。这里传空数组 —— 与"只给当前代码块"是同一条约束的
+         * 两种说法：取件走的是同一条闸门，模型没读过任何别的文件，于是也就没资格引用它们。
+         * （即使它真的取到了锚点文件里的别的行，那些行本来就允许引用 —— 规则是一致的那一套。）
+         */
+        allowedPaths: [],
+      });
+      if (!verdict.ok) {
+        throw new AnchorError('SCHEMA_VIOLATION', `AI 输出未通过校验：${describeIssues(verdict.issues)}`, {
+          issues: verdict.issues,
+        });
+      }
+
+      if (!live.insertStepsAfter(index, verdict.result.steps)) {
+        // 模型给了空 steps（校验通常已经拦掉，这里是第二道）：如实说，不改队列
+        throw new AnchorError('SCHEMA_VIOLATION', '这一次没有产出一条可以插入的补充讲解。');
+      }
+      panel.setAskState(index, 'idle');
+      // 存档：追问**改写**它（用户的选择）—— 于是「重放上次讲解」放出来的是含补充的那一版。
+      // 不另写历史 Markdown：理由见 `rememberRun` 的 `autoSave` 注释。
+      rememberRun(live.snapshot.result, base, { autoSave: false });
+      note(`追问完成：插入 ${verdict.result.steps.length} 步（现在共 ${live.snapshot.total} 步）`);
+    } catch (err) {
+      // 失败显示在**那一块下面**（不是弹通知）：三块之后，通知已经说不清是哪一次失败了
+      panel.setAskState(index, 'error', userFacing(err));
+      note(`追问失败：${userFacing(err)}`);
+    } finally {
+      asking = false;
+    }
+  }
+
+  /**
+   * 追问用的锚点（D126）：把"这一步"包成一个既有链路能消化的 `Anchor`。
+   *
+   * 换掉的是 `location`（这一步在哪）与 `extractedText`（那一段原文 —— "当前代码块"就是它），
+   * 其余（`sourceType` / `sourceId` / `sourceName`）照抄底子锚点。
+   *
+   * @anchor 读原文失败**不中止**：只给这一步的讲解文字，模型仍然答得了
+   *         "刚才那句话是什么意思"—— 那类追问根本不需要代码。
+   *         少给一样，比整条路走不通好（与 `withPdfText` 同一条立场）。
+   */
+  async function buildFollowUpAnchor(base: Anchor, step: WalkthroughStep): Promise<Anchor> {
+    const location = step.location;
+    let blockText = '';
+    try {
+      if (isCodeLocation(location)) {
+        blockText = await codeAdapter.fetchContext({
+          type: 'file',
+          params: { path: location.filePath, start: location.lineStart, end: location.lineEnd },
+          reason: '追问：当前这一步的代码块',
+        });
+      } else if (isPDFLocation(location) && typeof location.filePath === 'string') {
+        // `textInBBox` 取不到文字层时返回 null（扫描件是正常情况）—— 归一成空串，
+        // 交给下面那条"没读到就只按讲解回答"的路（与 `withPdfText` 同一条立场）
+        blockText = (await pdfAdapter.textInBBox(location.filePath, location.page, location.bbox)) ?? '';
+      }
+    } catch (err) {
+      note(`追问：这一步的原文没读到（${describeError(err)}）—— 只按这一步的讲解回答`);
+    }
+    return {
+      sourceType: base.sourceType,
+      sourceId: base.sourceId,
+      sourceName: base.sourceName,
+      location,
+      ...(blockText.trim() !== '' ? { extractedText: blockText } : {}),
+    };
   }
 
   /**

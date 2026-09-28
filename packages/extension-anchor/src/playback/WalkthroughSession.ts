@@ -98,8 +98,10 @@ export function firstBeatOfStep(steps: readonly WalkthroughStep[], index: number
 }
 
 export class WalkthroughSession {
-  readonly #result: ExplanationResult;
-  readonly #steps: readonly WalkthroughStep[];
+  // `#result` / `#steps` 从 D126 起**不是 readonly 了**：追问要往中间插一步
+  // （`insertStepsAfter`），而那必须换一个新的 steps 数组 —— 见那个方法的注释。
+  #result: ExplanationResult;
+  #steps: readonly WalkthroughStep[];
   readonly #intervalMs: number;
   readonly #listeners = new Set<SnapshotListener>();
 
@@ -149,6 +151,44 @@ export class WalkthroughSession {
 
   get total(): number {
     return this.#steps.length;
+  }
+
+  /**
+   * 把几步**补充讲解**插到第 `index` 步之后（D126），并把游标落到第一步补充上。
+   *
+   * @anchor 用户的语义是："比如这个块，有如下结构：【总结】【1】【2】【3（我在这里追问）】【4】……，
+   *         那解释完变为【总结】【1】【2】【3】【补充】【4】……"。
+   *         所以补充不是"挂在第 3 步下面的子块"，而是**队列里的新一项**：它自己占一拍、
+   *         有自己的高亮、能被上一步/下一步走到 —— 也就是说，播放器、状态栏、导出、
+   *         重放四个面读到的都是同一份 `steps`，它们**一行都不用改**。
+   *
+   *         代价（已与用户确认）：第 3 步之后的编号全部位移。改的只有这个数组，
+   *         所以位移是**一次性**的 —— 没有任何地方缓存着旧下标（`goto` 由面板按当前列表重新发）。
+   *
+   * @anchor 为什么游标要跟到新插入的那一步，而不是留在原地：用户刚问完，他要读这个回答。
+   *         留在原地的话，面板上"当前块"还是原来那一步，看上去像"追问没反应"。
+   *
+   * `steps` 为空返回 false（模型给了空数组 = 这次没有补充，不该悄悄改队列）。
+   */
+  insertStepsAfter(index: number, steps: readonly WalkthroughStep[]): boolean {
+    if (steps.length === 0) return false;
+    if (!Number.isInteger(index) || index < 0 || index >= this.#steps.length) return false;
+
+    const merged = [
+      ...this.#steps.slice(0, index + 1),
+      ...steps,
+      ...this.#steps.slice(index + 1),
+    ];
+    this.#steps = merged;
+    // **新对象**，不是就地改数组：`ExplanationResult` 是冻结契约（§3.3），
+    // 但它冻结的是**形状**，不是"这一个对象永远不能换"。换一个新对象让"谁在什么时候拿到的是哪一版"
+    // 保持可见 —— 就地 push 会让已经交出去的 result 在我们背后变长，那种 bug 极难查。
+    this.#result = { ...this.#result, steps: merged };
+
+    this.#beat = firstBeatOfStep(merged, index + 1);
+    if (this.#state === 'done') this.#state = 'running';
+    this.#emit();
+    return true;
   }
 
   /** 推进一步；已在最后一拍则收尾（`done`）并返回 false。 */

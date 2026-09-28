@@ -33,6 +33,8 @@ export interface SidebarHandlers {
   onExport(): void;
   /** D89：打开讲解历史文件夹 */
   onOpenHistory(): void;
+  /** D126：对第 `index` 步追问一句（面板上的输入框 + 那颗按钮） */
+  onAsk(index: number, question: string): void;
 }
 
 /** 重放缓冲上限：侧边栏的消息量很小，50 条足够覆盖一次会话 */
@@ -53,6 +55,12 @@ export class SidebarPanel {
    * 面板重建（折叠再展开）时不至于把那行数字丢掉。
    */
   #usage: TokenUsage | null = null;
+  /**
+   * 追问的状态（D126）。与 `#usage` 同一条理由存一份：`ui:ready` 之后要补发，
+   * 面板重建（折叠再展开）时不至于把"这一问正在跑"丢掉 —— 那会让人以为它没在动，
+   * 于是又按一次（而第二次会被宿主的忙碌判定挡掉，屏幕上就只剩困惑）。
+   */
+  #ask: { index: number; state: 'running' | 'idle' | 'error'; message?: string } | null = null;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -81,6 +89,8 @@ export class SidebarPanel {
           void this.#panel.webview.postMessage({ type: 'ui:fontScale', scale: this.#fontScale });
           // token 那一行同理（D120）：它可能在面板存在之前就已经发过一轮
           void this.#panel.webview.postMessage({ type: 'ui:usage', usage: this.#usage });
+          // 追问状态同理（D126）：面板重建时若那一问还在跑，得让它照旧显示"追问中…"
+          if (this.#ask) void this.#panel.webview.postMessage({ type: 'ask:state', ...this.#ask });
           break;
         case 'ui:next':
           this.#handlers.onNext();
@@ -114,6 +124,9 @@ export class SidebarPanel {
           break;
         case 'ui:openHistory':
           this.#handlers.onOpenHistory();
+          break;
+        case 'ui:ask':
+          this.#handlers.onAsk(msg.index, msg.question);
           break;
       }
     });
@@ -172,6 +185,16 @@ export class SidebarPanel {
   setUsage(usage: TokenUsage | null): void {
     this.#usage = usage;
     this.post({ type: 'ui:usage', usage });
+  }
+
+  /**
+   * 追问的状态变了（D126）。`message` 只在 `state === 'error'` 时有意义 ——
+   * 失败原因要显示在**被追问的那一块下面**，而不是弹一个与面板失去关联的通知。
+   * `state === 'idle'` 且没有 message = 这一问结束了（成功或放弃），面板清掉标记。
+   */
+  setAskState(index: number, state: 'running' | 'idle' | 'error', message?: string): void {
+    this.#ask = message === undefined ? { index, state } : { index, state, message };
+    this.post({ type: 'ask:state', ...this.#ask });
   }
 
   reveal(): void {

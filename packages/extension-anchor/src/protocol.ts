@@ -97,7 +97,19 @@ export type HostToSidebar =
    * `null` = 这次一个 token 数都没拿到（端点没返回 `usage`），面板据此说"未提供"
    * 而不是画一排 0（把"不知道"写成 0 是在编一个看起来很确定的数）。
    */
-  | { type: 'ui:usage'; usage: TokenUsage | null };
+  | { type: 'ui:usage'; usage: TokenUsage | null }
+  /**
+   * 【D126 新增】追问的状态，画在**被追问那一步**下面。
+   *
+   * @anchor 为什么走单独一条消息，而不是塞进 `session:update`：追问要跑十几秒到几十秒，
+   *         而那段时间里 `session:update` **一次都不会来**（它只在会话换拍时发）。
+   *         没有这条消息，用户按下「追问」之后屏幕上什么都不会变 —— 那是"看起来没反应"，
+   *         正是 D64 治过的那种病（"AI 的操作在背后看不到会有焦虑感"）。
+   *
+   *         `message` 只在 `error` 时有值：失败原因要显示在**它自己那一块下面**，
+   *         而不是弹一个与面板失去关联的通知 —— 三块之后用户已经不知道是哪一次追问失败了。
+   */
+  | { type: 'ask:state'; index: number; state: 'running' | 'idle' | 'error'; message?: string };
 
 /**
  * 【新增，非追加之外无改动】`ui:ready` 是 S1 加的握手消息。
@@ -139,7 +151,17 @@ export type SidebarToHost =
    * "上次讲解存不存在"由宿主判断（面板上的导出按钮已经在无快照时禁用，双保险）。
    */
   | { type: 'ui:export' }
-  | { type: 'ui:openHistory' };
+  | { type: 'ui:openHistory' }
+  /**
+   * 【D126 新增】追问。`index` = 被追问的那一步（面板上"当前块"的下标），
+   * `question` = 用户敲进去的那句话。
+   *
+   * @anchor 为什么 `index` 由**面板**给：追问是"这一步没讲清楚"，
+   *         而"这一步"只有面板知道（它画的就是当前块）。宿主不另存一份"用户在看第几步"——
+   *         那会变成第二个事实源，早晚与面板显示的那一个分家。
+   *         代价是面板可以报一个越界的下标，所以宿主那一侧必须自己再查一次（不信外部输入）。
+   */
+  | { type: 'ui:ask'; index: number; question: string };
 
 // ─────────────────────────────────────────────────────────────
 // §5.2 ext-B 内部：宿主 ↔ 注入脚本（S5/S6 落地）
@@ -270,10 +292,28 @@ export function parseSidebarMessage(raw: unknown): SidebarToHost | null {
       if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) return null;
       return { type: raw.type, index };
     }
+    case 'ui:ask': {
+      const index = raw.index;
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) return null;
+      const question = raw.question;
+      if (typeof question !== 'string') return null;
+      const trimmed = question.trim();
+      // 空问题直接丢：它不是"追问了个空"，而是**误触**（回车/空格）。
+      // 静默丢掉比让宿主去问一次模型便宜得多，也不会在面板上留下一条"补充：无"。
+      if (trimmed === '') return null;
+      return { type: 'ui:ask', index, question: trimmed.slice(0, MAX_ASK_CHARS) };
+    }
     default:
       return null;
   }
 }
+
+/**
+ * 一句追问的长度上限（D126）。**夹而不是拒**：超长的问题仍然是一个问题，
+ * 截断它比整条丢掉有用（用户是粘贴了一大段代码进来说"这里怎么理解"）。
+ * 这个数管的是"一条消息能有多大"，不是"用户能问多少字"。
+ */
+export const MAX_ASK_CHARS = 2000;
 
 /**
  * §5.5 宿主侧守卫。与 `parseSidebarMessage` 同一条规矩：不认识的形状一律 null。

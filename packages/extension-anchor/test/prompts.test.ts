@@ -429,3 +429,81 @@ test('英文 describeAnchor PDF：文件路径与多块披露都有', async () =
   assert.match(text, /File path: C:\/repo\/docs\/sample\.pdf/);
   assert.match(text, /Page: 23/);
 });
+
+// ── 追问那一轮的 prompt（D126）─────────────────────────────────────────────
+//
+// 这一轮唯一的目的是"别重讲整段，只答这一问"。它靠**两处**同时成立：
+// system 追加一段（否则档位规则与示范会把模型推回"按顺序讲一遍"），
+// user 里把"这一步原来讲过什么 + 用户这一问"摆出来（否则"这个"指的是什么无从知道）。
+// 两条都测 —— 只改一处的话，模型会照着另一处把整段重讲一遍。
+
+const FOLLOW_UP_STEP = {
+  location: { filePath: 'C://repo//main.c', lineStart: 40, lineEnd: 48 },
+  title: '空/满边界',
+  intro: '先看这两个判断。',
+  text: '这里先判断满，再判断空。',
+  highlights: [
+    { location: { filePath: 'C://repo//main.c', lineStart: 41, lineEnd: 41 }, narration: '满了就不能再写', emphasis: 'primary' as const },
+  ],
+};
+
+test('D126：追问的 user prompt 里有"原来的讲解"和"这一问"，并明说不要重讲整段', () => {
+  const prompt = buildUserPrompt(CODE_ANCHOR, {
+    followUp: { step: FOLLOW_UP_STEP, index: 2, question: '为什么先判断满再判断空？' },
+  });
+
+  assert.match(prompt, /## 这是对第 3 步的追问/, '要说清问的是第几步（模型据此定位）');
+  assert.match(prompt, /- 标题：空\/满边界/, '原来的标题要带上');
+  assert.match(prompt, /- 引导：先看这两个判断。/, '引导句也是"原来讲过的内容"，少了模型会重复它');
+  assert.match(prompt, /- 正文：这里先判断满，再判断空。/, '正文是"不要复述"的主要对象');
+  assert.match(prompt, /满了就不能再写/, '逐点说明也要带上');
+  assert.match(prompt, /为什么先判断满再判断空？/, '用户这一问当然要在');
+  assert.match(prompt, /不要重讲整段/, '必须明说不要重讲 —— 这是"补充"这个词的全部含义');
+  assert.match(prompt, /给出 1~3 步/, '规模也要收住（整段的档位规则不会自动收住它）');
+});
+
+test('D126：没有 followUp 时，user prompt 里**一个字都不该多**', () => {
+  const prompt = buildUserPrompt(CODE_ANCHOR);
+  assert.doesNotMatch(prompt, /追问/, '没追问就别提追问');
+  assert.match(prompt, /请按 system 里的要求，给出讲解 JSON。/);
+});
+
+test('D126：追问那一轮改成"只答这一问"的收尾语（与正式讲解不是同一句）', () => {
+  const prompt = buildUserPrompt(CODE_ANCHOR, {
+    followUp: { step: FOLLOW_UP_STEP, index: 0, question: 'x' },
+  });
+  assert.doesNotMatch(prompt, /请按 system 里的要求，给出讲解 JSON。$/m, '别用正式讲解那一句收尾');
+  assert.match(prompt, /请只回答上面那一问/);
+});
+
+test('D126：system 追加了追问那一节，且位置在示范之前（先立规矩再收紧）', () => {
+  const followUp = buildSystemPrompt(DEFAULT_STYLE, { followUp: true });
+  assert.match(followUp, /# 这一次是追问，不是重新讲一遍/);
+  assert.match(followUp, /不要重讲整段/);
+  assert.match(followUp, /如实说清缺什么/, '答不了要说缺什么，不许猜');
+
+  // 没有它就一个字都不多（正式讲解那一轮不该带着这段）
+  assert.doesNotMatch(buildSystemPrompt(DEFAULT_STYLE), /这一次是追问/);
+
+  const plain = buildSystemPrompt(DEFAULT_STYLE, { examples: false });
+  const asked = buildSystemPrompt(DEFAULT_STYLE, { examples: false, followUp: true });
+  assert.ok(
+    asked.startsWith(plain),
+    '追问那一段只能**追加**在末尾 —— 插进中间会打乱"角色→形状→规则→档位→取件"的骨架',
+  );
+});
+
+test('D126：英文面同样有追问那一段（两种语言的追问口径一致）', async () => {
+  const { buildSystemPromptEn, buildUserPromptEn } = await import('../src/prompts/en.ts');
+
+  const system = buildSystemPromptEn(DEFAULT_STYLE, { followUp: true });
+  assert.match(system, /# This round is a follow-up, not a re-explanation/);
+  assert.doesNotMatch(buildSystemPromptEn(DEFAULT_STYLE), /This round is a follow-up/);
+
+  const user = buildUserPromptEn(CODE_ANCHOR, {
+    followUp: { step: FOLLOW_UP_STEP, index: 2, question: 'why check full first?' },
+  });
+  assert.match(user, /## This is a follow-up on step 3/);
+  assert.match(user, /why check full first\?/);
+  assert.match(user, /Do \*\*not\*\* re-explain/);
+});

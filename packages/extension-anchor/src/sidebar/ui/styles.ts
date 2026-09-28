@@ -212,6 +212,62 @@ body {
   font-style: italic;
 }
 
+/* ── 追问（D126）：只长在当前那一步下面 ─────────────────────── */
+
+.ask {
+  margin-top: 12px;
+  padding-top: 10px;
+  /* 用虚线把它与"这一步的内容"分开：它是**动作**，不是讲解的一部分 */
+  border-top: 1px dashed var(--vscode-panel-border);
+}
+
+.ask-row { display: flex; gap: 6px; align-items: stretch; }
+
+.ask-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.9em;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: var(--anchor-radius);
+  padding: 3px 8px;
+}
+
+.ask-input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+/* 追问那两颗（输入框 + 按钮）里的按钮：与工具条同长相，但它属于**这一步** */
+.ask-row button {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.86em;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: none;
+  border-radius: var(--anchor-radius);
+  padding: 3px 12px;
+  cursor: pointer;
+}
+
+.ask-row button:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+
+.ask-row button:disabled {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  cursor: default;
+}
+
+.ask-hint,
+.ask-error {
+  margin-top: 5px;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* 失败要说得出话：用主题的 errorForeground，且不加底色 —— 面板窄，色块会盖住文字 */
+.ask-error { color: var(--vscode-errorForeground); }
+
 .text {
   margin: 6px 0 0;
   font-size: 0.95em;

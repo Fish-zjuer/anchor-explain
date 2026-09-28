@@ -82,6 +82,12 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       titleExport: "把这份讲解导出成 Markdown 文件（会弹另存为）",
       historyBtn: "历史文件夹",
       titleHistory: "打开讲解历史文件夹（每次讲解成功都会自动存一份）",
+      askPlaceholder: "追问这一步没讲到的部分…",
+      askBtn: "追问",
+      asking: "追问中…",
+      titleAsk: "只把这一块和这一步的讲解发给 AI —— 补充讲解会插在这一步后面",
+      askHint: "补充讲解会插在这一步后面",
+      askFailed: "追问失败：",
       waiting: "等待讲解…",
       endedLine: "讲解已结束 —— 按「上一步」可以回看，按「退出」收掉高亮。想再看一遍不用重新选：",
       doneLine: "已经讲完了 —— 按「上一步」可以回看。想再看一遍不用重新选：",
@@ -130,6 +136,12 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       titleExport: "Export this explanation as a Markdown file (opens Save As)",
       historyBtn: "History folder",
       titleHistory: "Open the history folder (every successful explanation is saved automatically)",
+      askPlaceholder: "Ask about the part this step did not cover…",
+      askBtn: "Ask",
+      asking: "Asking…",
+      titleAsk: "Send only this block and this step's explanation to the AI — the answer is inserted after this step",
+      askHint: "The answer is inserted right after this step",
+      askFailed: "Follow-up failed: ",
       waiting: "Waiting for an explanation…",
       endedLine: "Explanation ended — Previous to review, Exit to clear the highlights. To watch it again without re-selecting:",
       doneLine: "Finished — Previous to review. To watch it again without re-selecting:",
@@ -151,6 +163,19 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   var usage = null;
   /** 本次会话的锚点文件（session:update 带来的）。判断"这个位置要不要标文件名"用它。 */
   var anchorPath = null;
+
+  /**
+   * 追问（D126）。两件事各存一份：
+   *
+   * - askDrafts：**按步骤下标存草稿**。render() 每次都重建整棵 DOM，
+   *   不存的话用户打到一半的句子会在任何一条消息到达时（他顺手按了下一步、
+   *   或者 token 数字更新了一下）被清空 —— 那是纯粹的数据丢失，而用户看不见原因。
+   * - askState：追问的状态。**只可能有一个在跑**（宿主那边也这么判），所以一份就够；
+   *   带 index 是为了把它画到**被追问的那一块**下面（三块之后，弹一个脱离上下文
+   *   的通知已经说不清是哪一次失败了）。
+   */
+  var askDrafts = {};
+  var askState = null;
 
   /**
    * 路径切分：反斜杠与正斜杠**都算分隔符**，并丢掉空段。
@@ -266,7 +291,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
    *
    *         压暗那件事同时取消：索引行本来就只是一行标题，不再需要"压暗"来让位。
    */
-  function buildStep(step, i, current, pointIndex) {
+  function buildStep(step, i, current, pointIndex, canAsk) {
     var li = mk("li", "step" + (i === current ? " current" : " index-row"));
     li.setAttribute("data-act", "goto");
     li.setAttribute("data-index", String(i));
@@ -310,7 +335,67 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       li.appendChild(ul);
     }
 
+    // 追问那一格（D126）：只长在当前步上，且**会话还活着**时才有 ——
+    // 已经按了「退出」之后，宿主那边没有会话可插，摆一个按不动的框只会让人白按。
+    if (canAsk) li.appendChild(buildAsk(i));
+
     return li;
+  }
+
+  /**
+   * 追问那一格（D126），只长在**当前步**下面。
+   *
+   * 用户的原话是："然后可以追问，追问时，只提供给AI当前代码块（或一函数等）和当前讲解，
+   * 补充讲解可以插入讲解队列。" —— 这一格就是他按下追问的地方。
+   *
+   * 三条不显眼但要紧的：
+   *   1. **草稿按步骤存**（askDrafts）：render() 重建整棵 DOM，不存就丢。
+   *   2. **提示语说清"插在哪里"**：不然用户不知道这一问的结果会不会把原来的顺序搅乱。
+   *   3. **失败显示在这一格下面**，不弹通知：三块之后通知已经说不清是哪一次失败了。
+   */
+  function buildAsk(index) {
+    var busy = !!askState && askState.index === index && askState.state === "running";
+    var box = mk("div", "ask");
+
+    var row = mk("div", "ask-row");
+    var input = mk("input", "ask-input");
+    input.setAttribute("data-act", "askInput");
+    input.setAttribute("data-index", String(index));
+    input.setAttribute("type", "text");
+    input.placeholder = L.askPlaceholder;
+    input.value = askDrafts[index] || "";
+    input.disabled = busy;
+    // 回车即提交：这是这一格里唯一顺手的动作（不必移开手去点那颗按钮）。
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      submitAsk(index, input.value);
+    });
+    row.appendChild(input);
+
+    var send = mk("button", null, busy ? L.asking : L.askBtn);
+    send.setAttribute("data-act", "ask");
+    send.setAttribute("data-index", String(index));
+    send.title = L.titleAsk;
+    send.disabled = busy;
+    row.appendChild(send);
+    box.appendChild(row);
+
+    if (!!askState && askState.index === index && askState.state === "error") {
+      box.appendChild(mk("div", "ask-error", L.askFailed + (askState.message || "")));
+    } else if (!busy) {
+      box.appendChild(mk("div", "ask-hint", L.askHint));
+    }
+    return box;
+  }
+
+  /** 提交一句追问。空句子不发（那多半是回车误触，不是"追问了个空"）。 */
+  function submitAsk(index, value) {
+    var question = value == null ? "" : String(value).trim();
+    if (question === "") return;
+    // 先清草稿再发：这一句已经交出去了，留着它只会在下一格里冒充"还没问的草稿"
+    askDrafts[index] = "";
+    vscode.postMessage({ type: "ui:ask", index: index, question: question });
   }
 
   /**
@@ -502,7 +587,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
 
     var list = mk("ul", "steps");
     for (var i = 0; i < result.steps.length; i++) {
-      list.appendChild(buildStep(result.steps[i], i, index, pointIndex));
+      // ended（用户按过「退出」）之后不再给追问那一格：宿主那边会话已经收了，
+      // 摆一个能打字、按下去却没反应的框比"没有这个框"更坏（D61「不许是死路」的同一条）。
+      list.appendChild(buildStep(result.steps[i], i, index, pointIndex, !snapshot.ended));
     }
     root.appendChild(list);
 
@@ -549,8 +636,23 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     else if (act === "fontSmaller") vscode.postMessage({ type: "ui:fontSmaller" });
     else if (act === "export") vscode.postMessage({ type: "ui:export" });
     else if (act === "openHistory") vscode.postMessage({ type: "ui:openHistory" });
+    // 追问（D126）：内容取**草稿**那一份 —— 它由下面的 input 监听器实时更新，
+    // 所以与输入框里的字是同一份（而不是"再去 DOM 里捞一次"，webview 里那更需要 querySelector）
+    else if (act === "ask") submitAsk(index, askDrafts[index]);
     else if (act === "reveal") vscode.postMessage({ type: "ui:revealStep", index: index });
     else if (act === "goto") vscode.postMessage({ type: "ui:goto", index: index });
+  });
+
+  /**
+   * 追问草稿（D126）。**委托在 body 上**（与点击同一个套路）：输入框是每次重画新建的，
+   * 逐个挂监听会在重画时全部丢掉。只认 data-act="askInput"，别的输入一律不管。
+   */
+  document.body.addEventListener("input", function (ev) {
+    var target = ev.target;
+    if (!target || typeof target.getAttribute !== "function") return;
+    if (target.getAttribute("data-act") !== "askInput") return;
+    var idx = parseInt(target.getAttribute("data-index") || "0", 10);
+    askDrafts[idx] = target.value == null ? "" : String(target.value);
   });
 
   /**
@@ -599,6 +701,8 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     } else if (msg.type === "tooltrace:reset") {
       // 新一轮讲解开始：清空上一轮的记录（这个数组活得比一轮讲解长，见协议里的说明）
       trace = [];
+      // 追问状态同理（D126）：上一轮那一问的"失败"不该挂到这一轮的步骤上
+      askState = null;
       render();
     } else if (msg.type === "tooltrace:append") {
       trace.push(msg.entry);
@@ -611,6 +715,14 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       // token 用量更新（D120）。这一行在最下面，重画不影响用户正在读的那一段
       // （滚动只在 anchor-scanning 不可见时才动，见 render 末尾）—— 所以直接重画最省事。
       usage = msg.usage && typeof msg.usage === "object" ? msg.usage : null;
+      render();
+    } else if (msg.type === "ask:state") {
+      // 追问状态（D126）。state 不认得就当成"没有在跑"——不认识的形状一律不渲染成
+      // 某种具体状态（那会显示一个我们其实不知道的结论）。
+      var known = msg.state === "running" || msg.state === "error" || msg.state === "idle";
+      askState = typeof msg.index === "number" && known
+        ? { index: msg.index, state: msg.state, message: typeof msg.message === "string" ? msg.message : "" }
+        : null;
       render();
     }
   }

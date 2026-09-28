@@ -17,7 +17,7 @@
  */
 
 import { dirnameOf, isCodeLocation, isPDFLocation, locationLabel, pdfSegmentsOf, segmentsOf } from '@anchor/core';
-import type { Anchor } from '@anchor/core';
+import type { Anchor, WalkthroughStep } from '@anchor/core';
 import { EXPLANATION_JSON_SHAPE_EN, EXPLANATION_JSON_SHAPE_PDF_EN, FETCH_CONTEXT_TOOL, FIND_FILES_TOOL } from '../orchestrator/toolSchema.ts';
 import { describeCandidates, type CandidateFile } from '../relatedFiles.ts';
 import type { ExplainStyle } from './index.ts';
@@ -396,6 +396,8 @@ export function buildSystemPromptEn(
     sourceType?: 'code' | 'pdf';
     /** See `buildSystemPrompt` in `index.ts` (S9a-fix10 / D123 / D124). */
     candidateMode?: 'list' | 'path' | 'none';
+    /** Follow-up round (D126). See `buildSystemPrompt` in `index.ts`. */
+    followUp?: boolean;
   } = {},
 ): string {
   // PDF 释义面（D98）：角色/输出形状/通用规则/取件换成 PDF 版；档位与示范不进（代码特有）。
@@ -416,9 +418,24 @@ export function buildSystemPromptEn(
     `# Tier rules\n\n${TIER_RULES_EN[style]}`,
     fetchSectionEn(crossFile, options.maxFetchLines, options.candidateMode ?? 'list'),
   ];
+  if (options.followUp === true) parts.push(FOLLOW_UP_SYSTEM_SECTION_EN);
   if (withExamples) parts.push(examplesSectionEn(style));
   return parts.join('\n\n');
 }
+
+/**
+ * The follow-up round's system addendum (D126). Mirrors `FOLLOW_UP_SYSTEM_SECTION`
+ * in `index.ts` — same two languages, same one meaning.
+ */
+const FOLLOW_UP_SYSTEM_SECTION_EN = `# This round is a follow-up, not a re-explanation
+
+The user has already read the full explanation and is now asking about one specific point.
+**Answer that question only:**
+
+- Do not re-explain the whole block, and do not restate what is already written above — the user has read it.
+- 1-3 steps is enough. Keep them short, and anchor them on the lines that actually support the answer.
+- If the question cannot be answered with what you have here (for example it needs another file and
+  fetching is unavailable this round), say plainly what is missing. Do not guess a plausible-looking answer.`;
 
 /** 行区间 / 页码的英文格式（与 core 的 `formatLineRange` 同一立场：单行不写区间）。 */
 function lineRangeEn(lineStart: number, lineEnd: number): string {
@@ -470,6 +487,8 @@ export function buildUserPromptEn(
     candidates?: readonly CandidateFile[];
     focus?: string;
     crossFile?: boolean;
+    /** Follow-up round (D126). See `buildUserPrompt` in `index.ts`. */
+    followUp?: { step: WalkthroughStep; index: number; question: string };
   } = {},
 ): string {
   const parts = ['## Anchor', describeAnchorEn(anchor), ''];
@@ -493,6 +512,13 @@ export function buildUserPromptEn(
     );
   }
 
+  // Follow-up section (D126): after the source text, so the model reads
+  // "what this block is" -> "what was said last time" -> "the question".
+  const followUp = options.followUp;
+  if (followUp !== undefined) {
+    parts.push(followUpSectionEn(followUp.index, followUp.step, followUp.question), '');
+  }
+
   const candidates = options.candidates ?? [];
   if (options.crossFile === true && candidates.length > 0) {
     parts.push(
@@ -506,8 +532,40 @@ export function buildUserPromptEn(
     );
   }
 
-  parts.push('Now produce the explanation JSON as required by the system prompt.');
+  parts.push(
+    followUp === undefined
+      ? 'Now produce the explanation JSON as required by the system prompt.'
+      : 'Answer that question only: produce the JSON as required by the system prompt (1-3 supplementary steps is enough).',
+  );
   return parts.join('\n');
+}
+
+/**
+ * The follow-up section body (D126). Mirrors `followUpSection` in `index.ts`.
+ * Pure, so it is covered by `node --test` on both language faces.
+ */
+export function followUpSectionEn(index: number, step: WalkthroughStep, question: string): string {
+  const lines: string[] = [`## This is a follow-up on step ${index + 1}`, ''];
+  lines.push('The "Source text at the anchor" above is the block that step covers. What that step **already said** was:');
+
+  const said: string[] = [];
+  if (step.title !== undefined && step.title.trim() !== '') said.push(`- Title: ${step.title.trim()}`);
+  if (step.intro !== undefined && step.intro.trim() !== '') said.push(`- Lead-in: ${step.intro.trim()}`);
+  said.push(`- Body: ${step.text}`);
+  const subs = step.highlights ?? [];
+  if (subs.length > 0) {
+    said.push('- Point-by-point:');
+    for (const h of subs) said.push(`  - ${h.narration} (${locationLabel(h.location)})`);
+  }
+  lines.push('', said.join('\n'), '');
+
+  lines.push('The user now asks:', question.trim(), '');
+  lines.push(
+    'Answer that question only: give 1-3 **supplementary** steps. Do **not** re-explain the whole block,',
+    'and do not restate what is written above — the user has already read it. What they want is the part',
+    'this step left out or left unclear.',
+  );
+  return lines.join('\n');
 }
 
 /** repair 提示的英文面（口径与 `explainOutputContractEn` 一致 —— D67 的规矩两种语言都成立）。 */
