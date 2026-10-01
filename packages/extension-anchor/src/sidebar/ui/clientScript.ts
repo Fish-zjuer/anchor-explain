@@ -150,6 +150,19 @@ export const SIDEBAR_CLIENT_SCRIPT = `
   };
   var L = typeof ANCHOR_LANGUAGE === "string" && ANCHOR_LANGUAGE === "en" ? STRINGS.en : STRINGS.zh;
 
+  /**
+   * 排版风格（D129）：classic = 经典样式，每一步的正文全铺开、非当前步靠 CSS 压暗；
+   * 其余（含内联常量缺失、值不认识）落在默认那一支 = **一次只铺开一块**（D125）。
+   * 旧宿主与 DOM 桩测试都不内联这个常量，所以默认必须落在新样式上 ——
+   * 这也正是"设置写错一个词不该让面板变样"那条纪律的落点。
+   *
+   * typeof 那一层守卫不是多余的（与 ANCHOR_LANGUAGE 同一写法）：常量**不存在**时，
+   * 裸写 ANCHOR_SIDEBAR_STYLE === "classic" 会抛 ReferenceError，而 webview 里的异常
+   * 表现为"面板整块不更新、屏幕上没有任何报错"（D70 踩过的那种死法）。
+   */
+  var CLASSIC =
+    typeof ANCHOR_SIDEBAR_STYLE === "string" && ANCHOR_SIDEBAR_STYLE === "classic";
+
   var EMPHASIS_LABEL = L.emphasis;
 
   var STATE_LABEL = L.state;
@@ -292,7 +305,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
    *         压暗那件事同时取消：索引行本来就只是一行标题，不再需要"压暗"来让位。
    */
   function buildStep(step, i, current, pointIndex, canAsk) {
-    var li = mk("li", "step" + (i === current ? " current" : " index-row"));
+    // 索引行 class 只在**默认样式**下加：经典样式里非当前步也是完整的一块，
+    // 挂上 index-row 会被压成一行（那是"只铺开一块"那一套的排法）
+    var li = mk("li", "step" + (i === current ? " current" : CLASSIC ? "" : " index-row"));
     li.setAttribute("data-act", "goto");
     li.setAttribute("data-index", String(i));
 
@@ -309,9 +324,11 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     head.appendChild(loc);
     li.appendChild(head);
 
-    // 不是当前步：到此为止。正文、引导句、逻辑点**一个节点都不建** ——
+    // 不是当前步：**默认样式**下到此为止 —— 正文、引导句、逻辑点一个节点都不建。
     // "只显示一块"就是这一行（CSS 那边只负责让索引行排成一行）。
-    if (i !== current) return li;
+    // 经典样式（D129）下这里**不返回**：它要的就是"每一步的正文全铺开"，
+    // 区分靠 CSS 把非当前步压暗（老做法）。
+    if (i !== current && !CLASSIC) return li;
 
     if (step.intro) li.appendChild(mk("p", "intro", step.intro));
     if (step.text) li.appendChild(mk("p", "text", step.text));
@@ -337,7 +354,9 @@ export const SIDEBAR_CLIENT_SCRIPT = `
 
     // 追问那一格（D126）：只长在当前步上，且**会话还活着**时才有 ——
     // 已经按了「退出」之后，宿主那边没有会话可插，摆一个按不动的框只会让人白按。
-    if (canAsk) li.appendChild(buildAsk(i));
+    // i === current 这一条在经典样式（D129）下是必需的：那里非当前步**也**会走到这里，
+    // 只判 canAsk 的话每一块下面都会长出一个追问框。
+    if (canAsk && i === current) li.appendChild(buildAsk(i));
 
     return li;
   }
@@ -631,9 +650,13 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     }
     pane.appendChild(buildTrace());
 
-    // 页脚：按顺序是"这一遍的推进"→"把成果拿走"→"用了多少 token"
-    foot.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
-    foot.appendChild(buildTools());
+    // 页脚：**一行按钮，靠左推进、靠右出口**，下面单独一行放 token 用量（D129）。
+    // 左组（上一步/下一步/退出）与右组（导出/历史）**仍然分两个容器**，只是排在同一行里 ——
+    // 混成一个容器就没法靠边对齐，靠 CSS 的 nth-child 去凑更脆（按钮顺序一改就错位）。
+    var bar = mk("div", "foot-bar");
+    bar.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
+    bar.appendChild(buildTools());
+    foot.appendChild(bar);
     if (usage) foot.appendChild(buildUsage());
 
     root.appendChild(pane);

@@ -38,6 +38,7 @@ export async function readAnchorConfig(context: vscode.ExtensionContext): Promis
     style: settings.get('style'),
     fetchScope: settings.get('fetchScope'),
     maxCandidateFiles: settings.get('maxCandidateFiles'),
+    sidebarStyle: settings.get('sidebarStyle'),
   };
 
   const config = resolveConfig(raw);

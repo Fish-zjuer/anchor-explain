@@ -228,24 +228,64 @@ test('D71：单次行数超上限 → **截到上限照常给**，不再整条�
 });
 
 
-test('规则 4：区间重叠不重复取，改把已有内容回灌', () => {
+test('规则 4（D128）：**接着往下读**要给读 —— 只有整段都被取过才拒', () => {
+  // 用户实测的现场：第 1 轮取了 ui_mainwindow.h 的 1-200，第 4 轮想接着读 200-528 ——
+  // 只因**第 200 行**重叠就整条被拒，于是它拿不到真正想要的那 300 行。
+  // 用户的原话是"我认为还是需要给读取的"。
+  const cached: FetchedSpan = { type: 'file', path: CODE_FILE, start: 1, end: 200, content: '早就取过了' };
+  // `documentLineCount` 调大：这几条验的是**规则 4**，别让规则 3 的"行上界"先把它拦下
+  // （默认夹具是 75 行，而用户实测的那份头文件有好几百行）
+  const st = state({ fetched: [cached], roundsUsed: 1, documentLineCount: 1000 });
+
+  const extend = validateContextRequest(fileReq({ path: CODE_FILE, start: 200, end: 500 }), codeAnchor(), st);
+  assert.equal(extend.accepted, true, '接缝上重叠一两行不该把整条请求挡掉 —— 它要的是那 300 行新的');
+
+  assert.equal(
+    validateContextRequest(fileReq({ path: CODE_FILE, start: 600, end: 620 }), codeAnchor(), st).accepted,
+    true,
+    '完全不重叠当然也是新的一次',
+  );
+});
+
+test('规则 4（D128）：整段确实取过了才拒，并把已有的内容回灌', () => {
   const cached: FetchedSpan = { type: 'file', path: CODE_FILE, start: 1, end: 10, content: '早就取过了' };
   const st = state({ fetched: [cached], roundsUsed: 1 });
 
-  const overlap = validateContextRequest(fileReq({ path: CODE_FILE, start: 5, end: 15 }), codeAnchor(), st);
-  assert.equal(overlap.accepted, false);
-  assert.equal(overlap.accepted === false ? overlap.content : undefined, '早就取过了', '要把已取内容一并回灌');
-
-  // 不重叠就是新的一次取件
-  assert.equal(
-    validateContextRequest(fileReq({ path: CODE_FILE, start: 20, end: 25 }), codeAnchor(), st).accepted,
-    true,
-  );
+  const inside = validateContextRequest(fileReq({ path: CODE_FILE, start: 3, end: 8 }), codeAnchor(), st);
+  assert.equal(inside.accepted, false, '完全落在已取区间里 = 一个字节的新东西都没有');
+  assert.equal(inside.accepted === false ? inside.content : undefined, '早就取过了', '要把已取内容一并回灌');
 
   // 相邻但不重叠（10 与 11）不算重复
   assert.equal(
     validateContextRequest(fileReq({ path: CODE_FILE, start: 11, end: 12 }), codeAnchor(), st).accepted,
     true,
+  );
+});
+
+test('规则 4（D128）：多条拼起来也算覆盖（1-100 + 101-200 就等于取过了 1-200）', () => {
+  const parts: FetchedSpan[] = [
+    { type: 'file', path: CODE_FILE, start: 1, end: 100, content: '前一半' },
+    { type: 'file', path: CODE_FILE, start: 101, end: 200, content: '后一半' },
+  ];
+  const st = state({ fetched: parts, roundsUsed: 2, documentLineCount: 1000 });
+
+  const span = validateContextRequest(fileReq({ path: CODE_FILE, start: 50, end: 150 }), codeAnchor(), st);
+  assert.equal(span.accepted, false, '两条接起来正好盖住 50-150');
+  assert.equal(
+    span.accepted === false ? span.content : undefined,
+    '前一半\n\n后一半',
+    '相交的那几条都要回灌 —— 只回一条会让模型以为它拿到了全部',
+  );
+
+  const elsewhere = state({
+    fetched: [{ type: 'file', path: CODE_FILE, start: 1, end: 100, content: 'x' }],
+    roundsUsed: 1,
+    documentLineCount: 1000,
+  });
+  assert.equal(
+    validateContextRequest(fileReq({ path: CODE_FILE, start: 120, end: 130 }), codeAnchor(), elsewhere).accepted,
+    true,
+    '120-130 一行都没取过，当然要给读',
   );
 });
 
@@ -558,7 +598,9 @@ test('D68 去重文案：PDF 用页码指认，不用文件名', () => {
     fetched: [{ type: 'page_range', path: null, start: 3, end: 5, content: '旧内容' }],
   });
   const again = validateContextRequest(
-    { type: 'page_range', params: { start: 4, end: 6 }, reason: '再看一眼' },
+    // 请求的页码要**整段**落在已取区间里才会判重复（D128：重叠一页不算）——
+    // 这里要验的是文案，所以给一个确实取过的区间
+    { type: 'page_range', params: { start: 4, end: 5 }, reason: '再看一眼' },
     pdfAnchor(),
     pdfState,
   );

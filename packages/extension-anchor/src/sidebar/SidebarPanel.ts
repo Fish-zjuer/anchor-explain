@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import { parseSidebarMessage } from '../protocol.ts';
 import type { HostToSidebar } from '../protocol.ts';
 import type { ExplainLanguage } from '../prompts/index.ts';
+import { DEFAULT_SIDEBAR_STYLE, type SidebarStyle } from '../config.ts';
 import type { TokenUsage } from '../orchestrator/providers/types.ts';
 import type { ResolvedChords } from './keybindingResolve.ts';
 import { renderSidebarHtml } from './ui/html.ts';
@@ -50,6 +51,12 @@ export class SidebarPanel {
   /** 面板文案的语言（D97）。建面板那一刻的设置值就是初值；讲解中途切换要下一次讲解才生效。 */
   readonly #language: ExplainLanguage;
   /**
+   * 排版风格（D129）。与 `#language` 同一条约定：**建面板那一刻的设置值就是初值**，
+   * 中途改设置要下一次讲解（或重建面板）才生效 —— 它改的是内联进 HTML 的常量与
+   * `<body data-anchor-style>`，而这两样都是建面板时一次性写死的。
+   */
+  readonly #sidebarStyle: SidebarStyle;
+  /**
    * 本次讲解累计的 token 用量（D120）。**只活在内存里**：不落盘、不进讲解历史、
    * 不进 `workspaceState`。存一份的理由与 `#fontScale` 相同 —— `ui:ready` 之后要补发，
    * 面板重建（折叠再展开）时不至于把那行数字丢掉。
@@ -68,13 +75,21 @@ export class SidebarPanel {
     chords: ResolvedChords,
     fontScale: number,
     language: ExplainLanguage,
+    sidebarStyle: SidebarStyle,
   ) {
     this.#panel = panel;
     this.#handlers = handlers;
     this.#fontScale = fontScale;
     this.#language = language;
+    this.#sidebarStyle = sidebarStyle;
 
-    panel.webview.html = renderSidebarHtml(panel.webview.cspSource, chords, fontScale, language);
+    panel.webview.html = renderSidebarHtml(
+      panel.webview.cspSource,
+      chords,
+      fontScale,
+      language,
+      sidebarStyle,
+    );
 
     panel.webview.onDidReceiveMessage((raw: unknown) => {
       // webview 发来的东西一样当外部输入：形状不对直接丢，不让坏数据进链路
@@ -142,7 +157,13 @@ export class SidebarPanel {
    * 建面板那一刻的系数就是初值，之后的变更走 `setFontScale`。
    * `language` 同理内联（D97）：决定面板文案（按钮/徽章/日志）用中英哪一套。
    */
-  static create(handlers: SidebarHandlers, chords: ResolvedChords, fontScale: number, language: ExplainLanguage = 'zh'): SidebarPanel {
+  static create(
+    handlers: SidebarHandlers,
+    chords: ResolvedChords,
+    fontScale: number,
+    language: ExplainLanguage = 'zh',
+    sidebarStyle: SidebarStyle = DEFAULT_SIDEBAR_STYLE,
+  ): SidebarPanel {
     const panel = vscode.window.createWebviewPanel(
       'anchorExplain.sidebar',
       'Anchor 讲解',
@@ -155,7 +176,7 @@ export class SidebarPanel {
         localResourceRoots: [],
       },
     );
-    return new SidebarPanel(panel, handlers, chords, fontScale, language);
+    return new SidebarPanel(panel, handlers, chords, fontScale, language, sidebarStyle);
   }
 
   get disposed(): boolean {

@@ -60,10 +60,12 @@ import {
   describeConfig,
   describeFetchScope,
   coerceFetchScope,
+  coerceSidebarStyle,
   looksFlattened,
   normalizeBaseUrl,
   promoteFlattenedProviders,
 } from './config.ts';
+import type { SidebarStyle } from './config.ts';
 import { captureSummary } from './describe.ts';
 import { buildCandidateFiles, includeNamesIn } from './relatedFiles.ts';
 import { scanCodeFiles } from './vscode/relatedFiles.ts';
@@ -622,6 +624,15 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     return coerceLanguage(vscode.workspace.getConfiguration('anchorExplain').get('language'));
   }
 
+  /**
+   * 侧边栏排版风格（D129）。与 `languageOf` 同一条约定：**建面板那一刻读一次**，
+   * 之后不再跟着设置变 —— 它要内联进 webview 的 HTML（`<body data-anchor-style>` 与
+   * `ANCHOR_SIDEBAR_STYLE`），而那两样是建面板时一次性写死的。改设置下一次讲解生效。
+   */
+  function sidebarStyleOf(): SidebarStyle {
+    return coerceSidebarStyle(vscode.workspace.getConfiguration('anchorExplain').get('sidebarStyle'));
+  }
+
   /** 「切换讲解语言」—— 一键：中文 ↔ English。设置落 Global（与 style 同一落点），下一次讲解生效。 */
   async function toggleLanguage(): Promise<void> {
     const next: ExplainLanguage = languageOf() === 'en' ? 'zh' : 'en';
@@ -824,7 +835,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       // 把用户实际键位一并交给面板：webview 里的按键到不了工作台，得它自己派发（D47）。
       // 字号系数同理内联（D89）：建面板那一刻的系数就是初值，之后的变更走消息。
       // 语言同理内联（D97）：面板文案（按钮/徽章/取件日志）跟着讲解语言走。
-      sidebar = SidebarPanel.create(handlers, status.chords(), fontScaleOf(), languageOf());
+      sidebar = SidebarPanel.create(handlers, status.chords(), fontScaleOf(), languageOf(), sidebarStyleOf());
       // token 那一行（D120）：**取件与模型调用都发生在建面板之前**（用户是在开始面板上按的按钮，
       // 面板是结果出来才建的），所以这里要把已经记下的那份补进去，否则新建的面板永远是空的。
       // 面板重建（折叠再展开）同理 —— `SidebarPanel` 自己也存一份并在 `ui:ready` 时补发。

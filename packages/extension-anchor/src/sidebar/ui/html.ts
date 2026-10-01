@@ -14,6 +14,7 @@
 
 import { randomBytes } from 'node:crypto';
 import type { ResolvedChords } from '../keybindingResolve.ts';
+import { DEFAULT_SIDEBAR_STYLE, type SidebarStyle } from '../../config.ts';
 import { SIDEBAR_CLIENT_SCRIPT } from './clientScript.ts';
 import { SIDEBAR_STYLES } from './styles.ts';
 
@@ -27,6 +28,14 @@ export function renderSidebarHtml(
   chords: ResolvedChords,
   fontScale: number,
   language: 'zh' | 'en' = 'zh',
+  /**
+   * 排版风格（D129）。**两处都要**：
+   *   - `<body data-anchor-style="...">` —— CSS 靠它区分经典/一次只铺开一块两套规则
+   *   - 内联成 `ANCHOR_SIDEBAR_STYLE` —— 客户端靠它决定"非当前步要不要渲染正文"
+   * 只给一处是不行的：只看 CSS 的话节点还是全建了（"只显示一块"就成了视觉假象，
+   * 而 D125 立的就是"结构上只有一块"）；只看 JS 的话压暗那一套样式没地方挂。
+   */
+  sidebarStyle: SidebarStyle = DEFAULT_SIDEBAR_STYLE,
 ): string {
   const nonce = randomBytes(16).toString('base64');
 
@@ -45,11 +54,12 @@ export function renderSidebarHtml(
 <title>${language === 'en' ? 'Anchor Explanation' : 'Anchor 讲解'}</title>
 <style nonce="${nonce}">${SIDEBAR_STYLES}</style>
 </head>
-<body>
+<body data-anchor-style="${sidebarStyle}">
 <div id="root"></div>
 <script nonce="${nonce}">${inlineChords(chords)}
 var ANCHOR_FONT_SCALE = ${JSON.stringify(fontScale)};
 var ANCHOR_LANGUAGE = ${JSON.stringify(language)};
+var ANCHOR_SIDEBAR_STYLE = ${JSON.stringify(sidebarStyle)};
 ${SIDEBAR_CLIENT_SCRIPT}</script>
 </body>
 </html>`;

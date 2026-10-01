@@ -327,3 +327,49 @@ test('describeConfig：档位 id 与清单条数都报出来', async () => {
   assert.equal(cfg.maxCandidateFiles, 120);
   assert.match(describeConfig(cfg), /取件范围 同目录（same-dir，清单 120 条）/);
 });
+
+// ── D129：侧边栏排版风格是个设置项 ────────────────────────────────────────
+//
+// 用户的原话："之前的经典样式和现在的可收起样式，我们在设置里弄成可选项。"
+// 两档都要在，且**默认必须落在新样式**上 —— 那是他看过老样式之后点名要的那个。
+
+test('D129：sidebarStyle 默认 collapsible，classic 是另一档', async () => {
+  const { coerceSidebarStyle, DEFAULT_SIDEBAR_STYLE, describeSidebarStyle } = await import('../src/config.ts');
+  assert.equal(DEFAULT_SIDEBAR_STYLE, 'collapsible');
+  assert.equal(coerceSidebarStyle('classic'), 'classic');
+  assert.equal(coerceSidebarStyle('collapsible'), 'collapsible');
+  // 写错一个词不该让面板变样（与 coerceLanguage / coerceFetchScope 同一条）
+  assert.equal(coerceSidebarStyle('折叠'), 'collapsible');
+  assert.equal(coerceSidebarStyle(undefined), 'collapsible');
+  assert.equal(coerceSidebarStyle(1), 'collapsible');
+  // 人话名能说出来（状态行要用）
+  assert.match(describeSidebarStyle('classic'), /经典/);
+  assert.match(describeSidebarStyle('collapsible'), /铺开/);
+});
+
+test('D129：resolveConfig 把 sidebarStyle 带出来（漏读 = 设置写了不生效）', async () => {
+  const { resolveConfig } = await import('../src/config.ts');
+  const base = {
+    providers: { default: { baseUrl: 'https://example.test/v1', tier1Model: 'm' } },
+    activeProvider: 'default',
+    maxFetchRounds: 3,
+    preferSecretStorage: true,
+  };
+
+  assert.equal(resolveConfig(base).sidebarStyle, 'collapsible', '不填就是默认档');
+  assert.equal(resolveConfig({ ...base, sidebarStyle: 'classic' }).sidebarStyle, 'classic');
+  assert.equal(resolveConfig({ ...base, sidebarStyle: '乱填' }).sidebarStyle, 'collapsible');
+});
+
+test('D129：状态行只在**非默认**时提侧边栏风格（默认是常态，每行都带就是噪音）', async () => {
+  const { resolveConfig, describeConfig } = await import('../src/config.ts');
+  const base = {
+    providers: { default: { baseUrl: 'https://example.test/v1', tier1Model: 'm' } },
+    activeProvider: 'default',
+    maxFetchRounds: 3,
+    preferSecretStorage: true,
+  };
+
+  assert.doesNotMatch(describeConfig(resolveConfig(base)), /侧边栏/, '默认档不提');
+  assert.match(describeConfig(resolveConfig({ ...base, sidebarStyle: 'classic' })), /侧边栏 经典/);
+});

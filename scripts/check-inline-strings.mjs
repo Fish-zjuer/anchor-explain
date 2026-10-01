@@ -60,10 +60,24 @@ for (const target of TARGETS) {
 
   const ticks = [...body.matchAll(/`/g)].length;
   if (ticks > 0) {
-    const line = body.slice(0, body.indexOf('`')).split('\n').length;
+    /**
+     * **把每一处都列出来**（文件内的绝对行号 + 那一行的样子）。
+     *
+     * @anchor 只报"第一个在第几行"是不够用的：这个错一犯就是一串（注释里给属性名加引号
+     *         往往是连着好几条），而修的时候要一处一处改。列全了，修的人照着清单走即可，
+     *         不必再 grep 一遍。已犯过五次，值得把报错做得再顺手一点。
+     */
+    const lines = body.split('\n');
+    const hits = [];
+    lines.forEach((text, i) => {
+      if (!text.includes('`')) return;
+      const absolute = source.slice(0, from).split('\n').length + i;
+      hits.push(`第 ${absolute} 行：${text.trim().slice(0, 80)}`);
+    });
     problems.push(
-      `${rel}：${constName} 里出现 ${ticks} 个反引号（约在模板第 ${line} 行）——` +
-        `它会把模板字符串截断，导致整模块语法错。注释里包属性名不要用反引号。`,
+      `${rel}：${constName} 里出现 ${ticks} 个反引号 ——\n` +
+        hits.map((h) => `      ${h}`).join('\n') +
+        '\n      它会把模板字符串截断，导致整模块语法错。注释里包属性名不要用反引号。',
     );
   }
 }

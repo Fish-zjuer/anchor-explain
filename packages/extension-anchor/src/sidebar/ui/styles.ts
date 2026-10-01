@@ -158,26 +158,39 @@ body {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
-/* ── 步骤列表：一次只铺开一块（D125）───────────────────────── */
+/* ── 步骤列表（两套排法，设置里可选：D125 / D129）────────────── */
 
 .steps { list-style: none; margin: 0; padding: 0; }
 
 /**
- * **非当前步 = 索引行**：一行高，只有序号 + 标题 + 位置（正文节点由客户端不生成）。
- * 它就是这块面板的目录 —— 点一下跳到那一步，那一步随即成为当前步并展开。
+ * 一步。**共同的那点壳**——两套排法各自的样子在下面分开写。
+ *
+ * @anchor opacity: 1 明写出来（而不是"不赋值"）：压暗是**两套排法各自的决定**，
+ *         不是共同的默认。默认样式把非当前步折成一行（本来就不抢眼），
+ *         经典样式才需要压暗它。写成一个共同的 0.55 会让"一行索引"看着像被禁用了。
  */
 .step {
   border: 1px solid transparent;
   border-left: var(--anchor-accent-w) solid transparent;
   border-radius: var(--anchor-radius);
-  padding: 3px 8px;
-  margin-bottom: 2px;
   cursor: pointer;
-  opacity: 0.55;
+  opacity: 1;
+  padding: 8px 10px;
+  margin-bottom: 6px;
 }
+
+/* ── 排法 A（默认，collapsible）：**非当前步 = 索引行**（D125）──
+   一行高，只有序号 + 标题 + 位置（正文节点由客户端**不生成**）。
+   它就是这块面板的目录 —— 点一下跳到那一步，那一步随即成为当前步并展开。 */
 
 /* 只在**索引行之间**画分隔线：当前块上下要留白，画进去就成了"列表里的又一项" */
 .step.index-row + .step.index-row { border-top: 1px dashed var(--vscode-panel-border); }
+
+.step.index-row {
+  padding: 3px 8px;
+  margin-bottom: 2px;
+  opacity: 0.55;
+}
 
 .step.index-row:hover {
   opacity: 1;
@@ -205,6 +218,9 @@ body {
  * 粗色条 + 焦点描边 + 选中底色 + 更大的标题 + 上下留白。
  * 只用主题变量（本文件的纪律）：描边走 focusBorder、底色走 list-inactiveSelectionBackground。
  * 注意这段注释在模板字符串**里面** —— 一个反引号都不能写（写了就是把文件切成两半）。
+ *
+ * 经典样式（body[data-anchor-style="classic"]）下这一段**照样生效** —— 它压的是
+ * "当前这一块要显眼"，那在两套排法里都是对的；区别只在"别的块是什么样"。
  */
 .step.current {
   opacity: 1;
@@ -213,6 +229,29 @@ body {
   border-color: var(--vscode-focusBorder);
   border-left-width: 5px;
   background: var(--vscode-list-inactiveSelectionBackground);
+}
+
+/**
+ * 排法 B（anchorExplain.sidebarStyle = classic）：**经典样式** ——
+ * 每一步的正文全部铺开，非当前步压暗到 0.62。这是 D19 起的做法，
+ * 现在是"设置里可选的一档"，不再是唯一形态（D129）。
+ *
+ * 分隔线用 :not(.current) 之外的老写法（.step + .step）会连当前块一起画上，
+ * 所以下面那条把当前块的上边框**改回实线 + 焦点色** —— 它是被强调的那一块，
+ * 顶上挂一条虚线看着像"列表里的一项"。
+ */
+body[data-anchor-style="classic"] .step + .step { border-top: 1px dashed var(--vscode-panel-border); }
+
+body[data-anchor-style="classic"] .step.current {
+  border-top-color: var(--vscode-focusBorder);
+  border-top-style: solid;
+}
+
+body[data-anchor-style="classic"] .step:not(.current) { opacity: 0.62; }
+
+body[data-anchor-style="classic"] .step:not(.current):hover {
+  opacity: 1;
+  background: var(--vscode-list-hoverBackground);
 }
 
 .step-head {
@@ -375,27 +414,53 @@ body {
 /* ── 工具条与取件日志 ───────────────────────────────────────── */
 
 /**
- * 推进讲解那三颗（上一步 / 下一步 / 退出）。**住在页脚里**（见 D127 的两段式布局），
- * 所以这里不再有 position: sticky —— 钉住由 .foot 负责，工具条只是它的第一行。
- * 分隔线也移到 .foot 上（它要连导出/历史与用量一起圈进"钉住的那一段"）。
+ * 页脚里那一行按钮（D129）。**左组靠左、右组靠右**：
+ *   - .toolbar：上一步 / 下一步 / 退出 —— 推进这一遍讲解
+ *   - .tools：导出讲解 / 历史文件夹 —— 把成果拿走
+ *
+ * @anchor 用户的原话是"还有下面的按钮你放在一排行不行，靠左和靠右区分"。
+ *         两组**仍旧是两个容器**（不是合成一个），靠 margin-left: auto 把右组顶到边上 ——
+ *         合并成一个容器就没法靠边，而用 :nth-child 去数第几颗更脆（按钮顺序一改就错位）。
+ *
+ * flex-wrap: wrap 是留的台阶：面板很窄时右组会折到第二行（因为 auto margin 仍然靠右，
+ * 看上去是一行一组的自然折行，而不是挤成一坨）。gap 配合 padding 略微收紧，
+ * 是为了让五颗按钮在常见的 340px 宽度下**真的排得下一行**。
  */
+.foot-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0 0;
+  flex-wrap: wrap;
+}
+
+/* 左组：不靠边，跟在最左边 */
 .toolbar {
   display: flex;
   gap: 6px;
-  padding: 8px 0 0;
+}
+
+/* 右组：margin-left: auto 就是"靠右"的全部实现 —— 它吃掉左侧所有剩余空间 */
+.tools {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .toolbar button,
 .rerun button,
 .tools button {
   font: inherit;
-  font-size: 0.9em;
+  font-size: 0.88em;
   color: var(--vscode-button-secondaryForeground);
   background: var(--vscode-button-secondaryBackground);
   border: none;
   border-radius: var(--anchor-radius);
-  padding: 3px 12px;
+  /* 9px 而不是 12px：页脚那一行要**排得下五颗**（D129）。再宽一点右组就会折行 ——
+     面板窄是常态，把横向留白让给文字是划算的。 */
+  padding: 3px 9px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .toolbar button:hover:not(:disabled),
@@ -477,15 +542,10 @@ body {
 }
 
 /**
- * D89：导出讲解 / 历史文件夹那一行。紧跟在工具条下面、取件日志上面，
- * 是"把成果拿走"的出口；按钮长相复用 .rerun 那一套（见合并后的选择器）。
+ * D89：导出讲解 / 历史文件夹（右组的位置规则见上面 .foot-bar 那一段）。
+ * 按钮长相复用工具条那一套（见合并后的选择器），这里不再另写一份。
  */
-.tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-}
+.tools { flex-wrap: wrap; }
 
 .empty { color: var(--vscode-descriptionForeground); }
 

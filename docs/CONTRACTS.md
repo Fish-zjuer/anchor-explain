@@ -297,8 +297,11 @@ capture(scope?: 'selection' | 'whole-file'): Promise<Anchor>   // 缺省 'select
    锚点自己没有 `filePath`（S5 之前的老锚点）→ 明说拒绝，不再漏到适配器炸"取件参数不完整"
 3. `file`：`params.path` **缺省 = 锚点文件**；给了路径则必须落在**允许范围**内（S9a 改写，见下），
    且 `end - start + 1 ≤ maxLines`（S9a 新增，默认 60 行）
-4. 去重：与已取件区间重叠 → 不重复取，回灌「该区间已取过」+ 已有内容（D98 起 page_range 也带路径，
-   比对用解析后的路径；D98 前的记录 path 为 null，按同源处理）
+4. 去重：**只有请求区间被已取区间的并集完全覆盖时才拒**（D128 修订）→ 回灌「该区间已取过」+
+   **所有与这次请求相交的**已取内容（D98 起 page_range 也带路径，比对用解析后的路径；
+   D98 前的记录 path 为 null，按同源处理）。**只剩接缝重叠要照常去读** ——
+   用户实测"读了 1-200，接着要 200-528"只因第 200 行重叠就整条被挡，那是错的。
+   多条能拼起来算覆盖（1-100 + 101-200 ⇒ 1-200 全取过，相邻不留缝）。
 5. 频率：总取件次数 `≤ maxFetchRounds`（默认 3）
 
 **单次行数超上限 → 截断，不拒绝（D71 修订）**：`end - start + 1 > maxFetchLines` 时把 `end` 收到
@@ -1014,6 +1017,7 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 | `anchorExplain.maxCandidateFiles` | number | `40` | **S9a-fix10 新增（D119）**。一次给模型列几条候选文件。它同时是**这次能读到几个别的文件**的上限（清单即范围）。CubeMX / STM32 这类工程里官方库会吃掉大半名额，那就把它调大。下限 1（0 条等于跨文件全关，那是 `off` 档的语义，不该由一个数字顺手达成）、上限 400；默认值与 `relatedFiles.ts` 的 `MAX_CANDIDATES` 同源 |
 | `anchorExplain.style` | `"standard"` \| `"concise"` \| `"detailed"` | `"standard"` | **S8 新增（D65），D93 起三档全部示范驱动，D94 起按用户模板组织 system prompt**：# 角色 → # 输出形状 → # 通用规则 → # 档位规则（只进当前档一节）→ # 取件（工具循环必需）→ # 示例（few-shot，只进当前档示范；正文 `scripts/style-lab/exemplar/<档位名>.md`，线上常量有同步锁）。标准（默认）：数据流视角、每步讲清因果 / 精简：几句话讲清目标与边界 / 详细：逐行讲解 + 具体推演。旧值 `rigorous` 自动按 `detailed` 处理 |
 | `anchorExplain.language` | `"zh"` \| `"en"` | `"zh"` | **D97 新增**。讲解语言：影响**讲解内容链** —— prompt 与示范（`en.ts` 的英文面 + `exemplar/<档位>.en.md`，同样有同步锁）、侧边栏讲解面板文案、导出的 Markdown（存档 `LastRun.language` 跟着那一次讲解走，旧存档按中文）。命令 `Anchor: 切换讲解语言` 一键翻转（Global 落点、写后验读）；扩展的命令与通知不跟随，取件工具层的回灌文案保持中文（模型侧指令，见 `prompts/index.ts` 的 `ExplainLanguage` 注释） |
+| `anchorExplain.sidebarStyle` | `"collapsible"` \| `"classic"` | `"collapsible"` | **D129 新增**。侧边栏讲解面板的排版风格：`collapsible`（默认）= 一次只铺开当前那一块、其余步骤折成一行索引（D125）；`classic` = 经典样式，每一步的正文全铺开、非当前步压暗到 0.62（D19 起的做法）。**建面板那一刻读一次，下一次讲解生效**（它改的是内联进 webview 的常量与 `<body data-anchor-style>`，都是建面板时写死的 —— 与 `language` 同一条约定，D97） |
 | `anchorExplain.temperature` | number | 未设置 | 透传给端点。留空就用端点的默认值 —— 不给默认值是刻意的：不同端点对 temperature 的合理取值不一样 |
 
 以上全部声明在 `packages/extension-anchor/package.json` 的 `contributes.configuration` 里

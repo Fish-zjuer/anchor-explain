@@ -84,7 +84,14 @@ function fakeNode(tag: string): FakeNode {
 }
 
 /** 把脚本放进一个最小环境里跑起来，返回"发出去的消息"与根节点（好读渲染出来的文字） */
-function runSidebarClient(script: string): {
+function runSidebarClient(
+  script: string,
+  /**
+   * 内联的排版风格（D129）。`undefined` = 桩里根本没有这个常量 ——
+   * 那正是**旧宿主**的样子，客户端必须安全落在默认（可收起）那一支。
+   */
+  sidebarStyle?: string,
+): {
   root: FakeNode;
   posted: { type?: string }[];
   send: (message: unknown) => void;
@@ -118,6 +125,7 @@ function runSidebarClient(script: string): {
     'acquireVsCodeApi',
     'setTimeout',
     'ANCHOR_CHORDS',
+    'ANCHOR_SIDEBAR_STYLE',
     script,
   );
   factory(
@@ -127,6 +135,7 @@ function runSidebarClient(script: string): {
     () => 0,
     // 面板里被转发的那几个键（宿主内联进来的**用户实际绑定**，D47）
     { next: 'alt+]', prev: 'alt+[', stop: 'escape' },
+    sidebarStyle,
   );
 
   return {
@@ -619,4 +628,85 @@ test('D127：样式那边不许再回到 sticky（钉住是 .foot 的职责，�
   assert.match(SIDEBAR_STYLES, /\.pane\s*\{[^}]*overflow-y:\s*auto/, '.pane 要自己滚');
   assert.match(SIDEBAR_STYLES, /\.pane\s*\{[^}]*min-height:\s*0/, 'min-height:0 不给，flex 子项会被内容撑高、overflow 不生效');
   assert.match(SIDEBAR_STYLES, /#root\s*\{[^}]*height:\s*100vh/, '#root 要满高，否则页脚会飘到内容后面');
+});
+
+// ── 六、两套排法可选（D129）与页脚一行按钮 ────────────────────────────────
+//
+// 用户的两句："还有下面的按钮你放在一排行不行，靠左和靠右区分。"
+// 以及"之前的经典样式和现在的可收起样式，我们在设置里弄成可选项。"
+
+test('D129 classic：每一步的正文都铺开，且**没有**索引行', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT, 'classic');
+  client.send(twoStepSession(1));
+
+  assert.match(client.root.text, /第二步正文/);
+  assert.match(client.root.text, /第一步正文/, '经典样式要的就是"全都铺开"');
+  assert.match(client.root.text, /第一点/, '逻辑点同理');
+  assert.equal(findByClass(client.root, 'index-row'), undefined, '经典样式里不该有索引行');
+  assert.ok(findByClass(client.root, 'current'), '当前块照样要标出来（显眼那一条两档通用）');
+});
+
+test('D129 classic：追问框**仍然只有一个**，且在当前步上', () => {
+  // 这是经典样式最容易犯的错：非当前步也会走到"渲染正文"那一段，
+  // 于是每一块下面都长出一个追问框（而宿主只认当前那一步）。
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT, 'classic');
+  client.send(twoStepSession(1));
+
+  let count = 0;
+  let firstIndex: string | undefined;
+  const walk = (node: FakeNode): void => {
+    if (node.attrs['data-act'] === 'askInput') {
+      count += 1;
+      firstIndex ??= node.attrs['data-index'];
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(client.root);
+
+  assert.equal(count, 1, '只能有一个追问框');
+  assert.equal(firstIndex, '1', '而且它认的是当前那一步');
+});
+
+test('D129：内联常量缺失（旧宿主）或值不认识时，都安全落在默认那一支', () => {
+  // 裸引用一个不存在的常量会抛 ReferenceError，而 webview 里的异常表现为
+  // "面板整块不更新、屏幕上没有任何报错"（D70 踩过的那种死法）—— 所以必须安全退化。
+  const missing = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  missing.send(twoStepSession(1));
+  assert.match(missing.root.text, /第二步正文/, '缺常量也要能画出来');
+  assert.doesNotMatch(missing.root.text, /第一步正文/, '缺常量时按默认（只铺开一块）走');
+  assert.ok(findByClass(missing.root, 'index-row'));
+
+  const typo = runSidebarClient(SIDEBAR_CLIENT_SCRIPT, '折叠');
+  typo.send(twoStepSession(1));
+  assert.ok(findByClass(typo.root, 'index-row'), '设置写错一个词不该让面板变样');
+});
+
+test('D129：两处都要下发风格 —— body 属性（CSS 用）与内联常量（客户端用）', async () => {
+  const { renderSidebarHtml } = await import('../src/sidebar/ui/html.ts');
+  const { defaultChords } = await import('../src/sidebar/keybindingResolve.ts');
+
+  const classic = renderSidebarHtml('vscode-webview://x', defaultChords(false), 1, 'zh', 'classic');
+  assert.match(classic, /<body data-anchor-style="classic">/, 'CSS 靠它区分两套规则');
+  assert.match(classic, /var ANCHOR_SIDEBAR_STYLE = "classic";/, '客户端靠它决定要不要建正文节点');
+
+  const plain = renderSidebarHtml('vscode-webview://x', defaultChords(false), 1);
+  assert.match(plain, /<body data-anchor-style="collapsible">/, '不传就是默认档');
+  assert.match(plain, /var ANCHOR_SIDEBAR_STYLE = "collapsible";/);
+});
+
+test('D129：五颗按钮排在**同一行**里，左组推进、右组出口', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+
+  const bar = findByClass(client.root, 'foot-bar');
+  assert.ok(bar, '页脚里要有一个 .foot-bar 把它们装在同一行');
+  for (const label of ['上一步', '下一步', '退出', '导出讲解', '历史文件夹']) {
+    assert.ok(findByText(bar, label), `${label} 要在这一行里`);
+  }
+
+  // 两组**仍然是两个容器**：靠边对齐得有东西可挂。合并成一个容器就没法把右组顶到边上。
+  assert.ok(findByClass(bar, 'toolbar'), '左组');
+  assert.ok(findByClass(bar, 'tools'), '右组');
+  assert.match(SIDEBAR_STYLES, /\.tools\s*\{[^}]*margin-left:\s*auto/, '右组靠 margin-left:auto 靠右');
+  assert.match(SIDEBAR_STYLES, /\.foot-bar\s*\{[^}]*display:\s*flex/, '.foot-bar 要是一行 flex');
 });

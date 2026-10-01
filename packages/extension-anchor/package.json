@@ -377,7 +377,7 @@
             "关闭：只读锚点所在的文件（跨文件讲解之前的行为）。",
             "不限：不按工作区判范围 —— 写绝对路径就能读工作区之外的任何文件（跨仓库、共享 SDK、别处的参考实现）。密钥/依赖/构建产物仍然不读。"
           ],
-          "markdownDescription": "允许 AI 读**锚点文件之外**哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖（`node_modules`）、构建产物目录始终不读。\n\n**「可能相关的文件」清单就是可取范围本身**：清单里的每一条都取得到，清单外的一律取不到（清单里给的是假名 `f1`、`f2`…）。清单之外真要读，用命令 `Anchor: 选择这次的取件范围` 把范围改成「不限」，或把 `anchorExplain.maxCandidateFiles` 调大。"
+          "markdownDescription": "允许 AI 读**锚点文件之外**哪些文件。密钥（`.env*`/`*.pem`/`id_rsa*`）、依赖（`node_modules`）、构建产物目录始终不读。\n\n**「可能相关的文件」清单就是可取范围本身**：清单里的每一条都取得到（`path` 照抄清单里那一行的名字），清单外的一律取不到。清单之外真要读，用命令 `Anchor: 选择这次的取件范围` 把范围改成「不限」，或把 `anchorExplain.maxCandidateFiles` 调大。"
         },
         "anchorExplain.maxCandidateFiles": {
           "type": "number",
@@ -413,6 +413,19 @@
             "English：整条讲解链换成英文适配版 —— 英文 system prompt 与示范、英文面板文案、英文导出。"
           ],
           "markdownDescription": "讲解语言（D97）。影响**讲解内容链**：prompt 与示范、侧边栏讲解面板的文案、导出的 Markdown。扩展的命令与通知仍跟随 VS Code 界面语言。可用命令 `Anchor: 切换讲解语言` 一键切换，下一次讲解生效。"
+        },
+        "anchorExplain.sidebarStyle": {
+          "type": "string",
+          "enum": [
+            "collapsible",
+            "classic"
+          ],
+          "default": "collapsible",
+          "enumDescriptions": [
+            "一次只铺开一块（默认）：讲解面板里只有当前那一步展开正文并突出显示，其余步骤折叠成一行索引（点一下就跳过去）。步骤多时不会满屏都是字。",
+            "经典：每一步的正文全部铺开，非当前步压暗。想把整篇讲解当一篇文章通读时用这个。"
+          ],
+          "markdownDescription": "侧边栏讲解面板的排版风格。**下一次讲解生效**（面板是讲解开始时建的）。"
         },
         "anchorExplain.preferSecretStorage": {
           "type": "boolean",

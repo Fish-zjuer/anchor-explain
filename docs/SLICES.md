@@ -1605,3 +1605,60 @@ CSS 谁负责钉住"。`scrollIntoView` 那句一个字没动（它自己会找�
 - **踩到并已修**：新写的注释里第三次出现反引号（`styles.ts` 14 个、`clientScript.ts` 18 个），
   被 `check:inline` 一次全拦下；另外用 heredoc 写测试时 **`:\s` 被吞成 `:/s`**，
   导致正则语法错 —— 以后带反斜杠的代码一律用编辑工具写，不走 heredoc。
+
+
+## S12 取件续读 + 页脚一行按钮 + 两套排法可选（D128 / D129）
+
+**背景**：用户一次提的三个"问题"（他标的是"问题"，但一个 bug、两个新要求）：
+
+1. 取件：读了某文件 1-200 行，之后想读 200-500 会被拒（说"取过了"）——"我认为还是需要给读取的"
+2. 底下的按钮要排成一行，靠左靠右区分
+3. "之前的经典样式和现在的可收起样式，我们在设置里弄成可选项"
+
+**范围**：
+
+- `orchestrator/validateContextRequest.ts`：新增 `isFullyCovered`（已取区间的并集覆盖判定）；
+  规则 4 从"有任何重叠就拒"改成"整段都被取过才拒"；拒绝时回灌**所有相交的**已取内容
+- `sidebar/ui/clientScript.ts`：`render()` 把工具条与导出/历史套进 `.foot-bar`（一行、左右分组）；
+  新增 `CLASSIC`（带 `typeof` 守卫）决定"非当前步要不要建正文节点"；
+  追问那一格改成 `canAsk && i === current`
+- `sidebar/ui/styles.ts`：`.foot-bar` / `.toolbar` / `.tools` 三个规则拆开（右组 `margin-left:auto`）；
+  按钮留白与字号收紧；步骤样式拆成"共同壳 + 排法 A（index-row）+ 排法 B（classic 压暗）"
+- `config.ts` / `vscode/configSource.ts` / `package.json`：新增 `anchorExplain.sidebarStyle`
+  （`collapsible` 默认 / `classic`），带 `SidebarStyle` / `coerceSidebarStyle` / `describeSidebarStyle`；
+  状态行只在非默认时提它
+- `sidebar/ui/html.ts`：`renderSidebarHtml` 加第 5 个参数 → `<body data-anchor-style>` +
+  内联 `ANCHOR_SIDEBAR_STYLE`
+- `sidebar/SidebarPanel.ts`：`create` / 构造器收 `sidebarStyle`
+- `commands.ts`：`sidebarStyleOf()`（与 `languageOf` 同一条约定）
+- `scripts/preview-sidebar.mjs`：`--classic` 出另一档，两份文件名分开
+- `scripts/check-inline-strings.mjs`：报错时**列出每一处**反引号（文件内绝对行号 + 那一行）
+
+**不做**：不动 `ExplanationResult` / `Anchor` / §3.3；不改 `session:update` 的形状；
+不改取件的五条规则的**顺序**（去重仍先于频率）。
+
+**验收标准**：
+
+| 验收 | 靠什么 |
+|---|---|
+| 接着往下读要放行；整段取过才拒且回灌 | 单测：`validateContextRequest` 三条 + 编排层两条 |
+| 多条拼起来算覆盖 | 单测：1-100 + 101-200 覆盖 50-150，且两条内容都回灌 |
+| 五颗按钮在同一行、左右分组 | 单测：DOM 在 `.foot-bar` 里 + CSS 断言 `margin-left:auto` |
+| 两档都能画、默认档是新的那一档 | 单测：classic 铺开全部 / 缺常量与写错词安全退化 |
+| 风格两处都下发 | 单测：`<body data-anchor-style>` + 内联常量 |
+| 设置真的被读（漏读 = 写了不生效） | 冒烟里的镜像锁（11 个设置全读过） |
+| 观感 | ⚠ **用户看两份预览**（`pnpm preview:sidebar` 与 `--classic`） |
+
+**回退点**：`slice-S10-fix1`。三件互相独立，可以分别还原。
+
+**状态**：**完成（自动化）**，待用户看观感与实操。
+
+### S12 落地结果（2026-10-01）
+
+- **单测**：四包 **533 例全过**（extension-anchor **405**，+11；另有 2 条按新语义改写）。
+- **冒烟**：**smoke 83 / chain 228 / fileswitch 18 / pdf 80** 全过；
+  唯一 FAIL 仍是那条要 `spawn` 子进程的（本沙箱 EBUSY，与本次改动无关）。
+- **typecheck / build / check:inline**：全过。
+- **踩到并已修**：又一次在 `styles.ts` / `clientScript.ts` 的注释里写了反引号（这一轮两次）——
+  已顺手把 `check-inline-strings.mjs` 改成**列出每一处的绝对行号**，下次照清单改即可。
+  另外 heredoc 写代码时 `:\s` 会被吞成 `:/s`（第三次），带反斜杠的代码一律用编辑工具写。

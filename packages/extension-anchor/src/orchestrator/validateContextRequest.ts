@@ -244,6 +244,42 @@ function spanOf(req: ContextRequest): { path: string | null; start: number; end:
 }
 
 /**
+ * 这段区间是不是**已经被取过的那些区间完全盖住**（D128）。
+ *
+ * @anchor 用户实测的现场：第 1 轮取了 `include/ui_mainwindow.h` 的 1-200 行，
+ *         第 4 轮想接着读 200-528 —— 只因**第 200 行**重叠就整条被拒
+ *         （"ui_mainwindow.h 的 1-200 行 已经取过了，不要重复请求"），
+ *         于是它拿不到真正想要的那 300 行。用户的原话是"我认为还是需要给读取的"。
+ *
+ *         老判据是"**有任何重叠**就拒"。那对"接着往下读"这个最自然的动作是错的：
+ *         模型要的是**新的一段**，重叠的那一两行只是窗口的接缝。
+ *         新判据是"**一点新内容都没有**才拒"。
+ *
+ *         允许多条拼起来算覆盖：先读 1-100、再读 101-200，那么 1-200 就算全取过了
+ *         （相邻也算连成一片 —— 100 与 101 之间不留缝）。
+ *
+ *         为什么"全被覆盖"还要留着拒：那时确实一个字节的新东西都没有，再读一次纯属白花一轮；
+ *         把已有的内容回灌给它更有用（尤其是轮数已经用尽的时候）。
+ */
+function isFullyCovered(
+  spans: readonly { start: number; end: number }[],
+  start: number,
+  end: number,
+): boolean {
+  const sorted = [...spans].sort((a, b) => a.start - b.start);
+  // `reach` = 从 `start` 起"已经连着取到哪儿了"。初值 start-1 表示一个字节都还没有。
+  let reach = start - 1;
+  for (const span of sorted) {
+    // 与当前这一段接不上（中间有没取过的行）说明盖不住 —— 但要先跳过整段在 `start` 之前的
+    if (span.end < reach) continue;
+    if (span.start > reach + 1) return false;
+    if (span.end > reach) reach = span.end;
+    if (reach >= end) return true;
+  }
+  return reach >= end;
+}
+
+/**
  * 五条规则的执行顺序是**刻意排的**：类型 → 形状/边界 → 去重 → 频率。
  *
  * 去重排在频率**前面**：已经取过的区间即使此刻轮数用尽，也应该把上次的内容再回灌一次 ——
@@ -431,7 +467,7 @@ export function validateContextRequest(
     return reject(`${req.type} 本次不实现`);
   }
 
-  // 规则 4：去重。区间重叠就不重复取，改把已有内容回灌。
+  // 规则 4：去重。**只有整段都被取过才拒**；只要还剩没取过的行，就照常去读（D128）。
   // 比对用**解析后的文件**（`resolvedFile`），否则同一个文件换个写法就绕过去重了。
   // 区间用**真正要读的那个**（截断后的）—— 否则"截到 400 行"会被当成"你刚读过 1-900"。
   const sameFile = (f: FetchedSpan): boolean => {
@@ -444,16 +480,19 @@ export function validateContextRequest(
     }
     return f.path === span.path;
   };
-  const overlap = state.fetched.find(
-    (f) => f.type === req.type && sameFile(f) && f.start <= endForRead && span.start <= f.end,
-  );
-  if (overlap) {
+  const alreadyFetched = state.fetched.filter((f) => f.type === req.type && sameFile(f));
+  if (isFullyCovered(alreadyFetched, span.start, endForRead)) {
+    /**
+     * 回灌**所有与这次请求相交的**已取内容，而不是随便挑一条：
+     * "全被覆盖"的意思是"这些拼起来就是你要的那一段"，只回一条会让模型以为拿到了全部。
+     */
+    const touched = alreadyFetched.filter((f) => f.start <= endForRead && span.start <= f.end);
     return {
       accepted: false,
       // 跨文件之后**必须带上文件名**：光说"1-60 这个区间已经取过了"，模型（以及看日志的人）
       // 分不清是哪个文件的 1-60 —— 用户的截图里就是这一句，读起来像在说同一份文件（D68）
-      reason: `${describeFetched(overlap)} 已经取过了，不要重复请求，直接用它给结论`,
-      content: overlap.content,
+      reason: `${describeFetched(touched[0] ?? alreadyFetched[0]!)} 已经取过了，不要重复请求，直接用它给结论`,
+      content: touched.map((f) => f.content).join('\n\n'),
     };
   }
 

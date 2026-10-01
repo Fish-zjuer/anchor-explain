@@ -59,6 +59,15 @@ export interface AnchorConfig {
    *         用户自己的文件反而挤不进去 —— 那种工程就该把它调大。
    */
   maxCandidateFiles: number;
+  /**
+   * 侧边栏的排版风格（D129）。默认 `collapsible`。
+   *
+   * @anchor 用户的原话是"之前的经典样式和现在的可收起样式，我们在设置里弄成可选项"。
+   *         两套都要留着：新样式（一次只铺开一块）适合步骤多的讲解，
+   *         老样式（全部铺开、非当前步压暗）适合"想把整篇讲解当一篇文章读"的时候。
+   *         哪一种更顺手取决于当次的任务，不该由我们替他定死。
+   */
+  sidebarStyle: SidebarStyle;
   temperature?: number;
 }
 
@@ -158,6 +167,8 @@ export interface RawConfigInputs {
   fetchScope?: unknown;
   /** `anchorExplain.maxCandidateFiles` 的原始值（可空，S9a-fix10） */
   maxCandidateFiles?: unknown;
+  /** `anchorExplain.sidebarStyle` 的原始值（可空，D129） */
+  sidebarStyle?: unknown;
 }
 
 export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
@@ -181,6 +192,8 @@ export function resolveConfig(raw: RawConfigInputs): AnchorConfig {
     language: coerceLanguage(raw.language),
     fetchScope: coerceFetchScope(raw.fetchScope),
     maxCandidateFiles: clampCandidateFiles(raw.maxCandidateFiles),
+    // 排版风格（D129）：同理，写错词回落默认，而不是让面板空白
+    sidebarStyle: coerceSidebarStyle(raw.sidebarStyle),
   };
   if (temperature !== undefined) config.temperature = temperature;
   return config;
@@ -209,6 +222,30 @@ export function coerceFetchScope(raw: unknown): FetchScope {
 }
 
 /**
+ * 侧边栏的排版风格（D129）。
+ *
+ * - `collapsible`（**默认**）：一次只铺开一块 —— 非当前步只留一行索引，当前步加强突出（D125）
+ * - `classic`：**经典样式** —— 每一步的正文全铺开，非当前步压暗到 0.62（D19 起的老做法）
+ *
+ * @anchor 为什么默认是新样式：它是用户看过老样式之后点名要的（"右侧列表不再是一次性展示出
+ *         所有讲解内容"），所以"默认"必须跟着他要的那个走；老样式留成选项，是给
+ *         "这次想把整篇当文章读"的场合。
+ */
+export type SidebarStyle = 'collapsible' | 'classic';
+
+export const DEFAULT_SIDEBAR_STYLE: SidebarStyle = 'collapsible';
+
+/** 写错一个词不该让面板坏掉，一律退化成默认档（与 `coerceLanguage` / `coerceFetchScope` 同一条）。 */
+export function coerceSidebarStyle(raw: unknown): SidebarStyle {
+  return raw === 'classic' ? 'classic' : DEFAULT_SIDEBAR_STYLE;
+}
+
+/** 档位的人话名。与 `describeFetchScope` 同一个理由：设置里写的是英文 id，一眼看出靠中文。 */
+export function describeSidebarStyle(style: SidebarStyle): string {
+  return style === 'classic' ? '经典（全部铺开）' : '一次只铺开一块';
+}
+
+/**
  * 档位的人话名（D117）。与 `describeStyle` 同一个理由：设置里写的是英文 id，
  * 而"一眼看出当前是哪档"靠的是中文 —— 状态行是用户判断"我这次开的到底是哪一档"的唯一地方。
  */
@@ -234,7 +271,10 @@ export function describeConfig(config: AnchorConfig): string {
   // 风格用 describeStyle 的人话名（D93）：档位 id 是英文，"一眼看出当前是哪档"靠的是中文。
   // 语言只在非默认时出现（D97）：默认中文是常态，每一行状态都带"输出语言 中文"反而是噪音。
   const language = config.language === 'en' ? `；输出语言 ${describeLanguage(config.language)}` : '';
-  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${describeFetchScope(config.fetchScope)}（${config.fetchScope}，清单 ${config.maxCandidateFiles} 条）${language}`;
+  // 排版风格同理（D129）：只在**非默认**时出现 —— 默认是常态，每行状态都带上它就是噪音
+  const sidebar =
+    config.sidebarStyle === DEFAULT_SIDEBAR_STYLE ? '' : `；侧边栏 ${describeSidebarStyle(config.sidebarStyle)}`;
+  return `${config.providerId}：${config.provider.tier1Model} @ ${config.provider.baseUrl}${vision}；最多取件 ${config.maxFetchRounds} 次（每次 ≤${config.maxFetchLines} 行）；风格 ${describeStyle(config.style)}；取件范围 ${describeFetchScope(config.fetchScope)}（${config.fetchScope}，清单 ${config.maxCandidateFiles} 条）${language}${sidebar}`;
 }
 
 /**

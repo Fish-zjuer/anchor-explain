@@ -8,7 +8,8 @@
  *
  * 它**不验证行为**（DOM 交互仍要靠 F5），只解决"改完一眼能看"。
  *
- * 用法：node scripts/preview-sidebar.mjs [切到第几拍]
+ * 用法：node scripts/preview-sidebar.mjs [--classic] [--serve]
+ *       （`--classic` 出经典样式那一版，见 D129；不加就出默认的"一次只铺开一块"）
  */
 
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -17,7 +18,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = path.join(ROOT, '.tmp-preview');
-const OUT = path.join(OUT_DIR, 'sidebar-preview.html');
+
+/**
+ * 排版风格（D129）：默认出"一次只铺开一块"那一版，`--classic` 出经典样式那一版。
+ * 两个各生成一份、文件名分开 —— 选哪一档要看观感，而观感只能并排看。
+ */
+const sidebarStyle = process.argv.includes('--classic') ? 'classic' : 'collapsible';
+const OUT = path.join(OUT_DIR, sidebarStyle === 'classic' ? 'sidebar-preview-classic.html' : 'sidebar-preview.html');
 
 // Windows 下动态 import 必须给 file:// URL，不能给盘符路径
 const load = (rel) => import(pathToFileURL(path.join(ROOT, rel)).href);
@@ -118,7 +125,7 @@ const THEME_VARS = `
 body { min-height: 100vh; }
 `;
 
-const html = renderSidebarHtml('vscode-webview://preview', defaultChords(false));
+const html = renderSidebarHtml('vscode-webview://preview', defaultChords(false), 1, 'zh', sidebarStyle);
 const nonce = /<script nonce="([^"]+)"/.exec(html)?.[1] ?? 'preview';
 
 const boot = `<script nonce="${nonce}">

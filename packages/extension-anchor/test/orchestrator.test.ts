@@ -341,19 +341,40 @@ test('D96：取件连续打不开也会收场，报错里说清"打不开 N 次"
   );
 });
 
-test('重复取件：第二次命中去重，不再读文件，并把上次内容再给一遍', async () => {
+test('重复取件：第二次**整段**都取过了才去重，不再读文件，并把上次内容再给一遍', async () => {
   const h = harness([
     toolTurn({ request_type: 'file', start: 1, end: 10, reason: '先看头部', path: FILE }, 'call_1'),
-    toolTurn({ request_type: 'file', start: 5, end: 15, reason: '再确认一下', path: FILE }, 'call_2'),
+    // D128：判据从"有任何重叠"收紧/放松成"**整段**都取过" ——
+    // 所以这里要一个真的落在已取区间里的请求（5-15 那种接缝上重叠一点，现在会照常去读）
+    toolTurn({ request_type: 'file', start: 5, end: 10, reason: '再确认一下', path: FILE }, 'call_2'),
     { content: validJson(), toolCalls: [] },
   ]);
   await h.run();
 
-  assert.equal(h.fetches.length, 1, '重叠区间只许真读一次');
+  assert.equal(h.fetches.length, 1, '整段取过的不再真读');
   const toolMsgs = (h.requests[2]?.messages ?? []).filter((m: ChatMessage) => m.role === 'tool');
   assert.equal(toolMsgs.length, 2);
   assert.match(toolMsgs[1]?.content ?? '', /请求被拒绝/);
   assert.match(toolMsgs[1]?.content ?? '', /include <stdio.h>/, '去重命中要把上次的内容一并回灌');
+});
+
+test('D128：**接着往下读要真读** —— 只在接缝上重叠一行不算重复', async () => {
+  // 用户实测的那一幕：第 1 轮取 1-200，第 4 轮要 200-528，被"已经取过了"整条挡掉。
+  // 这里按同样的形状缩到夹具的尺度上。
+  const h = harness([
+    toolTurn({ request_type: 'file', start: 1, end: 10, reason: '先看头部', path: FILE }, 'call_1'),
+    toolTurn({ request_type: 'file', start: 10, end: 20, reason: '接着往下看', path: FILE }, 'call_2'),
+    { content: validJson(), toolCalls: [] },
+  ]);
+  await h.run();
+
+  assert.equal(h.fetches.length, 2, '重叠第 10 行不该把这条挡掉 —— 它要的是 11-20 那几行');
+  const toolMsgs = (h.requests[2]?.messages ?? []).filter((m: ChatMessage) => m.role === 'tool');
+  assert.doesNotMatch(
+    toolMsgs[1]?.content ?? '',
+    /请求被拒绝/,
+    '第二次应当真的读到内容，而不是收到一句"已经取过了"',
+  );
 });
 
 test('取件参数不是合法 JSON：当拒绝处理，不抛错', async () => {
