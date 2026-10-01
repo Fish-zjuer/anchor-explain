@@ -1562,3 +1562,46 @@ manifest `Version` 均 = `0.1.1`。（`release/` 被 `.gitignore` 忽略，分�
 - **踩到并已修**：新写的注释里又出现反引号 → 模板字符串被截断（`clientScript.ts`），
   由 `check-inline-strings` 与 `tsc` 各拦一次；`prompts/index.ts` 的常量串漏了收尾反引号，
   由 `tsc` 拦下。
+
+
+## S10-fix1 页脚钉住：工具条不再跟着内容上下跑（D127）
+
+**目标**：用户报"我需要你把下一步什么的按钮固定在底部，不要随上面内容的变化而变。"
+
+**范围**：
+
+- `sidebar/ui/styles.ts`：`#root` 改满高纵向 flex（`height: 100vh`、`overflow: hidden`）；
+  新增 `.pane`（`flex:1 1 auto` + `min-height:0` + `overflow-y:auto`，吃原 `#root` 的 padding）
+  与 `.foot`（`flex:0 0 auto` + 上边分隔线）；`.toolbar` 去掉 `position: sticky` 那一套；
+  `.scanning` 的 `scroll-margin-bottom` 64px → 12px
+- `sidebar/ui/clientScript.ts`：`render()` 分两棵子树 ——
+  `.pane` 装头部/步骤/结束语与重放/取件日志，`.foot` 装工具条/导出与历史/用量；
+  无快照时不建空 `.foot`
+- `test/sidebarClient.test.ts`：+3 条（`SIDEBAR_STYLES` 也纳入断言）
+
+**不做**：不改协议、不改宿主、不改 `session:update` 的形状 —— 这纯粹是"DOM 怎么分两段 +
+CSS 谁负责钉住"。`scrollIntoView` 那句一个字没动（它自己会找最近的可滚祖先）。
+
+**验收标准**：
+
+| 验收 | 靠什么 |
+|---|---|
+| DOM 真的分了两棵子树 | 单测：`findByClass` 找 `.pane` / `.foot` |
+| 按钮全在页脚、取件日志在滚动区（归属逐颗钉住） | 单测：`findByText(pane, '上一步')` 为 undefined 且 `findByText(foot, ...)` 存在 |
+| 无快照时不建空页脚 | 单测 |
+| 样式不许再回到 sticky（防"顺手改回去"） | 单测：正则断言 `.toolbar` 规则块里没有 `position: sticky` |
+| 观感 | ⚠ **用户看 `pnpm preview:sidebar`**（沙箱看不了像素） |
+
+**回退点**：`slice-S11`。整片是本地的：还原 `#root` 那一条与 `render()` 的 DOM 分组即可。
+
+**状态**：**完成（自动化）**，待用户看观感。
+
+### S10-fix1 落地结果（2026-09-28）
+
+- **单测**：四包 **528 例全过**（extension-anchor **394**，+3）。
+- **冒烟**：**smoke 83 / chain 228 / fileswitch 18 / pdf 80** 全过；
+  唯一 FAIL 仍是那条要 `spawn` 子进程的（本沙箱 EBUSY，与本次改动无关）。
+- **typecheck / build / check:inline**：全过。
+- **踩到并已修**：新写的注释里第三次出现反引号（`styles.ts` 14 个、`clientScript.ts` 18 个），
+  被 `check:inline` 一次全拦下；另外用 heredoc 写测试时 **`:\s` 被吞成 `:/s`**，
+  导致正则语法错 —— 以后带反斜杠的代码一律用编辑工具写，不走 heredoc。

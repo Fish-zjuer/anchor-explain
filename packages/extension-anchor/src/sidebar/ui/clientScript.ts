@@ -565,16 +565,39 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     return box;
   }
 
+  /**
+   * 重画整块面板。**两段式**（D127）：.pane 装内容、自己滚；.foot 钉在面板底部装按钮。
+   *
+   * @anchor 为什么必须分成两棵子树：用户报的是"把下一步什么的按钮固定在底部，
+   *         不要随上面内容的变化而变"。原来工具条是 position: sticky; bottom: 0 ——
+   *         那在"内容比面板高"时才贴得住，内容一短它就回到文档流里，于是换一步、换一块，
+   *         三颗按钮跟着上下跳。要"永远在底部"，只能让容器本身分两段
+   *         （CSS 那边 #root 是满高 flex、.pane 吃剩余高度并 overflow-y）。
+   *
+   * 归属是按"它是不是**动作**"分的，不是按"它原来在哪"：
+   *   - .pane：头部 / 步骤 / 结束语与重放 / 取件日志 —— **读**的东西，短长由内容决定
+   *   - .foot：工具条 / 导出与历史 / token 用量 —— **推进与拿走成果**的东西，永远露在外面
+   *
+   * 一句话概括：**读的会滚，按的不会滚。**
+   */
   function render() {
     var root = document.getElementById("root");
     if (!root) return;
     while (root.firstChild) root.removeChild(root.firstChild);
 
+    var pane = mk("div", "pane");
+    var foot = mk("div", "foot");
+
     if (!snapshot) {
-      root.appendChild(mk("p", "empty", L.waiting));
+      pane.appendChild(mk("p", "empty", L.waiting));
+      root.appendChild(pane);
       // 讲解还在跑（还没有 snapshot）时，用量那一行**照样显示** ——
-      // 大家伙盯着"讲解中…"的这几十秒里，token 数字在涨正是"它还在动"的证据（D120）
-      if (usage) root.appendChild(buildUsage());
+      // 大家伙盯着"讲解中…"的这几十秒里，token 数字在涨正是"它还在动"的证据（D120）。
+      // 那一格空着就别建（空 .foot 会留一条没内容的分隔线）。
+      if (usage) {
+        foot.appendChild(buildUsage());
+        root.appendChild(foot);
+      }
       return;
     }
 
@@ -583,7 +606,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     var pointIndex = snapshot.pointIndex;
     var done = snapshot.state === "done" || snapshot.state === "idle";
 
-    root.appendChild(buildHeader(result, index, snapshot.state, pointIndex));
+    pane.appendChild(buildHeader(result, index, snapshot.state, pointIndex));
 
     var list = mk("ul", "steps");
     for (var i = 0; i < result.steps.length; i++) {
@@ -591,30 +614,35 @@ export const SIDEBAR_CLIENT_SCRIPT = `
       // 摆一个能打字、按下去却没反应的框比"没有这个框"更坏（D61「不许是死路」的同一条）。
       list.appendChild(buildStep(result.steps[i], i, index, pointIndex, !snapshot.ended));
     }
-    root.appendChild(list);
+    pane.appendChild(list);
 
     // 讲完（done）与已结束（ended）都给这一块（D83）：
     // done 时「下一步」已经按不动了，若只在 ended 时给出口，"讲完了但还没按退出"这个
     // 最常见的时刻恰恰是没有出口的那一个 —— 而它正是用户说"需要能重新讲"时所处的状态。
     if (done || snapshot.ended) {
-      root.appendChild(
+      pane.appendChild(
         mk(
           "p",
           "ended",
           snapshot.ended ? L.endedLine : L.doneLine,
         ),
       );
-      root.appendChild(buildRerun());
+      pane.appendChild(buildRerun());
     }
-    root.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
-    root.appendChild(buildTools());
-    root.appendChild(buildTrace());
-    // 最下面那一行：本次 token 用量（D120）
-    if (usage) root.appendChild(buildUsage());
+    pane.appendChild(buildTrace());
 
-    // render() 每次都重建整个 DOM，容器高度归零后 scrollTop 会被夹回顶部 ——
+    // 页脚：按顺序是"这一遍的推进"→"把成果拿走"→"用了多少 token"
+    foot.appendChild(buildToolbar(done, snapshot.atStart, snapshot.ended));
+    foot.appendChild(buildTools());
+    if (usage) foot.appendChild(buildUsage());
+
+    root.appendChild(pane);
+    root.appendChild(foot);
+
+    // render() 每次都重建整个 DOM，滚动位置会被夹回顶部 ——
     // 不补这一下，用户每按一次"下一步"都会被弹回面板最上面，看不到正在讲的那一行。
     // block:"nearest" 只在目标不可见时才滚动，所以不会打扰正在读的人。
+    // （滚动容器现在是 .pane；scrollIntoView 会自己找最近的可滚祖先，不必改这里。）
     var scanning = document.getElementById("anchor-scanning");
     if (scanning && typeof scanning.scrollIntoView === "function") {
       scanning.scrollIntoView({ block: "nearest" });

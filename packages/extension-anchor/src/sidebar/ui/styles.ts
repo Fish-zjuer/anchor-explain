@@ -49,7 +49,49 @@ body {
   line-height: 1.6;
 }
 
-#root { padding: var(--anchor-gap) var(--anchor-gap) 0; }
+/**
+ * **两段式布局（D127）：内容区滚动，页脚钉住。**
+ *
+ * @anchor 原来工具条是 position: sticky; bottom: 0 —— 那只在"内容比面板高"时才贴得住；
+ *         内容一短它就回到文档流里（紧跟在上面的内容之后）。于是换一步、展开/收起一块，
+ *         三颗按钮就跟着上下跳。用户的原话是"把下一步什么的按钮固定在底部，
+ *         不要随上面内容的变化而变"。
+ *
+ *         **sticky 治不了这件事** —— 它管的是"滚出视野时贴住"，不是"永远在底部"。
+ *         要"永远在底部"就得让容器本身分两段：滚动的那一段吃剩余高度，
+ *         钉住的那一段不参与滚动。
+ */
+#root {
+  display: flex;
+  flex-direction: column;
+  /* 满高：VS Code 的 webview 视口就是面板高度，100vh 就是我们要的那个高度 */
+  height: 100vh;
+  /* 滚动交给 .pane，根节点自己不滚（不然会同时出现两条滚动条） */
+  overflow: hidden;
+}
+
+/**
+ * 滚动区。min-height: 0 不是多余的：flex 子项的默认 min-height: auto 会被内容撑高，
+ * 于是 overflow-y 永远不生效、整块面板又变回"整页滚动"。这一行就是两段式能否成立的关键。
+ */
+.pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--anchor-gap) var(--anchor-gap) 0;
+}
+
+/**
+ * 钉住的那一条：不滚、不缩，永远坐在面板底部。
+ * 上边那条分隔线画在**整个页脚**上（而不是画在工具条上）——
+ * 页脚里还有导出/历史与用量两行，线画在工具条上会显得它们属于滚动区。
+ */
+.foot {
+  flex: 0 0 auto;
+  padding: 0 var(--anchor-gap) 6px;
+  border-top: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+}
 
 /* ── 头部：整段讲解的定位 ───────────────────────────────────── */
 
@@ -303,9 +345,9 @@ body {
   color: var(--vscode-list-activeSelectionForeground);
   border-left-color: var(--vscode-focusBorder);
   font-weight: 600;
-  /* 底部工具条是 sticky 的，会盖住滚动区最后约一行的高度。
-     留出这段 margin，客户端那句 scrollIntoView 才不会把这一行刚好停在工具条底下。 */
-  scroll-margin-bottom: 64px;
+  /* 扫描这一行时客户端会把它滚进视野。页脚已经钉住、不再盖住滚动区（D127），
+     所以这里只需要一点点呼吸空间，不必再为"工具条压在下面"留一整行。 */
+  scroll-margin-bottom: 12px;
 }
 
 /* 扫描行里的标签去掉填充，只留描边：两个实心底色叠在一起会显得脏 */
@@ -332,15 +374,15 @@ body {
 
 /* ── 工具条与取件日志 ───────────────────────────────────────── */
 
+/**
+ * 推进讲解那三颗（上一步 / 下一步 / 退出）。**住在页脚里**（见 D127 的两段式布局），
+ * 所以这里不再有 position: sticky —— 钉住由 .foot 负责，工具条只是它的第一行。
+ * 分隔线也移到 .foot 上（它要连导出/历史与用量一起圈进"钉住的那一段"）。
+ */
 .toolbar {
-  position: sticky;
-  bottom: 0;
   display: flex;
   gap: 6px;
-  padding: 10px 0;
-  margin-top: 12px;
-  background: var(--vscode-sideBar-background);
-  border-top: 1px solid var(--vscode-panel-border);
+  padding: 8px 0 0;
 }
 
 .toolbar button,

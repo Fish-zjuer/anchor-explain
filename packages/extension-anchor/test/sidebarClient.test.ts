@@ -15,6 +15,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SIDEBAR_CLIENT_SCRIPT } from '../src/sidebar/ui/clientScript.ts';
+import { SIDEBAR_STYLES } from '../src/sidebar/ui/styles.ts';
 import { START_CLIENT_SCRIPT } from '../src/start/ui/startClientScript.ts';
 
 // ── 一、语法：解析不过就整块白，所以这是最硬的一条 ─────────────────────────
@@ -566,4 +567,56 @@ test('D126：按过「退出」之后不再给追问那一格（宿主那边会�
 
   client.send({ type: 'session:end' });
   assert.equal(findByAttr(client.root, 'data-act', 'ask'), undefined, '结束之后不该留一个按不动的框');
+});
+
+// ── 五、页脚钉住（D127）───────────────────────────────────────────────────
+//
+// 用户的原话："我需要你把下一步什么的按钮固定在底部，不要随上面内容的变化而变。"
+//
+// 从前工具条是 `position: sticky; bottom: 0` —— 那在"内容比面板高"时才贴得住，
+// 内容一短它就回到文档流里，于是换一步、换一块，三颗按钮跟着上下跳。
+// 现在改**两段式**：#root 是满高 flex，.pane 吃剩余高度并自己滚，.foot 钉在底部。
+//
+// 这两条锁是配套的：一条锁 DOM 真的分了两棵子树（否则 CSS 再对也没用），
+// 一条锁 CSS 那边没有再回到 sticky（那是最容易被"顺手改回去"的一处）。
+
+test('D127：面板分成"会滚的 .pane"和"钉住的 .foot"两棵子树', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  client.send(sessionUpdate());
+
+  const pane = findByClass(client.root, 'pane');
+  const foot = findByClass(client.root, 'foot');
+  assert.ok(pane, '要有滚动区 .pane');
+  assert.ok(foot, '要有钉住的页脚 .foot');
+
+  // 分法是"读的会滚、按的不会滚" —— 逐颗钉住，改归属时这里会红
+  for (const label of ['上一步', '下一步', '退出']) {
+    assert.equal(findByText(pane, label), undefined, `${label} 不该在滚动区里（那它就会跟着上下跑）`);
+    assert.ok(findByText(foot, label), `${label} 要在页脚里`);
+  }
+  for (const label of ['导出讲解', '历史文件夹']) {
+    assert.ok(findByText(foot, label), `${label}（把成果拿走）也要钉住 —— 它跟工具条是一类`);
+  }
+  assert.ok(findByText(pane, '取件日志'), '取件日志是"读"的东西，留在滚动区');
+});
+
+test('D127：没有快照（还在等讲解）时不建空的 .foot（否则留一条没内容的分隔线）', () => {
+  const client = runSidebarClient(SIDEBAR_CLIENT_SCRIPT);
+  assert.equal(findByClass(client.root, 'foot'), undefined, '还没开始讲时不该有页脚');
+
+  client.send(sessionUpdate());
+  assert.ok(findByClass(client.root, 'foot'), '有讲解之后才有');
+});
+
+test('D127：样式那边不许再回到 sticky（钉住是 .foot 的职责，不是工具条自己的）', () => {
+  // 这条防的是"顺手改回去"：sticky 在**长内容**下看起来是对的，
+  // 只有内容一短才露馅（而那正是用户报的那个现象）。所以必须锁住机制本身。
+  assert.doesNotMatch(
+    SIDEBAR_STYLES,
+    /\.toolbar\s*\{[^}]*position:\s*sticky/,
+    '工具条不许自己 sticky —— 那正是"内容一短就跟着跳"的成因',
+  );
+  assert.match(SIDEBAR_STYLES, /\.pane\s*\{[^}]*overflow-y:\s*auto/, '.pane 要自己滚');
+  assert.match(SIDEBAR_STYLES, /\.pane\s*\{[^}]*min-height:\s*0/, 'min-height:0 不给，flex 子项会被内容撑高、overflow 不生效');
+  assert.match(SIDEBAR_STYLES, /#root\s*\{[^}]*height:\s*100vh/, '#root 要满高，否则页脚会飘到内容后面');
 });
