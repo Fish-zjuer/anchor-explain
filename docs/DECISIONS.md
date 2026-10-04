@@ -3868,3 +3868,96 @@ S9c 把"清单"提升成范围的唯一定义时，**忘了让清单的取材范
    而那种错的表现是范围**悄悄变大**（多放开两层目录），不会报错。
 
 **状态**：生效（S14 已落地，`slice-S14`）。
+
+---
+
+## D131 仓库搬家 = 扩展联接全体失效（一次排查，顺带定下处置流程）
+
+**背景**：S14 收工后用户报 ——
+`无法读取文件 'c:\Users\29927\.vscode\extensions\anchor.anchor-explain-0.0.0\package.json'
+(Error: 无法解析不存在的文件 …)`。活动栏的 Anchor 图标没了。
+
+**排查结果（两个原因叠在一起，每个都足以让它挂掉）**：
+
+1. **路径失效**：两个联接建在 `Sep 13 19:07`，指向 `C:/Users/29927/Desktop/anchor-explain/packages/…`。
+   **联接存的是绝对路径**，仓库后来搬到了 `C:/Users/29927/Desktop/工作区/Projects/anchor-explain`，
+   于是目标目录根本不存在 —— `package.json` 自然解析不出来。
+2. **ID 过期**：那两个联接用的还是 `anchor.*-0.0.0`，而 D86 已把 publisher 改成 `Fish-zjuer`、
+   D118 已把版本升到 `0.1.1`。**现代 ID 是 `Fish-zjuer.anchor-explain-0.1.1`**。
+   （旁证：`extensions.json` 里那两条 `anchor.*-0.0.0` 记录**没有 `uuid`、没有 `metadata`**，
+   而其它扩展都有 —— 没有 uuid 正是"VS Code 从没成功把它跟一个真实 manifest 对上"的样子。）
+
+**决策**：**先手工删死链，再 `pnpm link:ext` 重建**。
+
+**理由（关键，值得记）**：`pnpm unlink:ext` **删不掉这类死链**。
+`scripts/link-extension.mjs` 的 `pointsAt()`（第 138 行）要求联接的实际目标与**当前**仓库路径
+逐字相等，才认作"我们建的"。死链的目标是旧路径，比不中 → 脚本按"这不是我们建的联接"处理，
+**既不动它，也拒绝重装**（"已经存在，**不是**我们建的联接"）。
+所以卸载/重装这条路在"仓库搬过家"的场景下是**堵死的**，只能手工清。
+
+**做法**：
+
+```bash
+cd ~/.vscode/extensions
+rm -rf anchor.anchor-explain-0.0.0 anchor.anchor-pdf-0.0.0   # 只删联接，rm 不跟进符号链接
+cd <仓库>
+pnpm build && pnpm link:ext                                   # 产物在才会建联接
+```
+
+**不改成"自动清死链"的理由**：`pointsAt()` 保守是**故意**的 —— 它保住的是"绝不误删用户
+自己正式装过的同名扩展"。放宽成"目标不存在就删"会把那种情况一并删掉。
+一次搬家的手工成本，换长期不误删，值。这条处置流程已写进 `docs/DISTRIBUTION.md`。
+
+**顺带盘查（搬家的连带影响）**：全仓 grep 旧路径，**代码层零残留** ——
+`scripts/*.mjs` 无硬编码（都用 `fileURLToPath` 相对算 root）、
+`.vscode/launch.json` 用 `${workspaceFolder}`、`tasks.json` 同理。
+唯一命中是 `.style-lab-out/`（gitignore 掉的风格实验台产物，重生成即可）。
+另有 `docs/DECISIONS.md` 里 D1/D86 提及的旧 ID 描述 —— 那是**历史记录，按"只追加不删"规则不动**。
+
+### 第二层：`.obsolete` 撞名（用户补了"VS Code 自动更新过"才查出来的）
+
+清完死链、建好新联接之后**图标仍不回来**。用户补了一句关键线索：
+「**之前修改插件，VS Code 自动更新，这次之后 VS Code 拓展读不到了**」。
+
+顺着"自动更新"查 `~/.vscode/extensions/` 的三个文件，时间线把因果锁死了：
+
+| 时间 | 文件 | 事件 |
+|---|---|---|
+| `13:55:46` | `extensions.json` | **VS Code 自动更新后重写扩展索引** |
+| `13:57:49` | `Fish-zjuer.anchor-*-0.1.1` | 我们重建两个联接 |
+| `14:03:36` | `.obsolete` | VS Code 又一次扫描，**把我们刚建的联接标成废弃** |
+| `14:06:03` | `.obsolete` | 我们手工清掉 anchor 条目 |
+
+**`.obsolete` 是"黑名单"**：里面的 key 会被 VS Code 判定为废弃版本、**不加载**。
+它当时的内容里有：
+
+```
+"fish-zjuer.anchor-explain-0.1.1": true,   ← 命中了磁盘上的目录（ID 内部小写归一化）
+"fish-zjuer.anchor-pdf-0.1.1": true
+```
+
+**为什么撞上**：这两个名字**以前用过**（D86 改 publisher、D118 升 0.1.1 之后的那一轮），
+后来联接被删/被换，旧名字就沉在 `.obsolete` 里。**我们重建时用了完全相同的名字**，
+于是直接命中黑名单 —— 名字一样、内容再新也没用。
+
+**另一处要注意**：`13:55` 那次重写把 `extensions.json` 写成了"69 个正常扩展 + 2 条降级的
+`anchor.*-0.0.0`"。**全库 71 条里只有这 2 条没有 `metadata`**（对照组：其余 69 条都有 uuid 和
+`installedTimestamp`）—— 没有 metadata 就是"扫描到目录但读不出 manifest"的标记，
+正是 `package.json` 读不到的直接后果。
+
+**决策**：**手工把 anchor 相关条目从 `.obsolete` 里删掉**（只删 `anchor`/`fish-zjuer.anchor`
+这几条，别人一字不动），然后让 VS Code 重启自行重扫、重建 `extensions.json`。
+
+**为什么不手工改 `extensions.json`**：它是 VS Code 的**权威索引**，与 `state.vscdb`
+（`AppData/Roaming/Code/User/globalStorage/`，本机 34MB，一直在写）里的状态是联动的。
+手改一边容易与另一边不一致。**死条目（目录已删的 `anchor.*-0.0.0`）交给 VS Code 自己清**
+—— 它扫描时发现目录不存在，会自行剔除。`.obsolete` 则相反：**它是黑名单，VS Code 不会主动
+移除里面的条目**（设计如此，防"删了又自己装回来"），所以只能手工清。
+
+**给以后的一句话**：改 publisher / 升版本之后，**别用旧名字重建联接**；真要复用旧名字，
+先去 `.obsolete` 里看一眼有没有它。
+
+**状态**：生效。本机两个联接已重建为 `Fish-zjuer.anchor-explain-0.1.1` /
+`Fish-zjuer.anchor-pdf-0.1.1`，`.obsolete` 里 anchor 的 6 条目已清（原文件备份为
+`.obsolete.bak-20261004-140556`）。
+**用户需重启 VS Code（或「开发人员: 重新加载窗口」）才会看到图标回来。**

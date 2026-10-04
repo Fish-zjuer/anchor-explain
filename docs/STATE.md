@@ -102,6 +102,33 @@ startUi 4 + relatedRoots 4，后又因契约变更更新了三处既有断言）
 ⚠ **待用户实操**（自动化验不到的两件）：① 拖拽投递在真窗口里的手感；② 临时文档里
 二次选择的确认框读起来顺不顺（用户在两种投递方式之间切的时候，草稿有没有如愿留着）。
 
+### 收工后补丁：D131 扩展联接失效（仓库搬家 / ID 过期）
+
+S14 收工后用户报活动栏图标没了，报错 `无法读取文件 '…/extensions/anchor.anchor-explain-0.0.0/package.json'`。
+排查出**两个原因叠加**：① 联接是**绝对路径**且建在项目搬家前（`Desktop/anchor-explain`，已不存在）；
+② 联接 ID 还是 `anchor.*-0.0.0`，而 D86 已改 publisher 为 `Fish-zjuer`、D118 已升到 `0.1.1`
+（现代 ID = `Fish-zjuer.anchor-explain-0.1.1`）。
+
+处置：**手工删死链 → `pnpm build` → `pnpm link:ext`**。
+⚠ **注意 `pnpm unlink:ext` 删不掉这类死链** —— `pointsAt()` 拿联接实际目标跟当前仓库路径比，
+死链比不中，脚本按"不是我们建的"处理，既不动也拒绝重装。放宽它就会误删用户自己正式装的同名扩展，
+所以**不改脚本，改流程**。流程已写进 `docs/DISTRIBUTION.md`。
+
+**还有第二层（用户补"VS Code 自动更新过"后才查出来，更要紧）**：
+建好新联接后图标**仍不回来** —— 因为 `~/.vscode/extensions/.obsolete` 这个**黑名单**里
+有 `fish-zjuer.anchor-explain-0.1.1` / `fish-zjuer.anchor-pdf-0.1.1`。
+那是**以前用过、后来删掉的名字**，我们重建时用了完全相同的名字 → 直接命中 → 不加载。
+（联接是好的、`package.json` 也能读，就是不给加载，表现极像"联接又坏了"。）
+处置：备份 `.obsolete` → 只删 `anchor` / `fish-zjuer.anchor` 开头的 key（别人一字不动）→ 重启 VS Code。
+`.obsolete` 是黑名单，**VS Code 不会主动移除条目**，只能手工清。
+`extensions.json` 则相反，**别手改**（与 `state.vscdb` 联动），让 VS Code 重扫时自行修正。
+
+全仓已盘查：**代码层无旧路径残留**（脚本用相对 root、`launch.json` 用 `${workspaceFolder}`），
+只有 `.style-lab-out/`（gitignore 的产物）与 DECISIONS 里的历史描述（按规则不动）。
+
+重建后 `package.json` 可读、`dist/extension.cjs` 在、`.obsolete` 已清。
+**用户需重启 VS Code / 重载窗口**（它重扫时才会修正 `extensions.json` 并登记新目录）。
+
 ## 已完成切片
 
 | 切片 | 内容 | tag | 日期 |

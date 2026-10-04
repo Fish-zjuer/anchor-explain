@@ -89,6 +89,63 @@ release/anchor-pdf-0.1.1.vsix       线2：PDF 视图（4.62 MB）
 > SecretStorage 按**扩展 ID**隔离：换 ID 后要在新扩展里重新存一次 API Key；
 > `anchorExplain.*` 设置是全局的，不受影响。
 
+> **仓库搬过家也会踩同一个坑**（D131）。联接存的是**绝对路径**，仓库一挪，联接就是死链，
+> VS Code 报「无法读取文件 `…/extensions/<id>-<ver>/package.json`（无法解析不存在的文件）」。
+>
+> 这类死链 `pnpm unlink:ext` **不肯删** —— 脚本里的 `pointsAt()` 要拿联接的实际目标跟当前
+> 仓库路径比对（见 `scripts/link-extension.mjs:138`），死链的目标是旧路径，比不中，于是
+> 它按"这不是我们建的联接"处理，既不动它也不让你重装。所以**先手工删，再重建**：
+>
+> ```bash
+> cd ~/.vscode/extensions
+> rm -rf anchor.anchor-explain-0.0.0 anchor.anchor-pdf-0.0.0   # 删死链（只删联接）
+> cd <仓库>
+> pnpm build && pnpm link:ext
+> ```
+>
+> `rm -rf` 在这里只删联接本身（`rm` 对符号链接不跟进目标），不会碰仓库源码。
+> 重建前确认 `packages/*/dist/extension.cjs` 在，否则脚本会拒绝建联接。
+>
+> 顺带记：`~/.vscode/extensions/.obsolete` 里那些 `anchor.anchor-*-0.1.0`、
+> `fish-zjuer.anchor-*-0.1.0/0.1.1` 都是历次迭代留下的坟头，与当前联接无关，不用管。
+
+> **⚠ 但 `.obsolete` 会主动坑你（D131 第二层）。** 它是**黑名单**：里面的 key 会被判为
+> 废弃版本、**不加载**，而且 VS Code **不会**主动把它移除（设计如此，防"删了又自己装回来"）。
+>
+> 于是有个陷阱：**改 publisher / 升版本之后，用旧名字重建联接会被直接吃掉**。
+> 本机实例：`fish-zjuer.anchor-explain-0.1.1` 这个 ID 以前用过、被删了，名字沉在 `.obsolete`
+> 里；后来重建时**用了完全相同的名字** → 命中黑名单 → 图标怎么都不回来（联接是好的、
+> `package.json` 也能读，就是不给加载）。表现极像"联接又坏了"，其实是另一回事。
+>
+> 处置：先把黑名单里属于我们的条目删掉，**VS Code 必须完全退出**（它在运行时随时会写回）：
+>
+> ```bash
+> cd ~/.vscode/extensions
+> cp .obsolete .obsolete.bak-$(date +%Y%m%d-%H%M%S)     # 先备份
+> ```
+>
+> 然后**只删 `anchor` / `fish-zjuer.anchor` 开头的 key**，别人的一字不动（用脚本删，
+> 别手改 JSON —— 一行内容，改错一个字符整份黑名单就废了）：
+>
+> ```bash
+> node -e "
+> const fs=require('fs');const p='.obsolete';
+> const j=JSON.parse(fs.readFileSync(p,'utf8'));
+> const out={};
+> for(const [k,v] of Object.entries(j)){ if(/anchor/i.test(k)) continue; out[k]=v; }
+> fs.writeFileSync(p, JSON.stringify(out), 'utf8');
+> console.log('剩下', Object.keys(out).length, '条');
+> "
+> ```
+>
+> 之后重启 VS Code —— 它会重扫扩展目录、自行清掉 `extensions.json` 里的死条目
+> （目录已删的 `anchor.*-0.0.0`）、并把新目录登记进来。
+> **不要手工改 `extensions.json`**：它是权威索引，与
+> `AppData/Roaming/Code/User/globalStorage/state.vscdb` 里的状态联动，手改一边容易不一致。
+>
+> **一句话记住**：改 publisher / 升版本之后别急着用旧名字重建联接 ——
+> 先去 `.obsolete` 里看一眼有没有它。
+
 ## 4. 首次使用要配一次模型端点（每个装它的人自己配）
 
 **API Key 不在安装包里，也不应该在。** 它是装到**每台机器上之后**由使用者自己存进
