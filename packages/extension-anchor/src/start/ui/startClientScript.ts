@@ -76,6 +76,12 @@ export const START_CLIENT_SCRIPT = `
     var code = el('code', 'handoff-prompt', model.handoffPrompt);
     box.appendChild(code);
 
+    // D132：复制提示词。走宿主写剪贴板（理由见 protocol.ts 里 start:copyPrompt 那段）。
+    var copy = el('button', 'handoff-copy', '复制这句');
+    copy.setAttribute('data-copy-prompt', '1');
+    copy.setAttribute('type', 'button');
+    box.appendChild(copy);
+
     var row = el('div', 'handoff-row');
     var run = el('button', 'run', '生成临时文件');
     run.setAttribute('data-action', action.id);
@@ -149,6 +155,13 @@ export const START_CLIENT_SCRIPT = `
   document.addEventListener('click', function (event) {
     var node = event.target;
     while (node && node !== document.body) {
+      // D132：复制提示词。**在 data-action 之前判** —— 那颗按钮不带 data-action
+      // （它不是"动作 id"，而是一条具体请求），顺序反了就会掉进下面那条分支、
+      // 被当成一个查不到的动作 id 静默丢掉。
+      if (node.getAttribute && node.getAttribute('data-copy-prompt') === '1') {
+        vscode.postMessage({ type: 'start:copyPrompt' });
+        return;
+      }
       if (node.getAttribute && node.getAttribute('data-action') && !node.disabled) {
         var actionId = node.getAttribute('data-action');
         // D130：「生成临时文件」走**另一条消息** —— 它要带上输入框里的内容。

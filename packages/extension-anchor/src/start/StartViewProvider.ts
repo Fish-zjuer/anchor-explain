@@ -43,6 +43,16 @@ export interface StartViewHandlers {
    *         而那种错的表现是"面板卡顿 + 莫名开了个文档"。
    */
   onHandoffDraft(text: string): void;
+  /**
+   * 【D132】用户按了提示词旁边那颗「复制」按钮。
+   *
+   * @anchor 为什么不在面板里直接 `navigator.clipboard.writeText`：
+   *         webview 的剪贴板权限不保证给，失败时**静默无效**（用户以为按钮坏了）；
+   *         而且那样面板就得**自己存一份提示词** —— 提示词本是宿主的常量
+   *         （`HANDOFF_PROMPT`），让面板拿一份副本，日后改文案就会出现两处不一致。
+   *         走这条回调：宿主写剪贴板、宿主决定复制什么，面板只管"用户按了"。
+   */
+  onCopyPrompt(): void;
 }
 
 export class StartViewProvider implements vscode.WebviewViewProvider {
@@ -101,6 +111,12 @@ export class StartViewProvider implements vscode.WebviewViewProvider {
       // D130：打字时的草稿。**只存不动**（不解析、不读文件）—— 它的唯一用途是面板重画时回填。
       if (message.type === 'start:handoffDraft') {
         this.handlers.onHandoffDraft(message.text);
+        return;
+      }
+      // D132：复制提示词。同样不是动作 id —— 它是一条**具体的、宿主才知道怎么做**的请求
+      // （写系统剪贴板），所以走自己的回调，不混进 `onRun`（那条是查表执行）。
+      if (message.type === 'start:copyPrompt') {
+        this.handlers.onCopyPrompt();
         return;
       }
       this.handlers.onRun(message.id);

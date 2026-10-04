@@ -115,6 +115,27 @@ test('D130：提示词（给外部 Agent 的那段）在面板上可见', () => 
   assert.ok(START_STYLES.includes('user-select: text'), '提示词要能选中复制（不然用户没法把它发给对方）');
 });
 
+test('D132：提示词旁边有一颗「复制」按钮，走宿主写剪贴板（不是 navigator.clipboard）', () => {
+  // 用户原话：「**最好给一个按钮直接将 prompt 复制到粘贴板**」。
+  assert.ok(START_CLIENT_SCRIPT.includes('data-copy-prompt'), '缺那颗复制按钮');
+  assert.ok(START_CLIENT_SCRIPT.includes('start:copyPrompt'), '按钮没接上消息');
+
+  // 关键：**不能在 webview 里用 navigator.clipboard** —— 它要 secure context，
+  // 权限不保证给，且失败时**静默无效**（用户以为按钮坏了）。走宿主才是稳的。
+  assert.ok(
+    !START_CLIENT_SCRIPT.includes('navigator.clipboard'),
+    '别在面板里直接写剪贴板：失败时静默无效，用户只会看到"点了没反应"',
+  );
+
+  // 判定顺序：那颗按钮**不带 data-action**（它不是动作 id，是一条具体请求），
+  // 所以必须在 data-action 那条分支**之前**判 —— 顺序反了就会掉进下面、
+  // 被当成查不到的动作 id 静默丢掉。
+  const copyAt = START_CLIENT_SCRIPT.indexOf('data-copy-prompt');
+  const actionAt = START_CLIENT_SCRIPT.indexOf("getAttribute('data-action')");
+  assert.ok(copyAt !== -1 && actionAt !== -1, '两处判定都得在（测这个顺序的前提）');
+  assert.ok(copyAt < actionAt, '复制那支必须判在 data-action 之前，否则按钮点了没反应');
+});
+
 // ── D68：侧边栏那块「取件日志」 ────────────────────────────────────────────
 //
 // 这块曾经是一句假话：`tooltrace:append` 在协议里、在客户端渲染里都实现了，

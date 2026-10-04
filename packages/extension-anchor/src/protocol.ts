@@ -210,7 +210,8 @@ export type StartToHost =
   | { type: 'start:ready' }
   | { type: 'start:run'; id: string }
   | { type: 'start:handoff'; text: string }
-  | { type: 'start:handoffDraft'; text: string };
+  | { type: 'start:handoffDraft'; text: string }
+  | { type: 'start:copyPrompt' };
 
 /**
  * 【D130 新增】开始面板 → 宿主的**两条**新消息：投币（`start:handoff`）与草稿（`start:handoffDraft`）。
@@ -228,6 +229,21 @@ export type StartToHost =
  * 也不能指定读哪个文件（文件是**文本内容里写的**，仍然要过宿主的范围校验与存在性检查）。
  * 即"面板提供原料，宿主决定做什么"—— 与 `blocks:ask` 那种"只回传动作"是同一族。
  */
+
+/**
+ * 【D132 新增】`start:copyPrompt` —— 把那段提示词复制到系统剪贴板。
+ *
+ * @anchor 为什么由**宿主**写剪贴板，而不是 webview 里 `navigator.clipboard`：
+ *         1. webview 的剪贴板权限不保证给（需要 secure context，且受 `enableCommandUris`
+ *            那类策略影响），失败时**不报错、只静默不生效** —— 用户会以为"点了没反应"；
+ *         2. 扩展侧的 `vscode.env.clipboard.writeText()` 是官方 API，**一定可用**，
+ *            而且能在写完后给一句回执（面板上那颗按钮也就能显示"已复制"）。
+ *
+ * 它**不带数据**（提示词是常量 `HANDOFF_PROMPT`，宿主自己就有一份）——
+ * 面板不能借它往剪贴板里塞任意内容，这是对"面板提供原料"那条边界的继续保持：
+ * **能复制什么由宿主决定**。
+ */
+export type StartCopyPromptToHost = { type: 'start:copyPrompt' };
 
 /**
  * §12.4.4 块流面板 → 宿主（S-P2）。五种动作，对应 `blocks/ui/clientScript.ts` 的五个 post。
@@ -376,6 +392,12 @@ export function parseStartMessage(raw: unknown): StartToHost | null {
       if (typeof text !== 'string') return null;
       return { type: 'start:handoffDraft', text: text.slice(0, MAX_HANDOFF_TEXT_CHARS) };
     }
+    case 'start:copyPrompt':
+      /*
+       * D132：无载荷的一条命令（提示词在宿主手里），所以没有形状可校验 ——
+       * 认得出这个 type 就放行。它不读文件、不开文档，唯一的效果是写剪贴板。
+       */
+      return { type: 'start:copyPrompt' };
     default:
       return null;
   }

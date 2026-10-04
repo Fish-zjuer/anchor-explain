@@ -127,5 +127,18 @@ button.run:disabled { cursor: default; opacity: 0.5; }
   user-select: text;
 }
 
+/* D132：复制提示词。贴在提示词正下方、靠左，与下面那颗主按钮分开一档。 */
+.handoff-copy {
+  margin-top: 4px;
+  padding: 2px 8px;
+  font-size: 0.85em;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.15));
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.handoff-copy:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.25)); }
+
 .handoff-row { margin-top: 8px; }
 `;

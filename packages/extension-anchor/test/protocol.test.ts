@@ -203,6 +203,16 @@ test('parseStartMessage：两条 handoff 消息都**夹断而不拒**（D130）'
   assert.equal(draft?.text.length, MAX_HANDOFF_TEXT_CHARS);
 });
 
+test('parseStartMessage：`start:copyPrompt` 认得出就放行，不挑载荷（D132）', () => {
+  // 它是一条**无载荷**的命令 —— 提示词在宿主手里（HANDOFF_PROMPT），面板只说"复制"。
+  // 所以没有"形状"可校验：多带了字段也认（客户端版本不一致时不至于整条丢），
+  // 少了字段更认。这里钉住的是"它不会因为带了个无关字段就被拒"。
+  assert.deepEqual(parseStartMessage({ type: 'start:copyPrompt' }), { type: 'start:copyPrompt' });
+  assert.deepEqual(parseStartMessage({ type: 'start:copyPrompt', text: '随便什么' }), {
+    type: 'start:copyPrompt',
+  });
+});
+
 test('STATE_WORD 是 WalkthroughState 的满射（加状态时漏了词会在这里红）', () => {
   const states = ['idle', 'running', 'playing', 'paused', 'done', 'error'] as const;
   for (const state of states) {

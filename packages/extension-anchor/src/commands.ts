@@ -91,6 +91,8 @@ import { StartViewProvider } from './start/StartViewProvider.ts';
 import { buildStartModel, findStartAction } from './start/startModel.ts';
 import type { StartModel } from './start/startModel.ts';
 import { buildHandoff, HandoffError } from './external/handoffBuild.ts';
+// D132：提示词本体在宿主手里 —— 面板只说"复制"，由这里取常量写剪贴板。
+import { HANDOFF_PROMPT } from './external/handoffParse.ts';
 import {
   buildHandoffDoc,
   describeMapped,
@@ -714,6 +716,24 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   async function readHandoffFile(path: string): Promise<string> {
     const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(path));
     return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  /**
+   * 把那段提示词写进系统剪贴板（D132）。
+   *
+   * @anchor 为什么这件事归宿主、不归面板：
+   *         1. webview 里 `navigator.clipboard` 要 secure context 且权限不保证给，
+   *            **失败时不抛错、只静默无效** —— 用户看到的是"点了没反应"，最难查的一类问题；
+   *            `vscode.env.clipboard.writeText` 是官方 API，稳定可用。
+   *         2. 提示词是宿主的常量（`HANDOFF_PROMPT`）。让面板拿一份副本的话，
+   *            日后改文案就会有两处，而**面板那份改了看不出、宿主那份才是真的** ——
+   *            用户复制到的会是旧句子。
+   *
+   * 回执走状态栏而不是弹窗：复制是个高频小动作，弹一个要按"确定"的框很烦。
+   */
+  async function copyHandoffPrompt(): Promise<void> {
+    await vscode.env.clipboard.writeText(HANDOFF_PROMPT);
+    vscode.window.setStatusBarMessage('Anchor：提示词已复制 —— 粘给外部 Agent 就行', 4000);
   }
 
   /**
@@ -2712,6 +2732,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       onHandoffDraft: (text) => {
         handoffDraft = text;
       },
+      // D132：复制提示词。由**宿主**写剪贴板（webview 的 navigator.clipboard 不保证可用，
+      // 失败时静默无效），而且提示词本身就在宿主手里（HANDOFF_PROMPT），不用面板传副本。
+      onCopyPrompt: () => void copyHandoffPrompt(),
     },
     makeStartModel,
   );
