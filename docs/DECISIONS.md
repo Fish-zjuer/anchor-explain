@@ -4184,3 +4184,125 @@ D134 之前，B 被当成 A 处理：先花**一次多余的请求**去"修复"�
 
 **状态**：生效。618 条单测全绿（`core` 50 / `anchor-pdf` 26 / `anchor` 484 / `pdf-blocks` 58），
 `tsc --noEmit` 四个包含，`check:inline` 通过，`smoke-handoff` 38 条通过。
+
+## D135 稳定复现的根因：DeepSeek 思考模式 + `tools`，我们没把 `reasoning_content` 送回去
+
+**背景**：D134 改完之后，用户报同一句话**仍然稳定复现**。这一条记的是真正的根因。
+
+**先说结论**：D134 那一版**没有错，只是没到根上**。它把"空输出"从（必然失败的）修复重试里
+摘了出来，但没回答"**为什么端点会回空**"。答案是：**空不是模型没说话，是我们在第二条请求里
+漏了一个字段，被端点判 400 了。**
+
+### 三层证据
+
+**第一层：用户的配置**
+
+```
+anchorExplain.providers = { "default": { "baseUrl": "https://api.deepseek.com",
+                                          "tier1Model": "deepseek-flash" } }
+```
+
+**第二层：DeepSeek 文档（联网核实，api-docs.deepseek.com）**
+
+1. `deepseek-flash` **「Supports both non-thinking and thinking (default) modes」**
+   —— **思考模式默认开着**，effort 默认 `high`。
+2. 思考模式下正文走 `reasoning_content`，与 `content` **平级**。
+3. 原文（Thinking Mode → Tool Calls）：
+
+   > 对**携带 `tools` 参数**的请求，`reasoning_content` 必须在后续**所有**请求里完整传回 ——
+   > **即使是模型没有执行工具调用的那些轮次**。若代码没有正确回传，**API 会返回 400**。
+
+4. 官方 Python 示例里那句关键的一行是 `messages.append(response.choices[0].message)`
+   —— 它之所以正确，是因为那个对象**自带 `reasoning_content`**。
+
+**第三层：我们的代码（每一条都实测复现过）**
+
+| # | 位置 | 症状 |
+|---|---|---|
+| 1 | `openAICompatible.ts` 读响应只取 `message.content` | `reasoning_content` **当场丢掉** |
+| 2 | `Orchestrator.ts` 记助手那一轮只写 `content` + `toolCalls` | 第二条请求**不带** `reasoning_content` |
+| 3 | 端点按上面的文档回 400 → `PROVIDER_ERROR` | 整次讲解从**取件之后**就再没成功过一次 |
+
+**探针实测**（临时脚本，已删）：假端点按文档在"没回传"时回 400，我们拿到的就是
+`模型端点返回 400：{"error":{"message":"reasoning_content must be passed back"}}`。
+用户看到的报错随端点措辞变，但成因是同一个。
+
+### 四处改动
+
+1. **`types.ts`：`ChatMessage.reasoningContent?` 与 `AssistantTurn.reasoningContent?`。**
+   让**编排层**持有它 —— 不放在 provider 上。理由：provider 实例是长命的，而一次讲解
+   可能跑好几轮、还可能中途按轮换模型；"这轮属于哪次对话"只有编排层知道，
+   挂在 provider 上迟早串味。
+
+2. **`openAICompatible.ts`：读回来 + 发出去。**
+   - 读：`message.reasoning_content` 是**非空字符串**才带（空串当"没有"，
+     否则"本来没有"与"有但为空"分不开）；
+   - 发：`toWireMessage` 在 assistant 分支里带上它。**`tool_calls` 与 `content` 的
+     原有行为一个字没改** —— 只是给 assistant 多挂一个可选字段。
+
+3. **`Orchestrator.ts`：两处 `messages.push` 都带上它**（取件轮、修复轮）。
+
+4. **新增 `MAX_EMPTY_RETRIES = 1`：真正的空输出（既没说话、也没要工具）原样重发一次。**
+
+   @anchor 这一条与 D134 的"空输出不重试"**不矛盾**，它们否的是两种不同的重试：
+   - D134 否掉**修复重试** —— 拿空输出去问 `buildRepairPrompt`（"你上一次的输出没有通过校验"），
+     对空输出毫无指向，必然再空一次；
+   - D135 允许**原样重发** —— 偶发空（限流/网关抖动）再问一次是**独立事件**，值得一次机会。
+
+   上限是死的，且这几次重发**也占 `turnLimit` 的额度**，整次调用仍然会收场。
+   测试用"第二份给合法输出"做**反证**：偶发空要能救回来，全空要照旧报错。
+
+   ★ **另外要写死一条别误伤**：`content` 为空**不一定是故障** —— 模型"停下来要工具"那一轮
+   `content` 本来就是空的（官方示例 Turn 1.2 就写着 `content=''` + 有 `tool_calls`）。
+   那种轮次**走不到** `validateOrRepair`：编排循环已经在 `reply.toolCalls.length !== 0`
+   那一支把它分去取件了。能到闸门的空 content，只可能是"既没说话又没请求工具"。
+
+### 顺带补上：`Anchor: 自检模型端点`
+
+从 `EMPTY_COMPLETION` 到"该怎么办"之间原来**缺一座桥** —— 我们能确定的只是"没拿到正文"，
+但原因有好几种（模型名错 / 正文在 `reasoning_content` / 限流 / 400），而用户手里只有一个报错框。
+
+新命令发一句**最小提问**（`请只回四个字：端点正常。`，**不带 tools**），
+把它读出来的 `content` / `reasoningContent` 与端点的**原始响应**一起摊在「Anchor」输出面板里，
+并按事实给一句结论：
+
+| 端点回了什么 | 结论 |
+|---|---|
+| 有正文 | 「偶发，直接重试」 |
+| `content` 空、`reasoning_content` 有 | 「正文在思考字段里」+ **给出关掉它的写法** |
+| 请求本身失败 | 把端点原文（400/401/ENOTFOUND）摆出来 + 三类常见原因 |
+
+@anchor **为什么不顺手替他改配置**：猜一个模型名写回去，失败时他更摸不着头脑，
+而且这次连"是谁改的"都不知道。宁可让他自己看见 `content: ""` 与
+`reasoning_content: "..."` 并排摆着 —— 那一眼比任何猜测都确定。
+
+@anchor **为什么不带 `tools`**：这一问要复现的正是"有没有拿到 content"。
+带上 tools 会让端点可能选择"只要工具、不说话"，那是**正常**的一轮，会把结论搅浑。
+
+@anchor 读响应那段（`describeEndpointProbe`）放在 **provider** 而不是命令层：
+它读的是线路上那个形状（`choices[0].message` / `finish_reason`），那是本文件唯一拥有的知识。
+
+### 给 DeepSeek 用户的实操建议
+
+根因既然在"思考模式 + tools"，那么在 D135 装上去之前，**当下能立刻恢复的改法**是
+通过 `extraBody` 关掉思考模式：
+
+```json
+"anchorExplain.providers": {
+  "default": {
+    "baseUrl": "https://api.deepseek.com",
+    "tier1Model": "deepseek-flash",
+    "extraBody": { "thinking": { "type": "disabled" } }
+  }
+}
+```
+
+@anchor 为什么这个写法能生效：`openAICompatible.ts` 的 `extraBody` 是**原样透传**进请求体的，
+而 DeepSeek 的 OpenAI 兼容面认的就是 `{"thinking":{"type":"disabled"}}`。
+但**这不是必须让用户做的事** —— D135 之后我们不回传字段的问题已经修了；
+关思考模式只是"少一个变量"，用来在一秒内确认根因是不是它。
+
+**状态**：生效。单测 630 条全绿（`core` 50 / `anchor-pdf` 26 / `anchor` 496 / `pdf-blocks` 58），
+`tsc --noEmit` 四包全过，`check:inline` 过，五个冒烟里四个全过
+（`smoke-extension` 唯一 FAIL 仍是沙箱 `spawnSync EBUSY`）。
+已重打包并安装 `release/anchor-explain-0.1.1.vsix`。临时探针已删。

@@ -221,3 +221,121 @@ test('D120：addUsage 逐项累加，undefined 不参与（全 undefined 仍是 
   assert.deepEqual(addUsage({ input: 10, cachedInput: 8 }, { output: 3 }), u({ input: 10, output: 3, cachedInput: 8 }));
   assert.deepEqual(addUsage({}, {}), u({}));
 });
+
+// ── D135：DeepSeek 思考模式的 reasoning_content 必须原样往返 ────────────────
+
+/**
+ * @anchor 这一组守的是用户实测的那个"稳定复现"：DeepSeek 思考模式**默认开**，
+ *         而它要求带 `tools` 的请求把每一轮的 `reasoning_content` 完整回传，漏一轮就 400。
+ *         我们原来只读 `message.content` → `reasoning_content` 当场丢掉 →
+ *         第二条请求必然 400 → 整次讲解失败。
+ *         两个方向都要钉住：**取回来**（否则没得回传）、**发出去**（否则端点拒）。
+ */
+test('D135：端点在 reasoning_content 里给思维链 → 要取回来，不能丢', async () => {
+  const { impl } = fakeFetch({
+    text: JSON.stringify({
+      choices: [
+        {
+          finish_reason: 'tool_calls',
+          message: {
+            content: '',                                        // 停下来要工具的那一轮，content 本来就是空的
+            reasoning_content: '先把锚点那一段读了。',
+            tool_calls: [{ id: 'c1', function: { name: 'fetch_context', arguments: '{}' } }],
+          },
+        },
+      ],
+    }),
+  });
+  const turn = await createOpenAICompatibleProvider({ baseUrl: 'https://x/v1', fetchImpl: impl }).chat({ model: 'm', messages });
+
+  assert.equal(turn.content, '', 'content 是空串，这不代表出错 —— 它是在要工具');
+  assert.equal(turn.reasoningContent, '先把锚点那一段读了。', '思维链必须取回来，否则下一轮没得回传');
+});
+
+test('D135：reasoning_content 是空串或没给 → `undefined`，不写成空串', async () => {
+  const missing = await createOpenAICompatibleProvider({
+    baseUrl: 'https://x/v1',
+    fetchImpl: fakeFetch({ text: '{"choices":[{"message":{"content":"hi"}}]}' }).impl,
+  }).chat({ model: 'm', messages });
+  assert.equal(missing.reasoningContent, undefined);
+
+  const blank = await createOpenAICompatibleProvider({
+    baseUrl: 'https://x/v1',
+    fetchImpl: fakeFetch({ text: '{"choices":[{"message":{"content":"hi","reasoning_content":""}}]}' }).impl,
+  }).chat({ model: 'm', messages });
+  assert.equal(blank.reasoningContent, undefined, '空串等于"没有"，写成空串会让下游分不清"没有"与"有但空"');
+});
+
+test('D135：assistant 消息带 reasoningContent → 原样上线（DeepSeek 靠它才不 400）', async () => {
+  const { impl, calls } = fakeFetch({});
+  const history: ChatMessage[] = [
+    { role: 'user', content: 'u' },
+    {
+      role: 'assistant',
+      content: '',
+      toolCalls: [{ id: 'c1', name: 'fetch_context', arguments: '{}' }],
+      reasoningContent: '我读了一下，决定去要文件。',
+    },
+    { role: 'tool', toolCallId: 'c1', content: '文件内容' },
+  ];
+
+  await createOpenAICompatibleProvider({ baseUrl: 'https://x/v1', fetchImpl: impl }).chat({
+    model: 'm',
+    messages: history,
+    tools: [{}],
+  });
+
+  const onWire = (calls[0]?.body['messages'] ?? []) as Record<string, unknown>[];
+  const assistant = onWire.find((m) => m['role'] === 'assistant');
+  assert.equal(assistant?.['reasoning_content'], '我读了一下，决定去要文件。');
+  assert.ok(assistant?.['tool_calls'], 'tool_calls 不能因为加了思维链就丢');
+});
+
+test('D135：没给 reasoningContent 时，线路上**不出现**这个键（不是空串占位）', async () => {
+  const { impl, calls } = fakeFetch({});
+  await createOpenAICompatibleProvider({ baseUrl: 'https://x/v1', fetchImpl: impl }).chat({
+    model: 'm',
+    messages: [
+      { role: 'user', content: 'u' },
+      { role: 'assistant', content: '我在想' }, // 普通一轮，没有思维链（大多数端点都这样）
+    ],
+  });
+
+  const onWire = (calls[0]?.body['messages'] ?? []) as Record<string, unknown>[];
+  const assistant = onWire.find((m) => m['role'] === 'assistant');
+  assert.ok(assistant);
+  assert.equal('reasoning_content' in assistant, false, '不要塞空串：空串会让"本来没有"和"有但为空"分不开');
+  assert.equal(assistant['content'], '我在想', '普通 assistant 消息的 content 照旧要发');
+});
+
+// ── D135：端点自检的读法（纯函数，不联网）─────────────────────────────────
+
+test('D135 自检：正文在 reasoning_content 里 → 指出是思考模式，并给出关掉它的写法', async () => {
+  const { describeEndpointProbe } = await import('../src/orchestrator/providers/openAICompatible.ts');
+  const text = describeEndpointProbe({
+    choices: [{ finish_reason: 'stop', message: { content: '', reasoning_content: '我先想了想。' } }],
+  });
+
+  assert.match(text, /正文放进了 reasoning_content/, '要点出真正的原因');
+  assert.match(text, /thinking.*disabled/s, '要给出**可照做**的关法');
+  assert.match(text, /"我先想了想。"/, '把端点原样回的东西摆出来');
+});
+
+test('D135 自检：端点正常回正文 → 结论是"偶发，直接重试"（不是"你配错了"）', async () => {
+  const { describeEndpointProbe } = await import('../src/orchestrator/providers/openAICompatible.ts');
+  const text = describeEndpointProbe({
+    choices: [{ finish_reason: 'stop', message: { content: '端点正常。' } }],
+  });
+
+  assert.match(text, /正常返回了正文/);
+  assert.match(text, /偶发/);
+  assert.doesNotMatch(text, /thinking/, '正常时不该教人去关思考模式 —— 那是没事找事');
+});
+
+test('D135 自检：连 choices[0].message 都没有 → 说"baseUrl 指的不是对话端点"', async () => {
+  const { describeEndpointProbe } = await import('../src/orchestrator/providers/openAICompatible.ts');
+  const text = describeEndpointProbe({ error: { message: 'model not found' } });
+
+  assert.match(text, /不是 OpenAI 格式|不是一个对话端点/);
+  assert.match(text, /model not found/, '原始响应要带上，那里面写着端点自己的话');
+});

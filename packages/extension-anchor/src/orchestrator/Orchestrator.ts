@@ -91,6 +91,20 @@ const REJECT_PREFIX = '请求被拒绝：';
 const REJECTED_GRACE_TURNS = 2;
 
 /**
+ * 「模型这一轮既没说话也没请求工具」时，**原样重发同一个请求**的额外次数（D135）。
+ *
+ * @anchor 与 D134 的"空输出不重试"不矛盾 —— 那条否掉的是**修复重试**
+ *         （拿空输出去问"你为什么没通过校验"，必然再空一次）；
+ *         这一条针对的是**偶发空**（限流、网关抖动、思考模式没吐完）：
+ *         同一份 prompt 再问一次，成败是独立事件。
+ *
+ * @anchor 为什么是 1：偶发的一次就够。每次都空是配置层的问题（模型名、端点、思考模式），
+ *         再试一百次也是同样结果 —— 那时候报错比重试有用。上限必须是**死的**，
+ *         而且这几次重发也占 `turnLimit` 的额度，整次调用仍然会收场。
+ */
+const MAX_EMPTY_RETRIES = 1;
+
+/**
  * 空输出那一句给用户看的话（D134）。**不重试、不伪装成校验失败**。
  *
  * @anchor 为什么这句话里要提"再来一次"：空输出几乎总有环境层的原因 ——
@@ -105,9 +119,11 @@ const REJECTED_GRACE_TURNS = 2;
  */
 function emptyCompletionMessage(): string {
   return (
-    '模型这一次没有返回任何内容（不是"讲错了"，是"没说话"）。' +
-    '常见原因是端点把正文放进了思考字段、开了思考模式、或临时限流 —— 直接再试一次通常就好；' +
-    '若每次都这样，请检查设置里的模型名与端点是否指向一个对话模型。'
+    '模型连续两次都没有返回任何内容（不是"讲错了"，是"没说话"）。' +
+    '先用命令「Anchor: 自检模型端点」看端点到底回了什么 —— ' +
+    '若它回的是空 `content` 而正文在别的字段里（例如思考模式的 `reasoning_content`），' +
+    '那就是端点与我们的读法不一致，自检会把这件事指出来；' +
+    '若是 400 / 限流 / 网络错，自检也会显示原文。'
   );
 }
 
@@ -352,13 +368,23 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
      *         对空输出毫无指向，模型只能把它当成一次新的提问，于是**原样再吐一个空**。
      *         这就是用户实测的"重试一次后仍失败：$：AI 返回了空内容"
      *         —— 两次请求对一个必然失败的重试来说，是纯浪费，还把失败原因盖住了。
+     *
+     * @anchor D135 补一句**别误伤**：`content` 为空**不一定是故障**。模型"停下来要工具"
+     *         的那一轮 `content` 本来就是空的（DeepSeek 官方示例里 Turn 1.2 就写着
+     *         `content=''` + 有 `tool_calls`）。那种轮次根本走不到这里 —— 编排循环
+     *         （`reply.toolCalls.length !== 0`）已经在上面把它分去取件了。
+     *         能走到 `validateOrRepair` 的空 content，只可能是"既没说话又没请求工具"。
      */
     function isBlank(candidate: string): boolean {
       return candidate.trim() === '';
     }
 
     /** §3.3 闸门 + 规则 5 的一次修复重试 */
-    async function validateOrRepair(model: string, candidate: string): Promise<ExplanationResult> {
+    async function validateOrRepair(
+      model: string,
+      candidate: string,
+      reasoning?: string,
+    ): Promise<ExplanationResult> {
       const first = validateExplanation(candidate, anchor, outline, {
         allowedPaths: fetchedPaths(fetched),
       });
@@ -377,7 +403,13 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
 
       const repaired = await say(model, [
         ...messages,
-        { role: 'assistant', content: candidate },
+        {
+          role: 'assistant',
+          content: candidate,
+          // D135：这一轮的思维链也得带上 —— 下面这次 `say` 是**同一个对话的延续**，
+          // 少带一轮 DeepSeek 就 400（修复轮本来是为了救场，反而更早地炸掉）。
+          ...(reasoning !== undefined ? { reasoningContent: reasoning } : {}),
+        },
         {
           role: 'user',
           content: buildRepairPrompt(candidate, describeIssues(first.issues), {
@@ -546,6 +578,9 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
       return { accepted: true, text: content };
     }
 
+    /** 已经用掉几次"空输出重发"（D135）。见 `MAX_EMPTY_RETRIES` */
+    let emptyRetriesUsed = 0;
+
     for (let turn = 1; turn <= turnLimit; turn += 1) {
       const choice = deps.routeModel({
         turn,
@@ -556,11 +591,46 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
 
       const reply = await say(choice.model, messages);
 
-      // 不要工具 ⇒ 这就是候答，交给输出闸门
-      if (reply.toolCalls.length === 0) return await validateOrRepair(choice.model, reply.content);
+      /**
+       * 「既没说话、也没请求工具」——一次**真正的空输出**（D135）。
+       *
+       * @anchor 为什么这里要自动重发一次，而 D134 说"空输出不重试"：那两条不矛盾，
+       *         它们说的是**两种不同的重试**。
+       *         D134 否掉的是**修复重试**（把空输出喂进 `buildRepairPrompt` 再要一遍）——
+       *         那条路必然失败，因为修复 prompt 的措辞（"你上一次的输出没有通过校验"）
+       *         对一个空输出毫无指向。
+       *         这里做的是**原样重发同一个请求** —— 针对的是**偶发**空（限流、网关抖动、
+       *         思考模式没吐完）。同一份 prompt 再问一次，成败是独立事件，值得一次机会。
+       *
+       * @anchor 为什么要有上限、且上限是 1：它花的是真金白银（一次完整请求）。
+       *         偶发的一次就够；每次都空说明是配置层的问题（模型名、端点、思考模式），
+       *         再试一百次也是同样结果 —— 那时候**报错比重试有用**。
+       */
+      if (reply.toolCalls.length === 0 && reply.content.trim() === '' && emptyRetriesUsed < MAX_EMPTY_RETRIES) {
+        emptyRetriesUsed += 1;
+        logger.record({
+          at: now(),
+          round: turn,
+          request: { type: 'file', params: {}, reason: '空输出重发' },
+          accepted: false,
+          rejectReason: `模型这一轮既没说话也没请求工具 —— 原样重发一次（第 ${emptyRetriesUsed} 次）`,
+          durationMs: 0,
+        });
+        continue;
+      }
 
-      // 把这一轮助手消息（含工具调用）记进对话，否则紧随其后的 tool 结果没有归属
-      messages.push({ role: 'assistant', content: reply.content, toolCalls: reply.toolCalls });
+      // 不要工具 ⇒ 这就是候答，交给输出闸门
+      if (reply.toolCalls.length === 0) return await validateOrRepair(choice.model, reply.content, reply.reasoningContent);
+
+      // 把这一轮助手消息（含工具调用）记进对话，否则紧随其后的 tool 结果没有归属。
+      // `reasoningContent` 必须一起带上（D135）：DeepSeek 在带 `tools` 的请求里要求
+      // **每一轮**的思维链都完整回传，漏一轮就 400 —— 而下一轮请求正是拿这个数组发的。
+      messages.push({
+        role: 'assistant',
+        content: reply.content,
+        toolCalls: reply.toolCalls,
+        ...(reply.reasoningContent !== undefined ? { reasoningContent: reply.reasoningContent } : {}),
+      });
 
       for (const call of reply.toolCalls) {
         const result = await handleToolCall(call, {

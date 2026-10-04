@@ -33,6 +33,7 @@
     "onCommand:anchorExplain.configure",
     "onCommand:anchorExplain.showState",
     "onCommand:anchorExplain.setApiKey",
+    "onCommand:anchorExplain.checkEndpoint",
     "onCommand:anchorExplain.replayLast",
     "onCommand:anchorExplain.reExplain",
     "onCommand:anchorExplain.fontLarger",
@@ -212,6 +213,11 @@
       {
         "command": "anchorExplain.setApiKey",
         "title": "设置 API Key（存进 SecretStorage）",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.checkEndpoint",
+        "title": "自检模型端点（发一句最小提问，把端点的原样回复摊开）",
         "category": "Anchor"
       },
       {

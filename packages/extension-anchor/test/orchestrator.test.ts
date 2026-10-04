@@ -59,6 +59,15 @@ function toolTurn(req: Record<string, unknown>, id = 'call_1'): AssistantTurn {
   };
 }
 
+/** 停下来要工具、并且**带了思维链**的一轮（DeepSeek 思考模式的常态，D135） */
+function toolTurnWithReasoning(req: Record<string, unknown>, reasoning: string, id = 'call_1'): AssistantTurn {
+  return {
+    content: '',
+    reasoningContent: reasoning,
+    toolCalls: [{ id, name: 'fetch_context', arguments: JSON.stringify(req) }],
+  };
+}
+
 interface Harness {
   provider: ChatProvider;
   requests: ChatRequest[];
@@ -996,51 +1005,69 @@ test('D126：不给 deps.followUp → 两处都不出现追问那一节（正式
   assert.doesNotMatch(user, /这是对第/);
 });
 
-// ── D134：空输出不是"校验失败" ──────────────────────────────────────────────
+// ── D134/D135：空输出不是"校验失败" ────────────────────────────────────────
 
 /**
- * @anchor harness 的假 provider 在 turns 用完后**会抛**（见它上面那句注释）——
- *         所以"只喂 1 个 turn，run() 却没有抛 '多调了一轮'"本身就是断言：
- *         空输出这条路**没有**发起第二次请求。
+ * @anchor D134 与 D135 在这里要一起看，它们否掉的是**两种不同的重试**：
+ *   - D134 否掉**修复重试**：拿空输出去问"你为什么没通过校验" —— 必然再空一次；
+ *   - D135 允许**原样重发**：偶发空（限流/抖动）再问一次是独立事件，值得一次机会。
+ * 于是"第一轮空"的期望从 D134 的"1 次请求就抛"变成 D135 的"重发一次，两次都空才抛"。
  */
-test('D134：第一轮就吐空 → 直接报 EMPTY_COMPLETION，且**不做修复重试**', async () => {
-  const h = harness([{ content: '', toolCalls: [] }]);
+test('D134/D135：两轮都吐空 → 报 EMPTY_COMPLETION（重发过一次，到此为止）', async () => {
+  const h = harness([
+    { content: '', toolCalls: [] }, // 第一轮：空 → D135 触发一次原样重发
+    { content: '', toolCalls: [] }, // 重发的这一轮：还是空 → 收场
+  ]);
 
   await assert.rejects(
     () => h.run(),
     (err: unknown) => {
       assert.ok(err instanceof AnchorError);
       assert.equal(err.code, 'EMPTY_COMPLETION', '空输出要有自己的码，不能混进 SCHEMA_VIOLATION');
-      assert.equal(h.requests.length, 1, '空输出没有可回灌的错，重试一次纯属浪费');
+      assert.equal(h.requests.length, 2, '原样重发只给一次（MAX_EMPTY_RETRIES = 1）');
       return true;
     },
   );
 });
 
-test('D134：第一轮吐空之后不再重试（再给一个 turn 也不会被用掉）', async () => {
-  // 第二个 turn 故意给一份**合法**输出：若还重试，这次就会成功返回而不是抛。
-  // 用它当"反证"——比只数次数更能说明"这条路真的断了"。
+test('D135：第一次空、原样重发后正常 → **成功**（偶发空不该让整次讲解失败）', async () => {
   const h = harness([
-    { content: '', toolCalls: [] },
-    { content: validJson(), toolCalls: [] },
+    { content: '', toolCalls: [] },        // 偶发空
+    { content: validJson(), toolCalls: [] }, // 重发这一次好了
   ]);
 
-  await assert.rejects(() => h.run(), (err: unknown) => {
-    assert.equal((err as AnchorError).code, 'EMPTY_COMPLETION');
-    assert.equal(h.requests.length, 1, '第二份合法输出根本不该被读到');
-    return true;
-  });
+  const result = await h.run();
+  assert.ok(result.steps.length > 0, '重发拿到的东西要照常返回，而不是把整次讲解丢掉');
+  assert.equal(h.requests.length, 2);
+});
+
+test('D134：空输出**绝不走修复重试** —— 修复轮只在"有东西可读"时才发', async () => {
+  // 喂 2 个 turn。若空输出被当成"不合规"送进 buildRepairPrompt，第 2 条请求就会带着
+  // 修复提示（"你上一次的输出没有通过校验"），而那条路必然白花 —— 这里断言它没发生。
+  const h = harness([
+    { content: '', toolCalls: [] },
+    { content: '', toolCalls: [] },
+  ]);
+
+  await assert.rejects(() => h.run(), () => true);
+
+  const second = h.requests[1];
+  const sent = JSON.stringify(second?.messages ?? []);
+  assert.doesNotMatch(sent, /你上一次的输出没有通过校验/, '空输出没有可回灌的错 —— 重发的是原样的对话，不是修复提示');
 });
 
 test('D134：报错里不许出现光秃秃的 `$`（那是 JSONPath 记号，用户读不懂）', async () => {
-  const h = harness([{ content: '', toolCalls: [] }]);
+  const h = harness([
+    { content: '', toolCalls: [] },
+    { content: '', toolCalls: [] },
+  ]);
 
   await assert.rejects(() => h.run(), (err: unknown) => {
     const message = (err as Error).message;
     assert.doesNotMatch(message, /\$：/, '`$：` 必须已被翻成"输出根节点"或整句改写掉');
     assert.doesNotMatch(message, /\$/, '这一句里根本不该出现 `$`');
     assert.match(message, /没有返回任何内容/);
-    assert.match(message, /再试一次/, '要给一句能照做的动作');
+    assert.match(message, /自检/, '要给一句能照做的动作');
     return true;
   });
 });
@@ -1060,7 +1087,6 @@ test('D134：修复轮吐空 → 同样报 EMPTY_COMPLETION（不伪装成"校�
     },
   );
 });
-
 test('D134：两轮都吐不合规但**非空**的内容 → 仍然是 SCHEMA_VIOLATION（原判据不许松）', async () => {
   const h = harness([
     { content: '这里是讲解：{ 坏 JSON', toolCalls: [] },
@@ -1073,4 +1099,78 @@ test('D134：两轮都吐不合规但**非空**的内容 → 仍然是 SCHEMA_VI
     assert.match((err as Error).message, /输出根节点/, '`$` 已翻成人话');
     return true;
   });
+});
+
+// ── D135：思考模式的 reasoning_content 必须在整段对话里往返 ──────────────────
+
+/**
+ * @anchor 用户实测的那个"稳定复现"就是这一条：DeepSeek 思考模式**默认开**，
+ *         而它要求带 `tools` 的请求把**每一轮**的 `reasoning_content` 完整回传，漏一轮就 400。
+ *         我们原来只把 `content` + `toolCalls` 记进 `messages`，思维链当场丢掉 →
+ *         第二条请求必然被端点拒 → 整次讲解以 PROVIDER_ERROR 收场。
+ */
+test('D135：要工具那一轮的思维链，必须跟着进下一次请求（漏了 DeepSeek 会 400）', async () => {
+  const h = harness([
+    toolTurnWithReasoning({ request_type: 'file', start: 1, end: 10, reason: '看看' }, '先读锚点那一段。'),
+    { content: validJson(), toolCalls: [] },
+  ]);
+
+  await h.run();
+
+  const second = h.requests[1];
+  assert.ok(second, '应该有第二条请求');
+  const assistant = second.messages.find((m) => m.role === 'assistant');
+  assert.ok(assistant, '第二条请求里要有那条 assistant 消息');
+  assert.equal(
+    assistant.reasoningContent,
+    '先读锚点那一段。',
+    '思维链必须原样回传 —— 这正是 DeepSeek 官方的 `messages.append(response.choices[0].message)` 在做的事',
+  );
+});
+
+test('D135：不把思维链当讲解内容用 —— 渲染/校验只看 content', async () => {
+  const h = harness([
+    // 这一轮 content 是空、思维链里却写着一份"看着像答案"的东西
+    { content: '', reasoningContent: 'summary: 其实我想说的是这个', toolCalls: [] },
+    { content: validJson(), toolCalls: [] },
+  ]);
+
+  // 空 content → D135 触发一次原样重发（不是拿思维链去当答案）
+  const result = await h.run();
+  assert.ok(result.steps.length > 0);
+  assert.equal(
+    JSON.stringify(result).includes('其实我想说的是这个'),
+    false,
+    '思维链不是给用户看的内容，绝不能流进渲染层',
+  );
+});
+
+test('D135：原样重发时，请求里**不带**上一次的空回复（不污染对话）', async () => {
+  const h = harness([
+    { content: '', toolCalls: [] },
+    { content: validJson(), toolCalls: [] },
+  ]);
+
+  await h.run();
+
+  const second = h.requests[1];
+  const assistants = (second?.messages ?? []).filter((m) => m.role === 'assistant');
+  assert.equal(assistants.length, 0, '空的那一轮没有内容可记账，不该作为一条 assistant 消息发回去');
+});
+
+test('D135：修复轮也要带上那一轮的思维链（同一个对话的延续）', async () => {
+  const h = harness([
+    {
+      content: '我写了一段不合规的 JSON',
+      reasoningContent: '我先这样组织一下。',
+      toolCalls: [],
+    },
+    { content: validJson(), toolCalls: [] }, // 修复轮给了合规的，能过
+  ]);
+
+  await h.run();
+
+  const repair = h.requests[1];
+  const assistant = (repair?.messages ?? []).find((m) => m.role === 'assistant');
+  assert.equal(assistant?.reasoningContent, '我先这样组织一下。', '修复轮是同一对话的延续，思维链不能丢');
 });

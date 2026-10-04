@@ -15,6 +15,24 @@ export interface ChatMessage {
   toolCallId?: string;
   /** role='assistant' 且这一轮要求了取件时必填 */
   toolCalls?: readonly ToolCall[];
+  /**
+   * 这一轮的**思维链**（D135）。只在 `role='assistant'` 上有意义。
+   *
+   * @anchor 为什么必须由我们保管并原样送回：DeepSeek 的思考模式**默认开着**，
+   *         而它的文档明写 ——「请求带 `tools` 时，`reasoning_content` 必须在后续每一次请求里
+   *         **完整回传**，**包括那些模型没有发起工具调用的轮次**；不回传 API 直接返回 400」。
+   *         官方给的 Python 示例里那句 `messages.append(response.choices[0].message)`
+   *         之所以对，就是因为那个 message 对象**自带** `reasoning_content`。
+   *         我们这一层的 `ChatMessage` 原本只有 `content`/`toolCalls`，
+   *         等于把 `reasoning_content` 当场丢掉 —— 于是第二条请求必然 400
+   *         （用户实测的"稳定复现"就是它；见 D135）。
+   *
+   * @anchor 为什么让编排层**原样持有**而不是让 provider 偷偷存：provider 实例是长命的，
+   *         一次讲解却可能跑好几轮、还可能中途换模型（`routeModel` 按轮挑档）。
+   *         "这轮属于哪次对话"只有编排层知道 —— 状态挂在 provider 上迟早串味。
+   *         provider 的职责收窄成"把消息翻译上线、把回复翻译下线"。
+   */
+  reasoningContent?: string;
 }
 
 export interface ToolCall {
@@ -28,6 +46,14 @@ export interface AssistantTurn {
   /** 模型这一轮的自然语言部分；只要了工具、没说话时是空串 */
   content: string;
   toolCalls: readonly ToolCall[];
+  /**
+   * 这一轮的思维链（D135）。端点没给（大多数端点、以及关掉思考模式时）就是 `undefined`。
+   *
+   * @anchor 为什么要**取回来**而不是丢掉：它必须跟着这条 assistant 消息一起进后续请求，
+   *         否则开着 `tools` 的 DeepSeek 会以 400 拒绝（见 `ChatMessage.reasoningContent`）。
+   *         注意它**不是**给用户看的讲解内容 —— 渲染、校验、留档一律不看它。
+   */
+  reasoningContent?: string;
   /**
    * 这一轮的 token 用量（D120）。**端点给什么就记什么**：能拿到 `usage` 的端点才填，
    * 拿不到的（有的本地端点、有的代理会吞掉）就是 `undefined` —— 不猜、不估。

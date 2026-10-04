@@ -2755,6 +2755,98 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'anchorExplain');
   }
 
+  /**
+   * 端点自检（D135）——「模型没说话」那条报错**指着它**。
+   *
+   * @anchor 为什么必须有这条命令：报错只能告诉我们"我们没拿到正文"，但正文为什么没来
+   *         有好几种完全不同的原因（模型名错 / 端点把正文放进 `reasoning_content` /
+   *         限流 / 400）。这些**发一次最小请求就看得出来**，而用户手里只有一个报错框。
+   *         我们能在扩展里做的事就到此为止 —— 把事实摆出来，判断留给用户。
+   *
+   * @anchor 为什么**不**顺手替他改配置（例如猜一个模型名写回 settings）：
+   *         猜错了就是把他从一个看不懂的报错换成另一个看不懂的报错，而且这次
+   *         连"是谁改的"都不知道。宁可让他自己看见 `content: ""` 与
+   *         `reasoning_content: "..."` 并排摆在那 —— 那一眼比任何猜测都确定。
+   *
+   * @anchor 为什么**走真 provider**（而不是自己组一个 fetch）：这样它验的是
+   *         "我们平时发的那套东西"（同一个 baseUrl、同一套鉴权头、同一份 extraBody）。
+   *         自己另写一份，测出来的成功对真实链路没有保证。
+   */
+  async function checkEndpoint(): Promise<void> {
+    const read = await readAnchorConfig(context);
+    const provider = read.provider;
+    if (!provider) {
+      void vscode.window.showErrorMessage(`Anchor：${describeConfig(read)}`);
+      return;
+    }
+
+    const channel = vscode.window.createOutputChannel('Anchor');
+    channel.appendLine('');
+    channel.appendLine(`===== 端点自检（${new Date().toLocaleString()}）=====`);
+    channel.appendLine(`baseUrl ：${provider.baseUrl}`);
+    channel.appendLine(`model   ：${provider.tier1Model}`);
+    channel.appendLine(`extraBody：${JSON.stringify(provider.extraBody ?? {})}`);
+
+    /**
+     * 用**最朴素的一句提问**，不带 tools。
+     * @anchor 为什么不带 tools：目的正是要复现"我们有没有拿到 content"这一件事。
+     *         带上 tools 会让端点可能选择"只要工具、不说话"，那反而是**正常**的一轮，
+     *         会把自检的结论搅浑。这一问只求一句人话。
+     */
+    const probe = createOpenAICompatibleProvider({
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey,
+      extraHeaders: provider.extraHeaders,
+      extraBody: provider.extraBody,
+    });
+
+    try {
+      const reply = await probe.chat({
+        model: provider.tier1Model,
+        messages: [{ role: 'user', content: '请只回四个字：端点正常。' }],
+      });
+      channel.appendLine('');
+      channel.appendLine('—— 端点的回复（我们读出来的）——');
+      channel.appendLine(`content         ：${JSON.stringify(reply.content)}`);
+      channel.appendLine(`reasoningContent：${reply.reasoningContent === undefined ? '（端点没给）' : JSON.stringify(reply.reasoningContent)}`);
+      channel.appendLine('');
+      channel.appendLine(
+        reply.content.trim() !== ''
+          ? '✅ 正常：端点回了正文。之前那次「没说话」是偶发，直接重试。'
+          : reply.reasoningContent !== undefined
+            ? '⚠ 正文缺失：端点只回了思考内容。这是**思考模式**的行为 —— 见下面「怎么办」。'
+            : '⚠ 正文缺失：端点确实回了个空的 content，且没有思考内容可用。',
+      );
+      channel.appendLine('');
+      channel.appendLine('—— 怎么办 ——');
+      channel.appendLine(
+        '若上一步的结论是「正文缺失」，先确认 `tier1Model` 是当前可用的模型名（写错会 400，不会空回）；',
+      );
+      channel.appendLine(
+        '再尝试通过 `extraBody` 关掉思考模式。DeepSeek 的写法是：{"thinking":{"type":"disabled"}}。',
+      );
+      channel.appendLine('settings.json 里长这样（providers.default.extraBody）：');
+      channel.appendLine('  "anchorExplain.providers": {');
+      channel.appendLine('    "default": { "baseUrl": "https://api.deepseek.com", "tier1Model": "deepseek-flash",');
+      channel.appendLine('                 "extraBody": { "thinking": { "type": "disabled" } } }');
+      channel.appendLine('  }');
+      channel.show(true);
+      void vscode.window.showInformationMessage('Anchor：端点自检完成 —— 结论在「Anchor」输出面板里。');
+    } catch (err) {
+      channel.appendLine('');
+      channel.appendLine('❌ 请求本身失败了（这比"空回复"更明确 —— 不是模型不说话，是这一跳没通）：');
+      channel.appendLine(userFacing(err));
+      channel.appendLine('');
+      channel.appendLine('—— 怎么办 ——');
+      channel.appendLine('上面这条是端点原样返回的。常见三类：');
+      channel.appendLine('  · 400 / model not found → `tier1Model` 不是当前可用的模型名，去查该厂商的文档');
+      channel.appendLine('  · 401 / invalid api key → 跑一次命令「Anchor: 设置 API Key」重填');
+      channel.appendLine('  · 连不上 / ENOTFOUND   → `baseUrl` 写错了，或网络/代理不通');
+      channel.show(true);
+      void vscode.window.showErrorMessage(`Anchor：端点自检失败 —— 原文在「Anchor」输出面板里。`);
+    }
+  }
+
   context.subscriptions.push(
     vscode.commands.registerCommand('anchorExplain.capture', capture),
     vscode.commands.registerCommand('anchorExplain.explainAnchor', explainAnchor),
@@ -2775,6 +2867,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.configure', configure),
     vscode.commands.registerCommand('anchorExplain.showState', showState),
     vscode.commands.registerCommand('anchorExplain.setApiKey', setApiKey),
+    // D135：端点自检 —— 「模型没说话」那条报错指着它，是用户唯一能自己走完的一步
+    vscode.commands.registerCommand('anchorExplain.checkEndpoint', () => void checkEndpoint()),
     // D83：讲完之后的两个出口。**命令与面板按钮同源** —— 面板点「重放上次讲解」与
     // 在命令面板里执行这条命令走的是同一条路（S8「面板没有可糊的地方」同一条规矩）。
     vscode.commands.registerCommand('anchorExplain.replayLast', replayLast),

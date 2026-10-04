@@ -27,19 +27,30 @@ export interface OpenAICompatibleOptions {
   temperature?: number;
 }
 
-/** 发出去的消息形状（OpenAI 兼容）。`toolCallId` 在这一层才变成 `tool_call_id`。 */
+/**
+ * 发出去的消息形状（OpenAI 兼容）。`toolCallId` 在这一层才变成 `tool_call_id`。
+ *
+ * @anchor `reasoning_content` 为什么由我们自己带（D135）：DeepSeek 的思考模式**默认开着**，
+ *         而它的文档要求在带 `tools` 的请求里把**每一轮**的 `reasoning_content` 原样回传
+ *         （包括没发起工具调用的那些轮次），否则返回 400。它官方示例里
+ *         `messages.append(response.choices[0].message)` 之所以能过，
+ *         正是因为那个对象**自带**这个字段。所以我们这一层只做翻译，不做过滤：
+ *         编排层给了就上线，没给（大多数端点）就不写这一行 —— 不塞空串，
+ *         空串会让"这轮本来就没有思维链"和"有思维链但内容为空"分不开。
+ */
 function toWireMessage(m: ChatMessage): Record<string, unknown> {
   if (m.role === 'tool') return { role: 'tool', tool_call_id: m.toolCallId ?? '', content: m.content };
-  if (m.role === 'assistant' && m.toolCalls?.length) {
-    return {
-      role: 'assistant',
-      content: m.content,
-      tool_calls: m.toolCalls.map((c) => ({
+  if (m.role === 'assistant') {
+    const wire: Record<string, unknown> = { role: 'assistant', content: m.content };
+    if (m.toolCalls?.length) {
+      wire.tool_calls = m.toolCalls.map((c) => ({
         id: c.id,
         type: 'function',
         function: { name: c.name, arguments: c.arguments },
-      })),
-    };
+      }));
+    }
+    if (m.reasoningContent !== undefined) wire.reasoning_content = m.reasoningContent;
+    return wire;
   }
   return { role: m.role, content: m.content };
 }
@@ -158,11 +169,83 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): C
       }
 
       const usage = readUsage((payload as { usage?: unknown }).usage);
+      /**
+       * 思维链（D135）：DeepSeek 在 `message.reasoning_content` 给，与 `content` **平级**。
+       * 只在是字符串且非空时带上 —— 空串等于"没有"，写成 `undefined` 让下游能 `!== undefined` 判断。
+       */
+      const reasoning = message['reasoning_content'];
       return {
         content: typeof message.content === 'string' ? message.content : '',
         toolCalls: readToolCalls(message.tool_calls),
+        ...(typeof reasoning === 'string' && reasoning !== '' ? { reasoningContent: reasoning } : {}),
         ...(usage !== undefined ? { usage } : {}),
       };
     },
   };
+}
+
+/**
+ * 自检（D135）：**拿真请求去问端点，把它原样回了什么摊开给用户看**。
+ *
+ * @anchor 为什么非做不可：从 `EMPTY_COMPLETION` 到"该怎么办"之间缺一座桥。
+ *         我们能确定的只是"我们没拿到正文"，但正文为什么没来有很多种可能 ——
+ *         模型名错、端点把正文放进了 `reasoning_content`、限流、400。
+ *         这些**在扩展里看一眼响应就该知道**，可是用户手里只有一个报错框。
+ *         与其让他去翻输出面板、猜模型名，不如点一下，发一次最小请求，
+ *         把 `choices[0].message` 原样打出来。
+ *
+ * @anchor 为什么放在 provider 而不是命令层：它读的是**线路上那个形状**
+ *         （`choices[0].message` / `reasoning_content` / `finish_reason`），
+ *         而这正是本文件唯一拥有的知识。命令层只负责把这段文本塞进输出面板 ——
+ *         把"怎么读响应"写进命令层，等于同一件事有两处说法，迟早只有一处对。
+ *
+ * @anchor 为什么**不**在这里替用户改配置：猜一个模型名写回去，失败时他更摸不着头脑；
+ *         而"把事实摆出来"我们不会做错。判断留给读这段输出的人。
+ *
+ * **纯函数**，`node --test` 直测（不需要联网 —— 它只整理一段已经拿到的 JSON）。
+ */
+export function describeEndpointProbe(payload: Record<string, unknown>): string {
+  const raw = JSON.stringify(payload);
+  const choices = payload.choices;
+  const first = Array.isArray(choices) ? (choices[0] as Record<string, unknown> | undefined) : undefined;
+  const message = first?.['message'] as Record<string, unknown> | undefined;
+
+  if (!message) {
+    return [
+      '端点没按 OpenAI 格式返回 choices[0].message —— 这本身就说明 baseUrl 指向的不是一个对话端点。',
+      `原始响应：${snippet(raw, 500)}`,
+    ].join('\n');
+  }
+
+  const content = message['content'];
+  const reasoning = message['reasoning_content'];
+  const toolCalls = message['tool_calls'];
+  const lines: string[] = [
+    `finish_reason：${String(first?.['finish_reason'] ?? '（没给）')}`,
+    `content：${typeof content === 'string' ? JSON.stringify(content) : `（不是字符串：${JSON.stringify(content)}）`}`,
+  ];
+  if (reasoning !== undefined) lines.push(`reasoning_content：${JSON.stringify(reasoning)}`);
+  if (toolCalls !== undefined) lines.push(`tool_calls：${JSON.stringify(toolCalls)}`);
+
+  lines.push('', `结论：${probeVerdict(content, reasoning)}`);
+  lines.push(`原始响应：${snippet(raw, 800)}`);
+  return lines.join('\n');
+}
+
+/** 自检的结论那一句。**照事实给方向**，不猜、不替他改配置。 */
+function probeVerdict(content: unknown, reasoning: unknown): string {
+  const contentEmpty = typeof content !== 'string' || content.trim() === '';
+  const hasReasoning = typeof reasoning === 'string' && reasoning.trim() !== '';
+
+  if (contentEmpty && hasReasoning) {
+    return (
+      '端点把正文放进了 reasoning_content —— 它开着思考模式，而我们要的正文不在 content 里。' +
+      '解决办法是关掉思考模式（DeepSeek 是 `{"thinking":{"type":"disabled"}}`，走 extraBody），' +
+      '或者换一个不支持思考模式的模型名。'
+    );
+  }
+  if (contentEmpty) {
+    return '端点确实回了空 content。换个模型名试试；若它本来就是"只要工具、不说话"的一轮，那是正常的。';
+  }
+  return '这一次端点**正常返回了正文** —— 说明之前那次是偶发（限流/抖动），直接重试即可。';
 }

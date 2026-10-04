@@ -179,6 +179,49 @@ CLI 在 `C:/Microsoft VS Code/bin/code`，**装 C 盘根目录不在 Program Fil
 
 **已重装到 VS Code**（D131 起走 VSIX）：`release/anchor-explain-0.1.1.vsix`。
 
+### 收工后补丁：D135 稳定复现的**真根因** —— 思考模式的 `reasoning_content` 我们没送回去
+
+D134 装上去之后用户报**同一句话仍然稳定复现**。查下去发现 D134 没到根上 ——
+它把"空输出"从必然失败的修复重试里摘了出来，但没回答"端点为什么会回空"。
+
+**答案是**：`deepseek-flash` 的**思考模式默认开着**，而 DeepSeek 文档明写
+「带 `tools` 的请求，`reasoning_content` 必须在后续**所有**请求里完整回传，
+**包括模型没发起工具调用的那些轮次**；不回传 **API 直接 400**」。
+我们读响应时只取 `message.content`，`reasoning_content` **当场丢掉** →
+第二条请求必然 400 → 整次讲解从取件之后就再没成功过一次。
+（官方示例那句 `messages.append(response.choices[0].message)` 之所以对，
+正是因为那个 message 对象**自带** `reasoning_content`。）
+
+**四处改动**：
+
+1. `types.ts`：`ChatMessage.reasoningContent?` / `AssistantTurn.reasoningContent?`
+   —— 让**编排层**持有（provider 是长命的，而"这轮属于哪次对话"只有编排层知道）
+2. `openAICompatible.ts`：读回来（非空才算）+ 发出去（assistant 分支挂上）
+3. `Orchestrator.ts`：取件轮与修复轮两处 `messages.push` 都带上
+4. 新增 `MAX_EMPTY_RETRIES = 1` —— 真正的空输出（既没说话也没要工具）**原样重发一次**。
+   与 D134 不矛盾：D134 否的是**修复重试**（对空输出毫无指向），
+   这里做的是**原样重发**（针对偶发空，成败是独立事件）。
+   ★ 别误伤：模型"停下来要工具"那一轮 `content` 本来就是空的（官方示例 Turn 1.2 如此），
+   那种轮次走不到闸门 —— 编排循环已经把它分去取件了。
+
+**顺带补一座桥：新命令 `Anchor: 自检模型端点`**（报错文案直接指着它）。
+发一句最小提问（不带 tools），把 `content` / `reasoningContent` / **原始响应**
+一起摊在「Anchor」输出面板，并按事实给结论（"偶发重试" / "正文在思考字段里"+关法 / "请求本身失败"+三类原因）。
+**不替用户改配置** —— 猜错了是从一个看不懂的报错换成另一个，还多了"谁改的"这层迷雾。
+
+**用户当下若想立刻恢复**：`extraBody` 加 `{"thinking":{"type":"disabled"}}`
+（`extraBody` 是原样透传的，DeepSeek 的 OpenAI 兼容面认这个写法）。
+但**不是必须** —— 根因已经修了；关它只是"少一个变量"用来一秒确认。
+
+**验证**：630 条单测全绿（core 50 / anchor-pdf 26 / anchor 496 / pdf-blocks 58），
+新增 13 条 D135 断言（provider 7 / orchestrator 6）。其中一条是**反证式**的：
+偶发空之后第二份给合法输出 —— 若把重试做没了，这条就会失败。
+`tsc --noEmit` 四包全过，`check:inline` 过，五个冒烟四个全过
+（`smoke-extension` 唯一 FAIL 仍是沙箱 `spawnSync EBUSY`）。
+**已重打包并安装** `release/anchor-explain-0.1.1.vsix`，验证安装目录内含
+`reasoning_content` / `checkEndpoint` / `自检模型端点` / `MAX_EMPTY_RETRIES`。
+两个临时探针（`probe-empty` / `probe-deepseek`）已删。
+
 ## 已完成切片
 
 | 切片 | 内容 | tag | 日期 |
