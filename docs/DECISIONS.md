@@ -3957,7 +3957,56 @@ pnpm build && pnpm link:ext                                   # 产物在才会�
 **给以后的一句话**：改 publisher / 升版本之后，**别用旧名字重建联接**；真要复用旧名字，
 先去 `.obsolete` 里看一眼有没有它。
 
-**状态**：生效。本机两个联接已重建为 `Fish-zjuer.anchor-explain-0.1.1` /
-`Fish-zjuer.anchor-pdf-0.1.1`，`.obsolete` 里 anchor 的 6 条目已清（原文件备份为
-`.obsolete.bak-20261004-140556`）。
-**用户需重启 VS Code（或「开发人员: 重新加载窗口」）才会看到图标回来。**
+### 第三层：联接方案本身在"清单缺失"时会自己喂黑名单（最终结论）
+
+清完 `.obsolete`、重启 VS Code 后**还是读不到**。复查发现 `.obsolete` 在 `14:07:26` 被写回
+（我的清理是 `14:06:03`）—— **VS Code 重启后又把这两条加了回去**。
+
+于是因果终于完整：**VS Code 每次启动都会做一件事 —— 扫描扩展目录，把「磁盘上有目录、
+但不在 `extensions.json` 索引里」的扩展判为"已废弃的残留"，写进 `.obsolete`。**
+
+两个联接**从来没进过 `extensions.json`**（那里只有两条坏掉的 `anchor.*-0.0.0`），于是：
+
+```
+联接存在 → 不在 extensions.json → 判为残留 → 记进 .obsolete → 不加载 → 永远进不了 extensions.json
+```
+
+**这是个自锁死循环，手工删 `.obsolete` 只是治标，一重启就复发。**
+（也解释了为什么"联接是好的、`package.json` 也能读，就是不给加载"。）
+
+**最终决策：放弃联接这条路，改用 .vsix 正式安装。**
+
+**理由**：VSIX 安装做的事正好补上缺的那一环 —— **它把文件真复制进扩展目录并正式登记进
+`extensions.json`**。有登记就脱离了"残留"判据，`.obsolete` 那条链从根上断掉。
+联接是"零拷贝、改完 `pnpm build` 重载即生效"的便利方案，但**它的便利依赖一个它自己不写、
+也不受它控制的索引**；这个索引一旦丢失（本次是 VS Code 自动更新重写时只认它自己扫得出的
+目录），联接就会被当成垃圾。**要省事就得接受这个前提：`extensions.json` 里得先有它。**
+
+**做法**（本机已执行）：
+
+1. **先撤联接** —— 同 ID 的联接 + 正规安装会打架，必须清掉：
+   `rm -f ~/.vscode/extensions/Fish-zjuer.anchor-{explain,pdf}-0.1.1`
+2. **再清 `.obsolete`** —— 否则 VSIX 装上去也可能因黑名单命中而判废：
+   `npm` 脚本只删 `anchor` 相关 key，备份为 `.obsolete.bak-20261004-140556`
+3. **打包**：`pnpm package:vsix`（`scripts/package-vsix.mjs`，含必带 / 禁带 / 密钥三重校验）
+4. **安装**：`code --install-extension release/anchor-explain-0.1.1.vsix --force`（线2 同理）
+   —— CLI 在 `C:/Microsoft VS Code/bin/code`（**装在 C 盘根目录，不在 `Program Files`**）
+
+**验证（安装后）**：两个目录是**真目录**（`drwxr-xr-x`，不是联接）、`package.json` 可读、
+`extensions.json` 里两条记录的 **`hasMeta: true`**（含 uuid 与完整元信息 ——
+对比之前那两条降级条目 `hasMeta: false`，这就是"VS Code 正式认下"的判据）、
+`.obsolete` 无 anchor 条目。
+
+**取舍如实说**：VSIX 装的**是快照**，改代码后要 `pnpm package:vsix` + 重装才生效
+（联接只要 `pnpm build` + 重载）。日常开发改用开发宿主（F5，`.vscode/launch.json` 两条配置）
+或 `pnpm devhost`，**只在"要像普通扩展一样常驻"时才走 VSIX**。
+
+**给以后的一句话**：改 publisher / 升版本之后**别用旧名字重建联接**；真要复用旧名字，
+先去 `.obsolete` 里看一眼。**以及 —— 联接没进 `extensions.json` 就迟早会被当垃圾清掉，
+这条路只适合"索引正常"的时候。**
+
+**状态**：生效（最终态）。本机已改为 **VSIX 安装**：
+`fish-zjuer.anchor-explain-0.1.1` / `fish-zjuer.anchor-pdf-0.1.1`（真目录 + 已登记 + `hasMeta: true`），
+`.obsolete` 无 anchor 条目，联接已撤。
+**用户需重启 VS Code 才会看到图标回来。**
+（原 `.obsolete` 备份：`.obsolete.bak-20261004-140556`。）

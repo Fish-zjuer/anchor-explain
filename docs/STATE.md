@@ -114,20 +114,38 @@ S14 收工后用户报活动栏图标没了，报错 `无法读取文件 '…/ex
 死链比不中，脚本按"不是我们建的"处理，既不动也拒绝重装。放宽它就会误删用户自己正式装的同名扩展，
 所以**不改脚本，改流程**。流程已写进 `docs/DISTRIBUTION.md`。
 
-**还有第二层（用户补"VS Code 自动更新过"后才查出来，更要紧）**：
-建好新联接后图标**仍不回来** —— 因为 `~/.vscode/extensions/.obsolete` 这个**黑名单**里
-有 `fish-zjuer.anchor-explain-0.1.1` / `fish-zjuer.anchor-pdf-0.1.1`。
-那是**以前用过、后来删掉的名字**，我们重建时用了完全相同的名字 → 直接命中 → 不加载。
-（联接是好的、`package.json` 也能读，就是不给加载，表现极像"联接又坏了"。）
-处置：备份 `.obsolete` → 只删 `anchor` / `fish-zjuer.anchor` 开头的 key（别人一字不动）→ 重启 VS Code。
-`.obsolete` 是黑名单，**VS Code 不会主动移除条目**，只能手工清。
-`extensions.json` 则相反，**别手改**（与 `state.vscdb` 联动），让 VS Code 重扫时自行修正。
+**还有第二层、第三层（用户补"VS Code 自动更新过"后才查出来，这层是决定性的）**：
+建好新联接后图标**仍不回来** ——
+
+- **第二层**：`~/.vscode/extensions/.obsolete` 这个**黑名单**里
+  有 `fish-zjuer.anchor-explain-0.1.1` / `...pdf`。那是**以前用过、后来删掉的名字**，
+  我们重建时用了完全相同的名字 → 直接命中 → 不加载。
+- **第三层（自锁）**：手工清了黑名单、重启后**又被写回**（实测 `14:06` 清、`14:07` 复发）。
+  因为 **VS Code 每次启动都扫描扩展目录，把「有目录、但不在 `extensions.json` 里」的
+  扩展判为废弃残留写进 `.obsolete`**；而联接**从来没进过 `extensions.json`**。于是：
+
+  ```
+  联接存在 → 不在 extensions.json → 判为残留 → 记进 .obsolete → 不加载 → 永远进不了 extensions.json
+  ```
+
+  **手工删 `.obsolete` 只是治标，一重启就复发。**
+
+**最终处置：放弃联接，改用 .vsix 正式安装**（已执行完毕）。
+VSIX 正好补上缺的那一环 —— **把文件真复制进扩展目录并正式登记进 `extensions.json`**，
+有登记就脱离"残留"判据。步骤：撤联接 → 清 `.obsolete` → `pnpm package:vsix` →
+`code --install-extension release/anchor-explain-0.1.1.vsix --force`（线2 同理；
+CLI 在 `C:/Microsoft VS Code/bin/code`，**装 C 盘根目录不在 Program Files**）。
+
+**验证通过**：两个目录是**真目录**（`drwxr-xr-x`）、`package.json` 可读、
+`extensions.json` 两条记录 **`hasMeta: true`**（对比之前降级条目 `hasMeta: false`
+—— 这就是"VS Code 正式认下"的判据）、`.obsolete` 无 anchor 条目。
+
+**取舍**：VSIX 是**快照**，改代码要重打包重装；日常开发用开发宿主（F5）或 `pnpm devhost`。
 
 全仓已盘查：**代码层无旧路径残留**（脚本用相对 root、`launch.json` 用 `${workspaceFolder}`），
 只有 `.style-lab-out/`（gitignore 的产物）与 DECISIONS 里的历史描述（按规则不动）。
 
-重建后 `package.json` 可读、`dist/extension.cjs` 在、`.obsolete` 已清。
-**用户需重启 VS Code / 重载窗口**（它重扫时才会修正 `extensions.json` 并登记新目录）。
+**用户待做**：重启 VS Code 即可看到图标回来。
 
 ## 已完成切片
 

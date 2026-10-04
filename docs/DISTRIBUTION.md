@@ -89,62 +89,74 @@ release/anchor-pdf-0.1.1.vsix       线2：PDF 视图（4.62 MB）
 > SecretStorage 按**扩展 ID**隔离：换 ID 后要在新扩展里重新存一次 API Key；
 > `anchorExplain.*` 设置是全局的，不受影响。
 
-> **仓库搬过家也会踩同一个坑**（D131）。联接存的是**绝对路径**，仓库一挪，联接就是死链，
-> VS Code 报「无法读取文件 `…/extensions/<id>-<ver>/package.json`（无法解析不存在的文件）」。
+> **⚠ 联接会"自己喂黑名单"——这条路在索引缺失时会自锁（D131，已实测）。**
 >
-> 这类死链 `pnpm unlink:ext` **不肯删** —— 脚本里的 `pointsAt()` 要拿联接的实际目标跟当前
-> 仓库路径比对（见 `scripts/link-extension.mjs:138`），死链的目标是旧路径，比不中，于是
-> 它按"这不是我们建的联接"处理，既不动它也不让你重装。所以**先手工删，再重建**：
+> 三类事故叠在一起，本机全踩过一遍，最终**放弃联接、改用 VSIX**：
 >
-> ```bash
-> cd ~/.vscode/extensions
-> rm -rf anchor.anchor-explain-0.0.0 anchor.anchor-pdf-0.0.0   # 删死链（只删联接）
-> cd <仓库>
-> pnpm build && pnpm link:ext
+> **第一类：联接存绝对路径，仓库一挪就是死链。** VS Code 报
+> 「无法读取文件 `…/extensions/<id>-<ver>/package.json`（无法解析不存在的文件）」。
+> 这类死链 `pnpm unlink:ext` **不肯删** —— `pointsAt()`（`scripts/link-extension.mjs:138`）
+> 要拿联接的实际目标跟**当前**仓库路径逐字比对，死链比不中，脚本按"这不是我们建的联接"处理，
+> **既不动它也不让你重装**。于是卸载/重装这条路在搬到过的仓库上是堵死的。
+>
+> **第二类：`.obsolete` 是黑名单，且 VS Code 从不主动清理它。**
+> 里面的 key 会被判为废弃版本、**不加载**（设计如此，防"删了又自己装回来"）。
+> 陷阱在于：**改 publisher / 升版本之后，用旧名字重建联接会被直接吃掉** ——
+> 那个名字以前用过、被删了，就沉在 `.obsolete` 里。本机实例：
+> `fish-zjuer.anchor-explain-0.1.1` 命中黑名单 → 联接是好的、`package.json` 也能读，
+> **就是不给加载**，表现极像"联接又坏了"。
+>
+> > 清黑名单**只删 `anchor` 相关 key、别人的一字不动**，且**VS Code 必须先完全退出**
+> > （运行时随时会写回）。一行 JSON，别手改，用脚本：
+> >
+> > ```bash
+> > cd ~/.vscode/extensions
+> > cp .obsolete .obsolete.bak-$(date +%Y%m%d-%H%M%S)     # 先备份
+> > node -e "
+> > const fs=require('fs');const p='.obsolete';
+> > const j=JSON.parse(fs.readFileSync(p,'utf8'));
+> > const out={};
+> > for(const [k,v] of Object.entries(j)){ if(/anchor/i.test(k)) continue; out[k]=v; }
+> > fs.writeFileSync(p, JSON.stringify(out), 'utf8');
+> > console.log('剩下', Object.keys(out).length, '条');
+> > "
+> > ```
+>
+> **第三类（这一步是决定性的）：联接会被判为"残留"，于是自锁。**
+> **VS Code 每次启动都扫描扩展目录，把「磁盘上有目录、但不在 `extensions.json` 索引里」
+> 的扩展当成废弃残留写进 `.obsolete`。** 而联接**从来没进过 `extensions.json`**，于是：
+>
+> ```
+> 联接存在 → 不在 extensions.json → 判为残留 → 记进 .obsolete → 不加载 → 永远进不了 extensions.json
 > ```
 >
-> `rm -rf` 在这里只删联接本身（`rm` 对符号链接不跟进目标），不会碰仓库源码。
-> 重建前确认 `packages/*/dist/extension.cjs` 在，否则脚本会拒绝建联接。
+> **手工删 `.obsolete` 只是治标，一重启就复发**（本机实测：`14:06` 清掉，`14:07` 重启被写回）。
+> 根源是"这个索引 VS Code 只认它自己扫得出的目录"，**联接不在其中**。
 >
-> 顺带记：`~/.vscode/extensions/.obsolete` 里那些 `anchor.anchor-*-0.1.0`、
-> `fish-zjuer.anchor-*-0.1.0/0.1.1` 都是历次迭代留下的坟头，与当前联接无关，不用管。
-
-> **⚠ 但 `.obsolete` 会主动坑你（D131 第二层）。** 它是**黑名单**：里面的 key 会被判为
-> 废弃版本、**不加载**，而且 VS Code **不会**主动把它移除（设计如此，防"删了又自己装回来"）。
->
-> 于是有个陷阱：**改 publisher / 升版本之后，用旧名字重建联接会被直接吃掉**。
-> 本机实例：`fish-zjuer.anchor-explain-0.1.1` 这个 ID 以前用过、被删了，名字沉在 `.obsolete`
-> 里；后来重建时**用了完全相同的名字** → 命中黑名单 → 图标怎么都不回来（联接是好的、
-> `package.json` 也能读，就是不给加载）。表现极像"联接又坏了"，其实是另一回事。
->
-> 处置：先把黑名单里属于我们的条目删掉，**VS Code 必须完全退出**（它在运行时随时会写回）：
+> **结论：要常驻就装 .vsix，别用联接。** VSIX 做的事正好补上缺的那一环 ——
+> **把文件真复制进扩展目录、并正式登记进 `extensions.json`**。有登记就脱离"残留"判据，
+> 上面那条链从根上断掉。
 >
 > ```bash
-> cd ~/.vscode/extensions
-> cp .obsolete .obsolete.bak-$(date +%Y%m%d-%H%M%S)     # 先备份
+> pnpm package:vsix                                    # 打包（含必带/禁带/密钥三重校验）
+> code --install-extension release/anchor-explain-0.1.1.vsix --force   # 线2 同理
 > ```
 >
-> 然后**只删 `anchor` / `fish-zjuer.anchor` 开头的 key**，别人的一字不动（用脚本删，
-> 别手改 JSON —— 一行内容，改错一个字符整份黑名单就废了）：
+> **若之前装过联接，先撤掉再装**（同 ID 的联接 + 正规安装会打架）：
+> `rm -f ~/.vscode/extensions/Fish-zjuer.anchor-{explain,pdf}-0.1.1`
 >
-> ```bash
-> node -e "
-> const fs=require('fs');const p='.obsolete';
-> const j=JSON.parse(fs.readFileSync(p,'utf8'));
-> const out={};
-> for(const [k,v] of Object.entries(j)){ if(/anchor/i.test(k)) continue; out[k]=v; }
-> fs.writeFileSync(p, JSON.stringify(out), 'utf8');
-> console.log('剩下', Object.keys(out).length, '条');
-> "
-> ```
+> **怎么确认装好了**（比"图标出来了"更可靠）：
+> 目录是**真目录**（`drwxr-xr-x`，不是 `lrwxrwxrwx`）、`package.json` 可读、
+> `extensions.json` 里的记录带 `metadata`（有 uuid；**没有 metadata 就是没被真正认下**）、
+> `.obsolete` 里没有它的条目。
 >
-> 之后重启 VS Code —— 它会重扫扩展目录、自行清掉 `extensions.json` 里的死条目
-> （目录已删的 `anchor.*-0.0.0`）、并把新目录登记进来。
-> **不要手工改 `extensions.json`**：它是权威索引，与
+> **取舍如实说**：VSIX 装的是**快照**，改代码后要 `pnpm package:vsix` + 重装才生效
+> （联接只要 `pnpm build` + 重载）。**日常开发用开发宿主**（F5，`.vscode/launch.json`。）
+> **只在"要像普通扩展一样常驻"时才走 VSIX。**
+>
+> **另外别手工改 `extensions.json`**：它是权威索引，与
 > `AppData/Roaming/Code/User/globalStorage/state.vscdb` 里的状态联动，手改一边容易不一致。
->
-> **一句话记住**：改 publisher / 升版本之后别急着用旧名字重建联接 ——
-> 先去 `.obsolete` 里看一眼有没有它。
+> 死条目（目录已删的）交给 VS Code 重扫时自行剔除。
 
 ## 4. 首次使用要配一次模型端点（每个装它的人自己配）
 
