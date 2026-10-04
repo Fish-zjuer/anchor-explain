@@ -99,19 +99,29 @@ export function fullStamp(ms: number): string {
 const INVALID_NAME_CHARS = /[/\\:*?"<>|]/gu;
 
 /**
- * 存档文件名的主体部分：`20260919-142530-main.c.md`（调用方补扩展名）。
+ * 存档文件名的主体部分：`20260919-142530-main`（调用方补扩展名）。
  *
  * @anchor 时间戳到**秒**并放在最前：历史文件夹按名字排序就是按时间排序，
  *         用户"翻历史"的动作就是打开文件夹往下扫。同名锚点同秒导出会撞名 ——
  *         让调用方处理（VS Code 的另存为对话框自己会问；自动存档撞上就丢这次，
  *         重放和 workspaceState 里都还有）。
+ *
+ * @anchor 【D136】源名的扩展名要**去掉**。`sourceName` 是带扩展名的 basename
+ *         （`Anchor.sourceName` 的定义，见 core/types.ts），照原样拼会叠出
+ *         `20261004-161937-DECISIONS.md.md` —— 用户翻历史文件夹时看到的全是
+ *         双后缀。**扩展名由导出格式决定**（调用方补的那一个），不该混进名字主体。
+ *         只切**最后一个**点：`main.c` → `main`，`a.b.c` → `a.b`。
+ *         点在首位（`.gitignore`）时**不切** —— 那是隐藏文件的整个名字，
+ *         切完会剩空串。
  */
 export function exportFileStem(savedAt: number, anchor: Anchor): string {
   const d = Number.isFinite(savedAt) && savedAt > 0 ? new Date(savedAt) : new Date(0);
   const stamp =
     `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
     `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  const name = anchor.sourceName.replace(INVALID_NAME_CHARS, '-').trim();
+  const cleaned = anchor.sourceName.replace(INVALID_NAME_CHARS, '-').trim();
+  const dot = cleaned.lastIndexOf('.');
+  const name = dot > 0 ? cleaned.slice(0, dot) : cleaned;
   return `${stamp}-${name || 'anchor'}`;
 }
 

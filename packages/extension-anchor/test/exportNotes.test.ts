@@ -83,10 +83,10 @@ test('explanationMarkdown：多段选择要把每段列出来（外框行号会�
 
 test('exportFileStem：时间戳到秒在前（按名排序即按时间排序），坏字符清洗掉', () => {
   const at = new Date(2026, 8, 19, 14, 25, 30).getTime();
-  assert.equal(exportFileStem(at, ANCHOR), '20260919-142530-main.c');
+  assert.equal(exportFileStem(at, ANCHOR), '20260919-142530-main');
   assert.equal(
     exportFileStem(at, { ...ANCHOR, sourceName: 'weird:name*.c' }),
-    '20260919-142530-weird-name-.c',
+    '20260919-142530-weird-name-',
   );
   assert.equal(
     exportFileStem(at, { ...ANCHOR, sourceName: '///' }),
@@ -94,6 +94,17 @@ test('exportFileStem：时间戳到秒在前（按名排序即按时间排序）
     '坏字符逐个换成连字符（不是删掉）',
   );
   assert.equal(exportFileStem(at, { ...ANCHOR, sourceName: '' }), '20260919-142530-anchor', '空名给兜底名');
+});
+
+test('D136：源名的扩展名去掉（否则叠成 DECISIONS.md.md），且只切最后一个点', () => {
+  const at = new Date(2026, 9, 4, 16, 19, 37).getTime();
+  const stem = (sourceName: string): string => exportFileStem(at, { ...ANCHOR, sourceName });
+  assert.equal(stem('DECISIONS.md'), '20261004-161937-DECISIONS', '用户实际撞上的那一个');
+  assert.equal(stem('main.c'), '20261004-161937-main');
+  assert.equal(stem('archive.tar.gz'), '20261004-161937-archive.tar', '只切最后一个点，不是"取主名"');
+  assert.equal(stem('noext'), '20261004-161937-noext', '本来就没有扩展名 → 原样');
+  assert.equal(stem('.gitignore'), '20261004-161937-.gitignore', '点在首位是隐藏文件名，不切（切了会剩空串）');
+  assert.equal(stem('.'), '20261004-161937-.', '点不在首位之外的地方：这个边界不特判，照不切走');
 });
 
 test('fullStamp：0 / 非法值不猜时间，明说"时间未知"', () => {

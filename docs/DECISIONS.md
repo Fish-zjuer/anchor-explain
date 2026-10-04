@@ -4306,3 +4306,60 @@ anchorExplain.providers = { "default": { "baseUrl": "https://api.deepseek.com",
 `tsc --noEmit` 四包全过，`check:inline` 过，五个冒烟里四个全过
 （`smoke-extension` 唯一 FAIL 仍是沙箱 `spawnSync EBUSY`）。
 已重打包并安装 `release/anchor-explain-0.1.1.vsix`。临时探针已删。
+
+## D136 历史留档的文件名叠成 `DECISIONS.md.md` —— 源名的扩展名要去掉
+
+### 怎么发现的
+
+排查"用户第三次报同一句空输出报错"时，去找现场证据：`memory` 与扩展的 `globalStorage`。
+`globalStorage/fish-zjuer.anchor-explain/history/` 里三个文件：
+
+```
+20261004-145500-STATE.md.md
+20261004-145604-STATE.md.md
+20261004-161937-DECISIONS.md.md
+```
+
+**每个名字里都有两个 `.md`。**
+
+### 根因
+
+`exportFileStem(savedAt, anchor)`（`session/exportNotes.ts`）拼的是
+`${时间戳}-${anchor.sourceName}`，而 `Anchor.sourceName` 按定义是
+**带扩展名的 basename**（`core/types.ts` 第 45 行；`paths.ts` 里取 basename 的那句
+注释也写明"用于 `Anchor.sourceName` 这个显示名"）。
+调用方（`commands.ts` 594 / 618 行）在外面又补了一个 `.md`，于是叠成 `.md.md`。
+
+@anchor 原函数的注释里举的例子就是 `20260919-142530-main.c.md` —— **双后缀在注释里
+被当成正常输出写下来了**，所以这不是"忘了补"，是当初就没把"扩展名归谁"想清楚。
+
+### 决策
+
+**扩展名归导出格式**，不混进名字主体。`exportFileStem` 里把源名的**最后一个点**
+之后的整段切掉：
+
+- `DECISIONS.md` → `DECISIONS`
+- `main.c` → `main`
+- `archive.tar.gz` → `archive.tar`（只切最后一个点，不做"取主名"）
+- `noext` → `noext`（本来就没有）
+- `.gitignore` → `.gitignore`（**点在首位是隐藏文件的整个名字，不切** —— 切了会剩空串）
+
+@anchor 为什么用 `dot > 0` 而不是 `dot >= 0`：`dot === 0` 只可能是 `.gitignore`
+这一类隐藏文件；`dot === -1` 是没有扩展名。两种都该原样保留，判据合一。
+`'.'` 这种非法输入不特判 —— 它落进"保留"那一支，产出的名字仍然合法，
+为一个不存在的场景加分支不划算。
+
+### 影响面
+
+两处调用点都受益，但**只有一处是用户看不到的**：
+
+- `commands.ts` 594 行：**自动留档**（`rememberRun`）—— 用户看不到文件名生成过程，
+  只能在翻历史文件夹时发现双后缀。这是本次报告的那个面。
+- `commands.ts` 618 行：**「另存为」的默认名** —— 用户本来就能改，改善的是第一眼的观感。
+
+### 状态
+
+生效。`exportNotes.test.ts` 原有那条断言跟着改了（`main.c` 那条期望从
+`20260919-142530-main.c` 变成 `...-main`），并新增一条 D136 专测覆盖上面六个边界。
+`anchor` 包 497 条全绿（比 D135 时多 1 条），`tsc --noEmit` 过，`check:inline` 过。
+已重打包安装（16:28 装上，安装目录内验证 `lastIndexOf(".")` 特征在）。
