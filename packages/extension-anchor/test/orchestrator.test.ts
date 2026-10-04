@@ -995,3 +995,82 @@ test('D126：不给 deps.followUp → 两处都不出现追问那一节（正式
   assert.doesNotMatch(system, /这一次是追问/);
   assert.doesNotMatch(user, /这是对第/);
 });
+
+// ── D134：空输出不是"校验失败" ──────────────────────────────────────────────
+
+/**
+ * @anchor harness 的假 provider 在 turns 用完后**会抛**（见它上面那句注释）——
+ *         所以"只喂 1 个 turn，run() 却没有抛 '多调了一轮'"本身就是断言：
+ *         空输出这条路**没有**发起第二次请求。
+ */
+test('D134：第一轮就吐空 → 直接报 EMPTY_COMPLETION，且**不做修复重试**', async () => {
+  const h = harness([{ content: '', toolCalls: [] }]);
+
+  await assert.rejects(
+    () => h.run(),
+    (err: unknown) => {
+      assert.ok(err instanceof AnchorError);
+      assert.equal(err.code, 'EMPTY_COMPLETION', '空输出要有自己的码，不能混进 SCHEMA_VIOLATION');
+      assert.equal(h.requests.length, 1, '空输出没有可回灌的错，重试一次纯属浪费');
+      return true;
+    },
+  );
+});
+
+test('D134：第一轮吐空之后不再重试（再给一个 turn 也不会被用掉）', async () => {
+  // 第二个 turn 故意给一份**合法**输出：若还重试，这次就会成功返回而不是抛。
+  // 用它当"反证"——比只数次数更能说明"这条路真的断了"。
+  const h = harness([
+    { content: '', toolCalls: [] },
+    { content: validJson(), toolCalls: [] },
+  ]);
+
+  await assert.rejects(() => h.run(), (err: unknown) => {
+    assert.equal((err as AnchorError).code, 'EMPTY_COMPLETION');
+    assert.equal(h.requests.length, 1, '第二份合法输出根本不该被读到');
+    return true;
+  });
+});
+
+test('D134：报错里不许出现光秃秃的 `$`（那是 JSONPath 记号，用户读不懂）', async () => {
+  const h = harness([{ content: '', toolCalls: [] }]);
+
+  await assert.rejects(() => h.run(), (err: unknown) => {
+    const message = (err as Error).message;
+    assert.doesNotMatch(message, /\$：/, '`$：` 必须已被翻成"输出根节点"或整句改写掉');
+    assert.doesNotMatch(message, /\$/, '这一句里根本不该出现 `$`');
+    assert.match(message, /没有返回任何内容/);
+    assert.match(message, /再试一次/, '要给一句能照做的动作');
+    return true;
+  });
+});
+
+test('D134：修复轮吐空 → 同样报 EMPTY_COMPLETION（不伪装成"校验两次都不过"）', async () => {
+  const h = harness([
+    { content: '我说了一大段话但没有 JSON', toolCalls: [] }, // 第一轮：不合规，但不是空 → 会走修复
+    { content: '   \n  ', toolCalls: [] },                    // 修复轮：空（全是空白也算空）
+  ]);
+
+  await assert.rejects(
+    () => h.run(),
+    (err: unknown) => {
+      assert.equal((err as AnchorError).code, 'EMPTY_COMPLETION');
+      assert.equal(h.requests.length, 2, '第一轮不合规该重试，第二轮空才算空');
+      return true;
+    },
+  );
+});
+
+test('D134：两轮都吐不合规但**非空**的内容 → 仍然是 SCHEMA_VIOLATION（原判据不许松）', async () => {
+  const h = harness([
+    { content: '这里是讲解：{ 坏 JSON', toolCalls: [] },
+    { content: '我又写了一段还是没有 JSON', toolCalls: [] },
+  ]);
+
+  await assert.rejects(() => h.run(), (err: unknown) => {
+    assert.equal((err as AnchorError).code, 'SCHEMA_VIOLATION', '有东西可读时，码不该变');
+    assert.match((err as Error).message, /重试一次后仍失败/);
+    assert.match((err as Error).message, /输出根节点/, '`$` 已翻成人话');
+    return true;
+  });
+});

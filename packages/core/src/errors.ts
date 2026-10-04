@@ -8,6 +8,7 @@
 export type AnchorErrorCode =
   | 'CONTEXT_REJECTED'        // 保留：适配器内部确实无法完成取件时使用
   | 'SCHEMA_VIOLATION'        // 输出校验失败且重试一次仍失败（CONTRACTS §3.3）
+  | 'EMPTY_COMPLETION'        // 模型整轮没返回任何正文（D134，与"答得不合规"区分开）
   | 'MAX_ROUNDS_EXCEEDED'     // 取件轮数超过 maxFetchRounds
   | 'PROVIDER_ERROR'          // LLM 调用失败
   | 'ADAPTER_UNAVAILABLE'     // 当前环境没有可用适配器

@@ -91,6 +91,27 @@ const REJECT_PREFIX = '请求被拒绝：';
 const REJECTED_GRACE_TURNS = 2;
 
 /**
+ * 空输出那一句给用户看的话（D134）。**不重试、不伪装成校验失败**。
+ *
+ * @anchor 为什么这句话里要提"再来一次"：空输出几乎总有环境层的原因 ——
+ *         端点把这一步当成需要思考/需要工具的一轮（不少兼容网关在 `tools` 与
+ *         "思考模式"同时开着时会把正文放进 `reasoning_content` 而 `content` 留空）、
+ *         临时限流、或者模型名写错落到了一个非对话模型上。用户试一次就知道是不是偶发，
+ *         所以给一句可照做的动作比给一串技术名词有用。
+ *
+ * @anchor 为什么**不**写 `$：`：那句 `$` 是 JSONPath 的根节点记号，对读 `$.summary`
+ *         的人有意义，对一个只想让插件跑起来的用户毫无意义 ——
+ *         D134 之前它是这句话的全部内容，用户看到的就是"$：AI 返回了空内容"。
+ */
+function emptyCompletionMessage(): string {
+  return (
+    '模型这一次没有返回任何内容（不是"讲错了"，是"没说话"）。' +
+    '常见原因是端点把正文放进了思考字段、开了思考模式、或临时限流 —— 直接再试一次通常就好；' +
+    '若每次都这样，请检查设置里的模型名与端点是否指向一个对话模型。'
+  );
+}
+
+/**
  * `path` 该怎么写 —— **由档位与清单一起决定**，system prompt 与闸门必须是同一套事实（D123）。
  *
  * @anchor `'none'` 这一档非有不可：跨文件开着、可清单是空的（没有工作区文件夹、锚点邻域也扫不到），
@@ -322,12 +343,37 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
     // D123 起再加"被拒的宽限"——被拒不消耗取件预算，但消耗轮次，不额外给就会"写错一次就什么都拿不到"
     const turnLimit = deps.maxFetchRounds + 2 + REJECTED_GRACE_TURNS;
 
+    /**
+     * 模型这一轮**根本没吐字**（`content` 是空的）。
+     *
+     * @anchor 为什么要单独认这一类（D134）：它和"吐了一坨不合规的 JSON"不是一回事 ——
+     *         后者能靠**回灌问题清单**救回来（模型看见自己错在哪就改），
+     *         而空输出**没有可回灌的错**：修复 prompt 里那句"你上一次的输出没有通过校验"
+     *         对空输出毫无指向，模型只能把它当成一次新的提问，于是**原样再吐一个空**。
+     *         这就是用户实测的"重试一次后仍失败：$：AI 返回了空内容"
+     *         —— 两次请求对一个必然失败的重试来说，是纯浪费，还把失败原因盖住了。
+     */
+    function isBlank(candidate: string): boolean {
+      return candidate.trim() === '';
+    }
+
     /** §3.3 闸门 + 规则 5 的一次修复重试 */
     async function validateOrRepair(model: string, candidate: string): Promise<ExplanationResult> {
       const first = validateExplanation(candidate, anchor, outline, {
         allowedPaths: fetchedPaths(fetched),
       });
       if (first.ok) return first.result;
+
+      /**
+       * D134：第一轮就是空的 → **不重试，直接如实报"空输出"**。
+       *
+       * 报错分三种：闸门真正读得出的问题（`$` 之类）现在只在"有东西可读"时出现；
+       * 空输出单独一条码，让用户一眼能分辨"模型没搭理我"与"模型答错了"。
+       */
+      if (isBlank(candidate)) throw new AnchorError('EMPTY_COMPLETION', emptyCompletionMessage(), {
+        model,
+        issues: first.issues,
+      });
 
       const repaired = await say(model, [
         ...messages,
@@ -348,6 +394,13 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
         allowedPaths: fetchedPaths(fetched),
       });
       if (second.ok) return second.result;
+
+      // D134：修复轮也吐空 —— 同样要说"空"，而不是把它混进"校验没过"
+      if (isBlank(repaired.content)) throw new AnchorError('EMPTY_COMPLETION', emptyCompletionMessage(), {
+        model,
+        issues: second.issues,
+        firstIssues: first.issues,
+      });
 
       throw new AnchorError(
         'SCHEMA_VIOLATION',

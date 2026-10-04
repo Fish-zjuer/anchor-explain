@@ -106,6 +106,13 @@ export function parseMaybeJson(raw: unknown): { value: unknown } | { error: stri
   if (typeof raw !== 'string') return { value: raw };
 
   const text = raw.trim();
+  /**
+   * @anchor D134 起这一句**不再直接露给用户**：`validateOrRepair` 会在调这个函数之前
+   *         先认一次"整轮是空的"（`isBlank`），换成 `EMPTY_COMPLETION` 那条完整说明。
+   *         留着它是因为它仍是**别的调用方**（S3 的 `validateExplanation` 直调、
+   *         单测）拿得到的准确描述 —— 删了会让那些路径报出"无法解析 JSON：Unexpected end"，
+   *         那才是真的读不懂。
+   */
   if (text === '') return { error: 'AI 返回了空内容' };
 
   const direct = tryParse(text);
@@ -385,11 +392,26 @@ export function validateExplanation(
   return { ok: true, issues: [], result };
 }
 
+/**
+ * 把一条 issue 的 `path` 翻成人能读的位置（D134）。
+ *
+ * @anchor 为什么要翻：`path` 是 JSONPath（`$.summary` / `steps[0].location`），
+ *         它服务的是**写这条断言的人**（对得上契约哪一条），不是读报错的人。
+ *         冒出一个光秃秃的 `$` 时，用户的第一反应是"这里有个变量没被替换" ——
+ *         而它其实是"输出的**根节点**"。用户实测就是这样被绕住的（D134 的背景）。
+ *
+ * @anchor 为什么只在**正好是 `$`** 时才翻：`$.summary` 那种带路径的写法本身是可读的
+ *         （"summary 这个字段"），翻成中文反而更长；只有孤零零一个 `$` 才需要解释。
+ */
+function humanPath(path: string): string {
+  return path === '$' ? '输出根节点' : path;
+}
+
 /** 给用户看的一行摘要；也用于 S3 的 repair prompt 回灌。 */
 export function describeIssues(issues: readonly ValidationIssue[]): string {
   const head = issues
     .slice(0, 3)
-    .map((i) => `${i.path}：${i.message}`)
+    .map((i) => `${humanPath(i.path)}：${i.message}`)
     .join('；');
   return issues.length > 3 ? `${head}；…另有 ${issues.length - 3} 处` : head;
 }

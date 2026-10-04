@@ -353,3 +353,31 @@ test('相对路径不是后门：解析后不在允许集合里，照样拒', ()
   assert.equal(result.ok, false);
   assert.match(describeIssues(result.issues), /这个文件没读过/);
 });
+
+// ── D134：`$` 只配出现在给**写断言的人**看的地方 ─────────────────────────────
+
+test('D134：describeIssues 把孤零零的 `$` 翻成"输出根节点"（用户读不懂 JSONPath）', () => {
+  const verdict = validateExplanation('', SRC_ANCHOR, { documentLineCount: 100 });
+  assert.equal(verdict.ok, false);
+  if (verdict.ok) return;
+
+  const line = describeIssues(verdict.issues);
+  assert.doesNotMatch(line, /\$/, '用户看到的就是这一行，`$` 一个字都不该留');
+  assert.match(line, /^输出根节点：/, '位置那一栏要说人话');
+  assert.match(line, /空内容/, '原因照旧说清');
+});
+
+test('D134：只有**正好是 `$`** 才翻 —— 带路径的 `$.summary` 保持原样（它本来就可读）', () => {
+  // summary 缺失 → path 是 `$.summary`；confidence 越界 → path 是 `$.confidence`
+  const verdict = validateExplanation(
+    { summary: '', confidence: 7, steps: [{ location: { filePath: FILE_PATH, lineStart: 40, lineEnd: 48 }, text: 'x' }] },
+    codeAnchor(),
+    { documentLineCount: DOC_LINES },
+  );
+  assert.equal(verdict.ok, false);
+  if (verdict.ok) return;
+
+  const line = describeIssues(verdict.issues);
+  assert.match(line, /\$\.summary/, '带路径的写法不该被翻（翻成中文反而更长）');
+  assert.match(line, /\$\.confidence/);
+});

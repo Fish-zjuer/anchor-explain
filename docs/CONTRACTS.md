@@ -1445,6 +1445,7 @@ function locationLabel(loc: Location): string;
 type AnchorErrorCode =
   | 'CONTEXT_REJECTED'        // 保留：适配器内部确实无法完成取件时使用
   | 'SCHEMA_VIOLATION'        // §3.3 输出校验失败且重试一次仍失败
+  | 'EMPTY_COMPLETION'        // 模型整轮没返回任何正文（D134，与"答得不合规"分开）
   | 'MAX_ROUNDS_EXCEEDED'     // 取件轮数超过 maxFetchRounds
   | 'PROVIDER_ERROR'          // LLM 调用失败
   | 'ADAPTER_UNAVAILABLE'     // 当前环境没有可用适配器
@@ -1461,6 +1462,11 @@ function describeError(e: unknown): string;   // 给用户看的一行，不含�
 
 > 注意：`ContextRequest` 被拒**不走这里**——非法取件请求回灌成工具结果让模型自我纠正
 > （`DECISIONS.md` D29）。`AnchorError` 只承载真正中断流程的错误。
+
+> `EMPTY_COMPLETION`（D134）与 `SCHEMA_VIOLATION` 的区别**不是严重程度，是下一步做什么**：
+> 前者是"模型没说话，再试一次或检查端点与模型名"，后者是"模型答错了，看问题清单"。
+> 前者**不消耗**那次修复重试（空输出没有可回灌的错，重试必然再空一次）。
+> 两者的用户可见文案也**不该长得一样** —— 见 `Orchestrator.emptyCompletionMessage`。
 
 ---
 
