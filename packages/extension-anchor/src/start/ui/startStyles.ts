@@ -80,4 +80,52 @@ button.run:disabled { cursor: default; opacity: 0.5; }
 .status-line.ok .value { color: var(--vscode-foreground); }
 .status-line.warn .value { color: var(--vscode-editorWarning-foreground, var(--vscode-foreground)); }
 .status-line.muted .value { color: var(--vscode-descriptionForeground); }
+
+/* ── D130：外部 Agent 的位置交接（"投币机"）────────────────────── */
+
+.handoff {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+
+.handoff-label { font-size: 0.92em; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
+
+.handoff-input {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  min-height: 4.5em;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  /* 输入的是"位置清单"，等宽字体比正文字体好读得多（行号要对齐着看） */
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+.handoff-input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+.handoff-hint { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin: 8px 0 4px; }
+
+.handoff-prompt {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  line-height: 1.4;
+  /* 用户要"复制这句去要求对方"，所以它得能被选中 —— 用 user-select 明写出来，
+     否则将来有人给面板加一层"整块不可选"就会连它一起废掉 */
+  user-select: text;
+}
+
+.handoff-row { margin-top: 8px; }
 `;

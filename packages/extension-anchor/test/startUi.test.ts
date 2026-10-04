@@ -70,6 +70,51 @@ test('renderStartHtml：面板不加载任何外部资源（因此不需要 loca
   assert.ok(!html.includes('<img'), '出现了图片引用');
 });
 
+// ── D130：外部 Agent 改的地方 · 输入框 ──────────────────────────────────────
+//
+// 这一块的 DOM 行为仍然只能靠 F5（脚本是字符串常量）。这里钉住三件**不做就会静默失效**的事：
+//   1. 输入框在（不然用户没有地方粘）
+//   2. 三种投递方式都在（粘贴 / 拖拽 / 命令面板选文件 —— 最后那个不在这个文件里）
+//   3. 草稿回填（用户的原话：「防止讲解切换文件丢掉路径」）
+
+test('D130：开始面板里有一个能粘位置的输入框，且它绑在 loadHandoff 那颗按钮上', () => {
+  assert.ok(START_CLIENT_SCRIPT.includes('data-handoff="draft"'), '缺输入框');
+  assert.ok(START_CLIENT_SCRIPT.includes('loadHandoff'), '输入框旁边那颗按钮没接上动作');
+
+  // 输入框**不只用 textarea 一个标签就完事**：`rows` 决定它一开始占几行 ——
+  // 高度 1 行的框在面板里看起来像一个单行输入框，用户不会想到可以粘一大段。
+  assert.ok(START_CLIENT_SCRIPT.includes('textarea'), '输入框要用 textarea（单行 input 粘不下一份清单）');
+});
+
+test('D130：三种投递方式都在（粘贴 / 拖拽 / 命令面板选文件）', () => {
+  // 用户的原话：「**复制文件，粘贴到文本框应该被支持，也允许拖拽进**。
+  //              这个是位置清单文件，因为不知道对方是喜欢输出文本还是 write 一个文件」。
+  assert.ok(START_CLIENT_SCRIPT.includes('dragover'), '缺拖拽的 dragover（不 preventDefault 则 drop 不触发）');
+  assert.ok(START_CLIENT_SCRIPT.includes('drop'), '缺拖拽落下的处理');
+  assert.ok(START_CLIENT_SCRIPT.includes('preventDefault'), '缺 preventDefault（不拦的话 webview 会去打开那个文件）');
+
+  // 拖进来的文件可能是几百 MB 的东西（用户手滑），必须有大小护栏
+  assert.ok(/text\(\)/.test(START_CLIENT_SCRIPT), '要真的读文件内容（File.text()）');
+});
+
+test('D130：草稿会回填，且发送的是**两条不同的消息**（打字 ≠ 按键）', () => {
+  // 回填：`value` 从 `model.handoffDraft` 取 —— 这是"切走再回来草稿还在"的实现。
+  assert.ok(START_CLIENT_SCRIPT.includes('handoffDraft'), '缺草稿的回填');
+
+  // 两条消息必须分开：一条是打字（存草稿）、一条是按键（真做事）。
+  // 合成一条的后果在 `protocol.ts` 那段注释里写着 —— 打字也能触发读文件。
+  assert.ok(START_CLIENT_SCRIPT.includes('start:handoffDraft'), '缺草稿那条消息');
+  assert.ok(START_CLIENT_SCRIPT.includes('start:handoff'), '缺投币那条消息');
+});
+
+test('D130：提示词（给外部 Agent 的那段）在面板上可见', () => {
+  // 用户要的是"一个足够短的 prompt"，对方拿去就能用。它必须**在面板上显示出来**
+  // 并且**能选中**（`user-select: text`）—— 不然用户没法复制那段提示词给对方。
+  assert.ok(START_CLIENT_SCRIPT.includes('handoffPrompt'), '面板上没显示那段提示词');
+  assert.ok(START_STYLES.includes('handoff-prompt'), '缺提示词的样式');
+  assert.ok(START_STYLES.includes('user-select: text'), '提示词要能选中复制（不然用户没法把它发给对方）');
+});
+
 // ── D68：侧边栏那块「取件日志」 ────────────────────────────────────────────
 //
 // 这块曾经是一句假话：`tooltrace:append` 在协议里、在客户端渲染里都实现了，

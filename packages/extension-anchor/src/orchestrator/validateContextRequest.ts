@@ -102,16 +102,47 @@ export const RESTRICTED_POLICY: ContextFetchPolicy = {
  *             `../Inc/dshot_dma.h` 是这个行业最常见的写法，只给锚点目录一个根它永远过不去。
  *
  *         回退档都在：想更严用 `same-dir` / `off`，想完全放开用 `any`。
+ *
+ * @anchor **D130 第六节：多段时不止锚点一个文件。** 这一片允许把一次讲解建立在
+ *         **队列里的好几段**上（它们可以在不同目录、甚至不同盘）。原来的算法只看
+ *         `anchorFile` 一个路径 —— 于是"第 2 段在 `Driver/dshot/Src/`、锚点（第 1 段）
+ *         在 `App/Src/`"时，模型想顺着第 2 段读它旁边的头文件会被拒：
+ *         那个目录**从来不是根**。用户对这一点的原话是「队列涉及的必输入，按照一份来讲」——
+ *         既然队列里的每一段都会被当成同一份讲解的输入喂进去，它们的邻域就都该在范围内，
+ *         否则"同一份讲解"对第 1 段能跨文件、对第 2 段不能，讲出来的深度会不一样。
+ *
+ *         第 4 个参数是**队列里除了锚点以外的那些文件**（可以给空数组，老调用形状不变）。
+ *         处理方式与锚点**完全同一条规则**（在工作区里就什么都不加、不在才加它这一层）——
+ *         不另立一套判据，否则同一个概念会有两种边界。
  */
-export function relatedRoots(anchorFile: string, workspaceRoots: readonly string[]): readonly string[] {
+export function relatedRoots(
+  anchorFile: string,
+  workspaceRoots: readonly string[],
+  otherFiles: readonly string[] = [],
+): readonly string[] {
   const roots = workspaceRoots.filter((root) => root !== '');
-  const dir = dirnameOf(anchorFile);
-  if (dir === '' || roots.some((root) => isInsidePath(root, anchorFile))) return roots;
+
+  /**
+   * 一个文件的"邻域"该不该加。返回要加的根（可能为空）。
+   *
+   * @anchor 抽出来是为了让锚点与队列里的其余文件**走同一段代码** ——
+   *         两处各写一遍的话，"锚点在工作区里就不加"这条规则迟早在其中一处被漏掉，
+   *         而那种错的表现是范围**悄悄变大**（多放开了两层目录），不会报错。
+   */
+  const neighborhoodOf = (file: string): string[] => {
+    const dir = dirnameOf(file);
+    if (dir === '' || roots.some((root) => isInsidePath(root, file))) return [];
+    return [dir, dirnameOf(dir)].filter((d) => d !== '');
+  };
 
   const out = [...roots];
-  for (const extra of [dir, dirnameOf(dir)]) {
-    if (extra === '' || out.some((existing) => samePath(existing, extra))) continue;
-    out.push(extra);
+  // 锚点排在最前：它是主段，清单排序与拒绝文案里的"第一个根"都该是它所在的这一层
+  for (const file of [anchorFile, ...otherFiles]) {
+    if (file === '') continue;
+    for (const extra of neighborhoodOf(file)) {
+      if (out.some((existing) => samePath(existing, extra))) continue;
+      out.push(extra);
+    }
   }
   return out;
 }

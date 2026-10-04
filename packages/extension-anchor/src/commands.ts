@@ -27,6 +27,7 @@ import {
   locationLabel,
   mergeSegments,
   samePath,
+  segmentsOf,
 } from '@anchor/core';
 import type { AnchorSegment } from '@anchor/core';
 import type {
@@ -89,6 +90,19 @@ import { createQueueStatusBar, createStatusBar } from './sidebar/statusBar.ts';
 import { StartViewProvider } from './start/StartViewProvider.ts';
 import { buildStartModel, findStartAction } from './start/startModel.ts';
 import type { StartModel } from './start/startModel.ts';
+import { buildHandoff, HandoffError } from './external/handoffBuild.ts';
+import {
+  buildHandoffDoc,
+  describeMapped,
+  HANDOFF_SCHEME,
+  mapSelection,
+} from './external/handoffDoc.ts';
+import type { HandoffDoc } from './external/handoffDoc.ts';
+import {
+  createHandoffDocumentProvider,
+  openHandoffDocument,
+} from './vscode/handoffDocumentProvider.ts';
+import type { HandoffDocumentProvider } from './vscode/handoffDocumentProvider.ts';
 import { relatedRoots } from './orchestrator/validateContextRequest.ts';
 import type { ContextFetchPolicy, FetchScope } from './orchestrator/validateContextRequest.ts';
 import {
@@ -156,6 +170,9 @@ function userFacing(err: unknown): string {
  * @anchor S9a-fix10（D119）起这份 `roots` **也用来筛清单**：清单与闸门从此共用一份判据，
  *         "清单里点得到、取件却读不到"不再可能出现。`any` 档**不给清单**
  *         （整个文件系统列不完），改由 `find_files` 工具让模型自己查。
+ *
+ * @anchor 第 7 个参数是**这次讲解涉及的其他文件**（D130 第六节）：多段锚点时，
+ *         队列里的每一段都该享受和主段一样的邻域。传空数组就是原来的形状。
  */
 async function buildFetchBoundary(
   scope: FetchScope,
@@ -164,14 +181,15 @@ async function buildFetchBoundary(
   maxLines: number,
   maxCandidates: number,
   onScanError?: (err: unknown) => void,
+  otherFiles: readonly string[] = [],
 ): Promise<{ policy: ContextFetchPolicy; pool: readonly string[] }> {
   const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
   const roots =
     scope === 'off'
       ? []
       : scope === 'same-dir'
-        ? [dirnameOf(anchorFile)]
-        : [...relatedRoots(anchorFile, workspaceRoots)];
+        ? [dirnameOf(anchorFile), ...otherFiles.map(dirnameOf).filter((d) => d !== '')]
+        : [...relatedRoots(anchorFile, workspaceRoots, otherFiles)];
 
   const pool = await scanCodeFiles({
     // S9a-fix11（D123）：把本次允许的根一并交给扫描器 —— 工作区文件夹盖不住的那些根
@@ -424,6 +442,53 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   let segmentQueue: AnchorSegment[] = [];
 
   // ───────────────────────────────────────────────────────────
+  // 外部 Agent 的位置交接（D130）
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * 临时文档的内容提供者。**懒建**（第一次要用时才建）：
+   * 它的注册是同步的、开销很小，但"激活时一个 vscode 取值都不多"是 S1 起的老规矩。
+   * 已经建过就复用 —— 它内部持有着"临时文档的 URI"这个身份，
+   * 而"再呼出置顶原本那份"与"下次输入原地覆盖"都依赖**同一个 URI**（D130 第十节）。
+   */
+  let handoffProvider: HandoffDocumentProvider | undefined;
+  function handoffDocProvider(): HandoffDocumentProvider {
+    if (!handoffProvider) {
+      handoffProvider = createHandoffDocumentProvider();
+      context.subscriptions.push(handoffProvider);
+    }
+    return handoffProvider;
+  }
+
+  /**
+   * 那一份临时文档的**来源表**（D130）。
+   *
+   * @anchor 为什么它是这一片最关键的一处状态：用户二次选择时，我们手上只有
+   *         "他在临时文档里选了第 3-9 行"这个信息，而**唯一**能把它翻回源文件坐标的
+   *         就是这张表。它必须与 `handoffProvider` 里的内容**同生共死** ——
+   *         内容换了而表没换（或反过来），映射就会指到错误的代码上，
+   *         而那种错**不报错**，只会讲错东西。
+   *         所以两者**只在同一个函数里一起更新**（见 `applyHandoff`）。
+   */
+  let handoffDoc: HandoffDoc | undefined;
+
+  /**
+   * 输入框里的草稿（D130）。
+   *
+   * @anchor 与侧边栏的 `askDrafts`（D126）同一条理由，只是多跨了一道 webview 边界：
+   *         `startClientScript.ts` 的 `render()` 每次都 `root.textContent = ''`，
+   *         面板一重画（"现在"那一栏变了就会重画），输入框里的字就全没了。
+   *         草稿活在宿主手里，重画时由模型带回去。
+   */
+  let handoffDraft = '';
+
+  /**
+   * 临时文档里"一共多少行 / 涉及几个文件"。状态栏那一行要用（D61：空的时候也要指出下一步）。
+   * `undefined` = 还没有过任何一份。
+   */
+  let handoffSummary: string | undefined;
+
+  // ───────────────────────────────────────────────────────────
   // 讲解期间的「报错遮罩」（D89）
   // ───────────────────────────────────────────────────────────
 
@@ -609,6 +674,299 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       note(`打开历史文件夹：${dir.fsPath}`);
     } else {
       void vscode.window.showWarningMessage(`Anchor：没能打开历史文件夹，路径是 ${dir.fsPath}`);
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // 外部 Agent 的位置交接（D130）—— 用户自己给的隐喻是"投币机"
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * 把外部 Agent 给的一个路径**解析成绝对路径**。
+   *
+   * @anchor 这是宿主侧的政策（依赖 `vscode.workspace` 的状态），所以它留在这里、
+   *         由 `buildHandoff` 以注入的形式拿（那样纯逻辑部分能直测）。
+   *         三条规则，按顺序：
+   *           1. **已经是绝对路径** → 原样用（外部 Agent 常给绝对路径）
+   *           2. **工作区里能对上** → 用工作区的
+   *           3. 否则 → 拼到第一个工作区根下（"相对路径"最自然的解释）
+   *         对不上时**不抛** —— 让 `readText` 去抛 ENOENT，
+   *         那里的错误信息带完整路径，比在这里编一句更好用。
+   */
+  function resolveHandoffPath(raw: string): string {
+    const path = raw;
+    // 绝对路径：`/` 开头（POSIX）或 `X:\` / `X:/`（Windows）
+    if (path.startsWith('/') || /^[A-Za-z]:[/\\]/u.test(path)) return path;
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!root) return path;
+    return vscode.Uri.joinPath(vscode.Uri.file(root), path).fsPath;
+  }
+
+  /**
+   * 读一个**源文件**的全文（D130）。
+   *
+   * @anchor 为什么抽出来而不是两处各写一遍：这一片有**两处**要读源文件 ——
+   *         `loadHandoff` 拼临时文档时读一次、`explainRanges` 取件时再读一次。
+   *         两处的读法必须**完全一致**（都用 `workspace.fs` 而不是 `node:fs`：
+   *         走前者能读虚拟文件系统与远程工作区，走后者只能读本机磁盘 ——
+   *         在远程工作区里会**静默读不到而当成本地路径不存在**）。
+   */
+  async function readHandoffFile(path: string): Promise<string> {
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(path));
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  /**
+   * 生成 / 覆盖临时文档（D130 的主流程）。
+   *
+   * 用户原话：「**我需要一个输入框，将对方输出的位置进行定位，讲解。最好是能形成一个临时文件，
+   * 将被包括的部分从上到下列出来**」。
+   *
+   * 五步：
+   *   1. 解析（`buildHandoff`：解析 → 读文件 → 扩到函数 → 拼文档）
+   *   2. **把内容与来源表一起换掉**（`applyHandoff` —— 两者必须同生共死）
+   *   3. 打开（或置顶）那一份文档
+   *   4. 回执：几段、几个文件、几条没认出来、几个读不到
+   *
+   * @anchor 为什么失败路径都这么啰嗦：这一步**没有任何自动纠错的机会** ——
+   *         用户粘完就去二次选择了，如果少了一段而屏幕上不说，
+   *         他会以为是"外部 Agent 又漏改了"，方向完全错了。
+   */
+  async function loadHandoff(text: string): Promise<void> {
+    const raw = typeof text === 'string' ? text.trim() : '';
+    if (raw === '') {
+      void vscode.window.showWarningMessage('Anchor：输入框里还没有位置 —— 把外部 Agent 给的那一列粘进来。');
+      return;
+    }
+
+    let built: Awaited<ReturnType<typeof buildHandoff>>;
+    try {
+      built = await buildHandoff(raw, {
+        readText: readHandoffFile,
+        resolvePath: resolveHandoffPath,
+      });
+    } catch (err) {
+      // `HandoffError` 自己带的是一句写好的人话；别的错误走通用的那层
+      void vscode.window.showErrorMessage(
+        `Anchor：${err instanceof HandoffError ? err.message : userFacing(err)}`,
+      );
+      return;
+    }
+
+    handoffDraft = raw;
+    await applyHandoff(built.doc, built);
+    refreshStart();
+    note(
+      `位置交接：${built.segmentCount} 段 / ${built.doc.files.length} 个文件` +
+        (built.rejected.length > 0 ? `，${built.rejected.length} 行没认出来` : '') +
+        (built.missing.length > 0 ? `，${built.missing.length} 个文件读不到` : ''),
+    );
+  }
+
+  /**
+   * **内容与来源表一起换**（D130）。
+   *
+   * @anchor 为什么把它们合成一个函数：这两样东西必须**永远一致** ——
+   *         内容换了而表没换（或反过来），二次选择的映射就会指到错误的代码上，
+   *         而那种错**不报错**，只会在讲解里表现为"它讲的不是我选的那段"。
+   *         让它们只有一个更新入口，"忘了同步"这件事就不可能发生。
+   */
+  async function applyHandoff(
+    doc: HandoffDoc,
+    info: { segmentCount: number; rejected: { length: number }; missing: unknown[]; unexpandedCount: number },
+  ): Promise<void> {
+    handoffDoc = doc;
+    const provider = handoffDocProvider();
+    provider.host.set(doc.text);
+    provider.refresh();
+    handoffSummary =
+      `${doc.lines.length} 行 · ${doc.files.length} 个文件 · ${info.segmentCount} 段` +
+      (info.unexpandedCount > 0 ? `（${info.unexpandedCount} 段未扩到函数边界）` : '');
+
+    await openHandoffDocument(provider);
+
+    // 回执要把"少了什么"说在脸上（D130 第二节那条"不猜"的延伸）。
+    const notes: string[] = [];
+    if (info.rejected.length > 0) notes.push(`${info.rejected.length} 行没认出来`);
+    if (info.missing.length > 0) notes.push(`${info.missing.length} 个文件读不到`);
+    void vscode.window.setStatusBarMessage(
+      `Anchor：临时文件已生成 —— ${info.segmentCount} 段、${doc.files.length} 个文件` +
+        (notes.length > 0 ? `（${notes.join('，')}）` : ''),
+      6000,
+    );
+  }
+
+  /**
+   * 「重新打开临时文件」（D130）。用户原话：「**这个文件是我们的一个按钮可以再次呼出
+   * （防止讲解切换文件丢掉路径）**」。
+   *
+   * @anchor 为什么"置顶"而不是"重新生成"（用户选的是"原本那个"）：
+   *         重新生成要**再读一遍文件**，而用户此刻想做的只是"把我刚才那份拿回来看看" ——
+   *         读一遍会让内容跟着磁盘变，与他记忆里的那份不一样。
+   *         而且重新生成会换一个标签页（每次 URI 都是新的），标签就越堆越多。
+   */
+  async function reopenHandoff(): Promise<void> {
+    if (!handoffSummary) {
+      void vscode.window.showWarningMessage(
+        'Anchor：还没有生成过临时文件 —— 先把位置粘进开始面板那个框，再点「我粘的位置 → 生成临时文件」。',
+      );
+      return;
+    }
+    await openHandoffDocument(handoffDocProvider());
+  }
+
+  /**
+   * 当前编辑器是不是**我们那份临时文档**（D130）。
+   *
+   * @anchor 判据是 scheme，不是"路径像不像"。用 `HANDOFF_SCHEME` 那个常量而不是字面量：
+   *         provider 注册用的也是它，两处共用一处定义 ——
+   *         分开写就会出现"provider 注册了 A、这里判的是 B"，
+   *         而那种错的表现是**功能完全没生效但不报错**（点下去走的是普通文件那条路）。
+   */
+  function isHandoffEditor(editor: vscode.TextEditor): boolean {
+    return editor.document.uri.scheme === HANDOFF_SCHEME;
+  }
+
+  /**
+   * 从临时文档里的一次选择出发去讲解（D130）。
+   *
+   * 四步：
+   *   1. **映射**：文档行号 → 源文件区间（`mapSelection`，核心算法）
+   *   2. **确认**：让用户看一眼"要讲的是哪几个文件的哪几行"（源文件的行号，不是文档的）
+   *   3. **问重点**：与平常同一句（`askFocus`）
+   *   4. **取件 + 讲解**：走**现成的多段链路**（D80 的 `explainSegments` 那条）
+   *
+   * @anchor 为什么第 2 步看到的必须是**源文件行号**：用户此刻在判断的是
+   *         "我要讲的对不对"，而"第 3-9 行"在临时文档里指的东西与他心里的那段代码
+   *         不是同一个坐标 —— 给他文档行号等于让他自己换算，那正是这一片要替他做的事。
+   */
+  async function captureFromHandoff(editor: vscode.TextEditor): Promise<void> {
+    const doc = handoffDoc;
+    if (!doc) {
+      // provider 的 URI 还是我们的，但来源表没了 —— 只可能是"宿主重启过、面板还开着"
+      void vscode.window.showWarningMessage(
+        'Anchor：这份临时文件的内容已经不在手上了 —— 回开始面板重新粘一次位置。',
+      );
+      return;
+    }
+
+    const sel = editor.selection;
+    const startLine = Math.min(sel.start.line, sel.end.line) + 1;
+    const endLine = Math.max(sel.start.line, sel.end.line) + 1;
+
+    const mapped = mapSelection(doc.origin, startLine, endLine);
+    if (mapped.length === 0) {
+      // **不是错误**，是用户划到了标注行/分割线 —— 说清楚他划到什么了（D67 同一条：不静默）
+      void vscode.window.showWarningMessage(
+        'Anchor：你选中的是标注行或分割线，不是代码 —— 在代码那几行上选一段。',
+      );
+      return;
+    }
+
+    // 确认（D130 第五节）：显示**源文件**的行号，并说清"几个文件几段"。
+    const files = new Set(mapped.map((r) => r.filePath));
+    const picked = await vscode.window.showQuickPick(
+      [
+        {
+          label: '讲解这段',
+          description: describeMapped(mapped),
+          detail: `${files.size} 个文件里的 ${mapped.length} 段`,
+          value: true,
+        },
+        { label: '取消', description: '这次什么也不做', value: false },
+      ],
+      {
+        title: 'Anchor 讲解（外部 Agent 的位置）',
+        placeHolder: '要讲解的就是这几段吗？',
+      },
+    );
+    if (!picked || !picked.value) return;
+
+    const focus = await askFocus();
+
+    // 走**多段队列那条现成的路**（D80/D130 第六节）：按一份讲，几段之间的数据怎么流动
+    // 正是"多段属于同一个功能"时最值得讲的东西。
+    await explainRanges(mapped, focus);
+  }
+
+  /**
+   * 把映射出来的几段**合成一份**讲解（D130 第六节）。
+   *
+   * @anchor 为什么不复用 `explainSegments`（那条也是"合成一份"）：那条读的是面板上的
+   *         `segmentQueue`，会**清空用户的队列**。而这个场景下用户根本没动过那个队列 ——
+   *         拿它当输入会把队列里攒着的东西一起讲进来、还会把它们清掉。
+   *         所以这里用同一个 `mergeSegments`（core 的比较器），但队列不动。
+   *
+   *         用户明确说过这一片「**不能影响实际功能**」—— 队列是他的东西，不能顺手清。
+   */
+  async function explainRanges(
+    ranges: { filePath: string; lineStart: number; lineEnd: number }[],
+    focus: string | undefined,
+  ): Promise<void> {
+    const segments: AnchorSegment[] = [];
+    for (const r of ranges) {
+      let text: string;
+      try {
+        text = await readHandoffFile(r.filePath);
+      } catch (err) {
+        void vscode.window.showErrorMessage(`Anchor：读不了 ${r.filePath} —— ${userFacing(err)}`);
+        return;
+      }
+      const lines = text.split(/\r?\n/);
+      const body = lines.slice(r.lineStart - 1, r.lineEnd).join('\n');
+      segments.push({ filePath: r.filePath, lineStart: r.lineStart, lineEnd: r.lineEnd, text: body });
+    }
+
+    // 用 core 那**唯一一个**比较器排序（与队列那条同一处，D80 的教训：
+    // "第 1 段"这句话在三处出现，不共用一个排序就会各排各的）
+    const sorted = [...segments].sort(compareSegments);
+    const first = sorted[0]!;
+
+    // 多段合成一个锚点：`location` 是各段的并集外框，`segments` 说清"就是这几块"
+    // （D80 / D98 的契约，一行不改地复用）
+    const anchor: Anchor = {
+      sourceType: 'code',
+      sourceId: first.filePath,
+      sourceName: basenameOf(first.filePath),
+      location: {
+        filePath: first.filePath,
+        lineStart: Math.min(...sorted.map((s) => s.lineStart)),
+        lineEnd: Math.max(...sorted.map((s) => s.lineEnd)),
+      },
+      extractedText: sorted.map((s) => s.text).join('\n\n'),
+      ...(focus !== undefined ? { focus } : {}),
+      // 多段必须带 segments（否则模型会把并集外框中间的代码也一起讲）
+      ...(sorted.length > 1 ? { segments: sorted.map((s) => ({ filePath: s.filePath, lineStart: s.lineStart, lineEnd: s.lineEnd })) } : {}),
+    };
+
+    lastCapture = { anchor, scope: 'selection' };
+    refreshStart();
+    await explain(anchor);
+  }
+
+  /**
+   * 从**文件**读入位置清单（命令面板那条路，D130 第七节）。
+   *
+   * @anchor 为什么不直接复用面板那个输入框：**命令面板没有输入框** ——
+   *         从那里触发时，用户手上最自然的东西是一个**文件**（外部 Agent 写的那个），
+   *         所以这条走"选文件"。面板那条走"粘进框"。
+   *         两条通向同一个 `loadHandoff`，区别只在"文本从哪来"。
+   *
+   *         这也正是"点击选文件"与"拖拽"不是冗余的那个理由（D130 第七节）：
+   *         拖拽在**面板里**方便，而命令面板这条路**根本拖不了**。
+   */
+  async function pickHandoffFile(): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      title: 'Anchor：挑一个装着位置的文本文件',
+      canSelectMany: false,
+      filters: { 位置清单: ['txt', 'json', 'md'], 全部文件: ['*'] },
+    });
+    const file = picked?.[0];
+    if (!file) return;
+    try {
+      await loadHandoff(await readHandoffFile(file.fsPath));
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Anchor：读不了那个文件 —— ${userFacing(err)}`);
     }
   }
 
@@ -1103,6 +1461,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       queueCount: segmentQueue.length,
       // D83：只回答"能不能重放"（`lastRunOf` 内部只读一次存档，见那段注释）
       hasLastRun: lastRunOf() !== undefined,
+      // D130：草稿要**每一份模型都带上**（面板重画时靠它回填），
+      //"有没有生成过"决定「重新打开临时文件」那颗按钮的灰亮
+      handoffDraft,
+      hasHandoff: handoffSummary !== undefined,
+      handoffSummary: handoffSummary ?? null,
       busy: busyPhase,
       session: snapshot
         ? { index: snapshot.index, total: snapshot.total, state: snapshot.state, stale: snapshot.stale }
@@ -1385,11 +1748,18 @@ export function registerCommands(context: vscode.ExtensionContext): void {
      *         要放开的话，把下面这个条件去掉、并把 `fetchPolicy` 那一行接回来即可 ——
      *         是"接一个开关"，不是"改一套机制"。
      */
+    /**
+     * 锚点文件的绝对路径（收窄过一次）。**落在常量上是必需的**：下面那个箭头函数体里
+     * TS 的控制流分析拿不到外层 `isCodeLocation` 的收窄结果 —— 不是绕开类型，
+     * 而是"锚点文件路径"这个概念本来该有个名字，它在下面的注释里要出现好几次。
+     */
+    const anchorFile = isCodeLocation(anchor.location) ? anchor.location.filePath : '';
+
     const boundary =
       opts.followUp === undefined && isCodeLocation(anchor.location)
         ? await buildFetchBoundary(
             cfg.fetchScope,
-            anchor.location.filePath,
+            anchorFile,
             anchor.extractedText ?? '',
             cfg.maxFetchLines,
             cfg.maxCandidateFiles,
@@ -1397,6 +1767,23 @@ export function registerCommands(context: vscode.ExtensionContext): void {
               note(
                 `候选文件清单取不到（${describeError(err)}）—— 不影响讲解，但模型不会知道有哪些相关文件`,
               ),
+            /**
+             * 这次讲解涉及的其他文件（D130 第六节）：多段锚点时，`segments` 里那几段所在的
+             * 目录也要算进 `related` 范围 —— 用户的原话是「队列涉及的**必输入**，按照一份来讲」。
+             *
+             * @anchor 为什么放在这个分支里（而不是提到三元外面）：`anchor.location` 在这里
+             *         才被 `isCodeLocation` 收窄成 `CodeLocation`，外面那个类型上没有 `filePath`。
+             *         这不是给类型系统让路 —— 语义上也对：只有代码锚点才谈得上"旁边的文件"。
+             *
+             * @anchor 为什么 `filter` 掉与锚点同一个的：锚点自己已经在第 2 个参数里了，
+             *         重复传不会算错（`relatedRoots` 会去重），但 `same-dir` 档下 roots 里
+             *         会出现两个相同的目录，而那份 roots 会被写进拒绝文案（"允许的根：A、A"）。
+             *
+             * @anchor 用 `segmentsOf` 而不是直接读 `anchor.segments`：契约里那个字段是
+             *         `Location[]`（D98 起 PDF 拆块器也走它），自己 `map` 会撞上联合类型。
+             *         那个取值函数就是为"集中一处收窄"而存在的（见 `core/segments.ts`）。
+             */
+            (segmentsOf(anchor) ?? []).map((seg) => seg.filePath).filter((p) => p !== '' && p !== anchorFile),
           )
         : undefined;
 
@@ -1819,6 +2206,20 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       void vscode.window.showWarningMessage('Anchor：先打开一个文件，再选中要讲解的代码。');
+      return;
+    }
+
+    /*
+     * D130 的第一层分支：**当前编辑的是我们的临时文档**。
+     *
+     * @anchor 这一层分支存在的理由：临时文档里"选中的那几行"**不是源文件的行号** ——
+     *         它需要经过来源表翻译回源文件坐标。而翻译之后的事（确认 → 问重点 → 取件 → 讲解）
+     *         与平常**完全一样** —— 用户的原话是「二次选择后就和我们平时选择一样，
+     *         先确认一下，再输入一段提示词，再根据这些，取件」。
+     *         所以这里只翻译、不另起链路。
+     */
+    if (isHandoffEditor(editor)) {
+      await captureFromHandoff(editor);
       return;
     }
 
@@ -2300,7 +2701,20 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   // 固定按钮（活动栏容器 + 里面的「开始」视图）。注册本身只是"挂个号"，
   // 视图要等用户点开才存在 —— 所以 `start` 是懒的（见 refreshStart）。
-  start = StartViewProvider.register(context, { onRun: (id) => void runStartAction(id) }, makeStartModel);
+  start = StartViewProvider.register(
+    context,
+    {
+      onRun: (id) => void runStartAction(id),
+      // D130：投币（用户按了「生成临时文件」）。**这里才做实事** —— 解析、读文件、开文档。
+      onHandoff: (text) => void loadHandoff(text),
+      // D130：打字时的草稿。**只存不动** —— 这条路径上不能有任何 IO，
+      // 否则"打个字"就会触发读文件（见协议里那两条消息为什么分开）。
+      onHandoffDraft: (text) => {
+        handoffDraft = text;
+      },
+    },
+    makeStartModel,
+  );
 
   /**
    * 打开设置，并筛到我们的配置项（D61）。
@@ -2352,6 +2766,10 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.toggleLanguage', () => toggleLanguage()),
     // D119：让用户自己给"这一次"定取件范围（只影响本次会话）
     vscode.commands.registerCommand('anchorExplain.pickFetchScope', () => void pickFetchScope()),
+    // D130：外部 Agent 的位置交接。两条命令各自对应面板上那一组的两条动作 ——
+    // 于是"面板上点"与"命令面板里找"走的是同一条路（S8 的"多处入口、一处实现"）。
+    vscode.commands.registerCommand('anchorExplain.loadHandoff', () => void pickHandoffFile()),
+    vscode.commands.registerCommand('anchorExplain.reopenHandoff', () => void reopenHandoff()),
 
     // 开始面板显示的四件事里，有两件不经过 emit：模型配置（改设置）与对端（装/卸线2）。
     // 不订阅它们的话，面板会一直显示打开那一刻的旧话。

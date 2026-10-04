@@ -25,6 +25,24 @@ export interface StartViewHandlers {
    * 面板点了某个动作。**只传 id，不传命令** —— 能不能执行由宿主查表决定（§5.5）。
    */
   onRun(id: string): void;
+  /**
+   * 【D130】用户往输入框里投了一段位置，并按了「生成临时文件」。
+   *
+   * @anchor 与 `onRun` 分开的理由：那个传的是**动作**，这个传的是**数据**。
+   *         合成一个会让 `onRun` 的签名变成"id + 可选内容"，
+   *         而那正是 §5.5 那条约定要防的形状（"能带参数的调用"容易长出"面板指定行为"）。
+   *         分成两条之后，审查时一眼能看出这条只运原料、不指定动作。
+   */
+  onHandoff(text: string): void;
+  /**
+   * 【D130】用户正在输入框里打字时的草稿。
+   *
+   * @anchor 与 `onHandoff` 分开是**刻意的**（协议里也分成两条消息）：
+   *         这个只有"记住"这一个副作用，绝不解析、绝不读文件 ——
+   *         如果它与 `onHandoff` 合并，那么"打个字"就会触发一次读文件，
+   *         而那种错的表现是"面板卡顿 + 莫名开了个文档"。
+   */
+  onHandoffDraft(text: string): void;
 }
 
 export class StartViewProvider implements vscode.WebviewViewProvider {
@@ -72,6 +90,17 @@ export class StartViewProvider implements vscode.WebviewViewProvider {
 
       if (message.type === 'start:ready') {
         void this.refresh();
+        return;
+      }
+      // D130：位置交接是**另一条路** —— 它带的是数据（用户粘的文本），不是动作 id。
+      // 走单独的回调，让 `commands.ts` 那边能把它当"一次投币"处理（解析 → 读文件 → 开文档）。
+      if (message.type === 'start:handoff') {
+        this.handlers.onHandoff(message.text);
+        return;
+      }
+      // D130：打字时的草稿。**只存不动**（不解析、不读文件）—— 它的唯一用途是面板重画时回填。
+      if (message.type === 'start:handoffDraft') {
+        this.handlers.onHandoffDraft(message.text);
         return;
       }
       this.handlers.onRun(message.id);

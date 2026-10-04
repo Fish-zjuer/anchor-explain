@@ -206,7 +206,28 @@ export type HostToStart = { type: 'start:model'; model: StartModel };
  * 宿主拿 id 去 `START_ACTIONS` 里查（`start/startModel.ts` 的 `findStartAction`），
  * 查不到就丢；能执行什么是**宿主**决定的，不是面板决定的。
  */
-export type StartToHost = { type: 'start:ready' } | { type: 'start:run'; id: string };
+export type StartToHost =
+  | { type: 'start:ready' }
+  | { type: 'start:run'; id: string }
+  | { type: 'start:handoff'; text: string }
+  | { type: 'start:handoffDraft'; text: string };
+
+/**
+ * 【D130 新增】开始面板 → 宿主的**两条**新消息：投币（`start:handoff`）与草稿（`start:handoffDraft`）。
+ *
+ * @anchor 为什么要分成两条，而不是"一条带个 flag"：
+ *         **它们的语义完全不同** —— `start:handoff` 是"用户按了那颗按钮，现在做事"，
+ *         而 `start:handoffDraft` 是"用户正在打字，把草稿存一下"。前者会读文件、开文档
+ *         （有副作用），后者只是把一个字符串记进内存。合成一条的话，宿主每次收到
+ *         "用户打了个字"都要判一次"这次是真按键还是打字"，而那个判断一旦写错，
+ *         表现就是**打字也能触发读文件**（或者按了按钮却不生效）。
+ *
+ * 两者都是对上面「只回传动作 id」那条约定的**有理由的放宽**：
+ * 它们带的都是**数据，不是动作** —— 面板说"这是用户放的文本 / 这些字是草稿"，
+ * **解析、读文件、开文档、能不能讲，全由宿主决定**；不能借它们执行任何命令，
+ * 也不能指定读哪个文件（文件是**文本内容里写的**，仍然要过宿主的范围校验与存在性检查）。
+ * 即"面板提供原料，宿主决定做什么"—— 与 `blocks:ask` 那种"只回传动作"是同一族。
+ */
 
 /**
  * §12.4.4 块流面板 → 宿主（S-P2）。五种动作，对应 `blocks/ui/clientScript.ts` 的五个 post。
@@ -332,10 +353,40 @@ export function parseStartMessage(raw: unknown): StartToHost | null {
       if (typeof id !== 'string' || id === '') return null;
       return { type: 'start:run', id };
     }
+    case 'start:handoff': {
+      /*
+       * D130：与 `ui:ask` 同一条处理 —— 去空白、空的丢弃、超长夹断。
+       * 空文本直接丢（它是误触，不是"投了一段空的"）；超长**夹而不是拒**
+       * （用户可能真粘了一大段，截断它比整条丢掉有用；真正的上限判据在
+       * `buildHandoff` 里那条 64KB —— 那里会给一句人话，比在守卫里静默截断好）。
+       */
+      const text = raw.text;
+      if (typeof text !== 'string') return null;
+      const trimmed = text.trim();
+      if (trimmed === '') return null;
+      return { type: 'start:handoff', text: trimmed.slice(0, MAX_HANDOFF_TEXT_CHARS) };
+    }
+    case 'start:handoffDraft': {
+      /*
+       * D130：草稿**不做去空白**（用户可能正在打一个空行），
+       * 也不做"空的丢弃"（清空输入框是一个合法动作，要让宿主知道）。
+       * 只做形状与长度夹断。
+       */
+      const text = raw.text;
+      if (typeof text !== 'string') return null;
+      return { type: 'start:handoffDraft', text: text.slice(0, MAX_HANDOFF_TEXT_CHARS) };
+    }
     default:
       return null;
   }
 }
+
+/**
+ * 面板交上来的那段文本的长度上限（D130）。比 `handoffParse` 的 64KB 稍大一点：
+ * 守卫这一层管的是"一条 webview 消息能有多大"，真正的业务上限在 `buildHandoff` 里判 ——
+ * 那里能给出**带数字的人话**（"你粘了 70KB，上限 64KB"），比这里静默切掉好。
+ */
+export const MAX_HANDOFF_TEXT_CHARS = 128 * 1024;
 
 /**
  * §12.4.4 块流面板 → 宿主。**五条全是动作，没有一条是状态** ——

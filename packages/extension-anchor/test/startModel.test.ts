@@ -78,14 +78,19 @@ test('动作 id 唯一（id 是面板回传的唯一凭据）', () => {
   assert.equal(new Set(ids).size, ids.length, ids.join(', '));
 });
 
-test('顺序固定：开始 → 队列 → 线2 → 这次讲解（每次打开都长一个样）', () => {
+test('顺序固定：开始 → 外部 Agent → 队列 → 线2 → 这次讲解（每次打开都长一个样）', () => {
   // 「多段选择（队列）」插在**开始**与**线2**之间：它是"下一步选什么"的一部分，
   // 排在退路（线2 / 会话）之前。加组就要改这里 —— 这条锁存在的意义就是提醒你：
   // 面板上多了一块东西，用户第二次进来手要重新找按钮了。
+  //
+  // D130 加了 `handoff` 组，排在**队列之前**（而不是之后）。理由不是"它比队列重要"，
+  // 而是**顺序要跟着流程走**：这一片的流程是"外面改完了 → 生成临时文件 → 在临时文件里
+  // 二次选择 → 那几段进队列 → 讲一份"。把它放队列后面，用户得先往下找到队列、
+  // 再往上回到输入框，而输入框恰恰是这一屏**唯一**需要动手打字的地方。
   const model = buildStartModel(input({ session: { index: 1, total: 5, state: 'paused', stale: false } }));
   assert.deepEqual(
     model.sections.map((section) => section.id),
-    ['start', 'segments', 'line2', 'session'],
+    ['start', 'handoff', 'segments', 'line2', 'session'],
   );
 });
 
@@ -112,7 +117,12 @@ test('一切就绪：每个动作都可点，note 是它自己的说明', () => 
   // 这条测的是"什么都不缺"那一档，所以**队列里必须真的有段** ——
   // 空队列时「讲队列 / 清空队列」本来就该是灰的（那是 D80 那条测的职责）。
   // 名字要对得起事实：带着一个空队列断言全部可点，等于把这条测改成假的。
-  const model = buildStartModel(input({ queueSummary: '2 段（main.c 第 10-14 + 40-48 行）' }));
+  //
+  // D130 起还要给 `hasHandoff` —— 「重新打开那份临时文件」在"还没生成过"时该是灰的
+  // （那是下面那条测的职责）。这一条测的是"什么都齐了"，包括"已经生成过一次"。
+  const model = buildStartModel(
+    input({ queueSummary: '2 段（main.c 第 10-14 + 40-48 行）', hasHandoff: true, handoffSummary: '2 个文件里的 3 段' }),
+  );
   for (const section of model.sections) {
     for (const action of section.actions) {
       // goto 需要会话，这一条单独测
@@ -121,6 +131,43 @@ test('一切就绪：每个动作都可点，note 是它自己的说明', () => 
       assert.ok(action.note.length > 0, action.id);
     }
   }
+});
+
+test('还没生成过临时文件：「重新打开」灰掉，理由指回输入框（D130）', () => {
+  // 灰按钮必须说出**下一步按哪颗**（D61/D62 那条门厅不许是死路的口径）。
+  // 这里最容易写成"还没有临时文件"就完了 —— 那没告诉用户该怎么办。
+  const model = buildStartModel(input({ handoffSummary: null }));
+  const reopen = actionOf(model, 'reopenHandoff');
+
+  assert.equal(reopen.enabled, false);
+  assert.ok(reopen.note.includes('生成'), `灰按钮的理由要指出下一步：${reopen.note}`);
+});
+
+test('生成过之后：两颗按钮都可点，且状态栏说得出"现在这份是什么"（D130）', () => {
+  const model = buildStartModel(input({ hasHandoff: true, handoffSummary: '2 个文件里的 3 段' }));
+
+  assert.equal(actionOf(model, 'loadHandoff').enabled, true);
+  const reopen = actionOf(model, 'reopenHandoff');
+  assert.equal(reopen.enabled, true);
+
+  // 状态栏那一行是"用户切走再回来时唯一能看见的线索"，必须带上摘要
+  const row = model.status.find((item) => item.label === '临时文件');
+  assert.ok(row !== undefined, '状态栏要有一行「临时文件」');
+  assert.equal(row.value, '2 个文件里的 3 段');
+});
+
+test('输入框的内容会回填到面板上（D130：切走切回不丢草稿）', () => {
+  // 用户的原话里有一条很实在的需求：「这个文件不立即消失……防止讲解切换文件丢掉路径」。
+  // 输入框同理 —— 他粘完位置、去看代码、再回面板时，框里那串字得还在。
+  const model = buildStartModel(input({ handoffDraft: '{"filePath":"a.c","lineStart":1,"lineEnd":3}' }));
+  assert.equal(model.handoffDraft, '{"filePath":"a.c","lineStart":1,"lineEnd":3}');
+});
+
+test('输入框里的草稿有长度上限（不要把面板撑死）', () => {
+  // 面板是 webview，几 MB 的字符串塞进 HTML 属性会让整个面板卡住。
+  // 上限在 `startModel.ts` 里（`MAX_HANDOFF_DRAFT_CHARS`），这里钉住"确实生效"。
+  const model = buildStartModel(input({ handoffDraft: 'x'.repeat(100 * 1024) }));
+  assert.ok(model.handoffDraft.length < 100 * 1024, `草稿该被截断，实际 ${model.handoffDraft.length}`);
 });
 
 test('没配模型：「设置 API Key」灰掉，但**「配置模型端点」必须可点**（门厅不许是死路，D61/D62）', () => {
@@ -186,11 +233,15 @@ test('没捕获过时说"还没有捕获过"，而不是留空', () => {
   assert.equal(line?.tone, 'muted');
 });
 
-test('五个状态项的顺序固定（模型 / 线2 / 上次捕获 / 多段队列 / 讲解）', () => {
+test('六个状态项的顺序固定（模型 / 线2 / 上次捕获 / 多段队列 / 临时文件 / 讲解）', () => {
+  // D130 把「临时文件」插在**讲解之前**。理由不是"它更重要"，而是**输入要在输出前面**：
+  // 前四项是"手头有什么"（模型、线2、刚捕获的、攒起来的队列），
+  // 临时文件也是**手头有什么**（外部 Agent 给的位置），而「讲解」是**结果**。
+  // 结果排最后，读起来才是"我用这些东西得到过什么"。
   const model = buildStartModel(input());
   assert.deepEqual(
     model.status.map((item) => item.label),
-    ['模型', '线2', '上次捕获', '多段队列', '讲解'],
+    ['模型', '线2', '上次捕获', '多段队列', '临时文件', '讲解'],
   );
 });
 

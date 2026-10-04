@@ -427,6 +427,49 @@ test('D117 related：锚点不在工作区里 → 范围退化成"锚点所在�
   ]);
 });
 
+test('D130 related：队列里那几段所在的目录也算进来（不止锚点一个文件）', () => {
+  // 现场：用户把两个不同目录的段放进队列，让 AI「按照一份来讲」。
+  // 锚点在 App 里、第 2 段在 Driver 里 —— 只看锚点的话，模型顺着第 2 段
+  // 读它旁边的头文件会被拒（那个目录从来不是根），于是同一份讲解对两段的深度不一样。
+  const roots = relatedRoots(
+    'C:/fw/App/Src/main.c',
+    ['C:/other-project'],
+    ['C:/fw/Driver/dshot/Src/dshot_dma.c'],
+  );
+
+  assert.ok(roots.includes('C:/fw/Driver/dshot/Src'), `缺第 2 段的目录：${roots.join('、')}`);
+  assert.ok(roots.includes('C:/fw/Driver/dshot'), '第 2 段的上一层也要给（`../Inc/` 的形状）');
+  assert.ok(roots.includes('C:/fw/App/Src'), '锚点自己那一层不能因为多传了就丢');
+});
+
+test('D130 related：锚点在工作区里时，其余文件也**照着同一条规则**处理', () => {
+  // 这条锁的是"不另立判据"：锚点在 `C:/proj` 里 → 不加它的邻域（工作区根已经盖住了）；
+  // 而队列里第 2 段在 `C:/proj` **外面** → 那一层还是得加，否则它的邻域取不到。
+  const roots = relatedRoots('C:/proj/Src/main.c', ['C:/proj'], ['C:/outside/dshot/Src/dshot_dma.c']);
+
+  assert.ok(roots.includes('C:/proj'), '工作区根丢了');
+  assert.ok(!roots.includes('C:/proj/Src'), '锚点在工作区里时不该加它自己那一层（工作区根已覆盖）');
+  assert.ok(roots.includes('C:/outside/dshot/Src'), '工作区外的第 2 段要加它那一层');
+});
+
+test('D130 related：同一个目录传两遍只留一个（拒绝文案里会印出来）', () => {
+  // `roots` 会被写进拒绝文案（"允许的根：A、A"读起来像出了 bug），
+  // 而且 `same-dir` 档下重复传同一个目录是最容易出现的形状（同一文件的两段）。
+  const roots = relatedRoots('C:/fw/App/Src/main.c', [], [
+    'C:/fw/App/Src/main.c',
+    'C:/fw/App/Src/other.c',
+  ]);
+  const dup = roots.filter((r) => r === 'C:/fw/App/Src');
+  assert.equal(dup.length, 1, `目录重复了：${roots.join('、')}`);
+  // 上一层的重复也要挡（两个文件同目录 ⇒ 它们的上一层也同目录）
+  assert.equal(roots.filter((r) => r === 'C:/fw/App').length, 1);
+});
+
+test('D130 related：不传第 3 个参数时行为与从前**一模一样**（老调用形状不变）', () => {
+  const anchor = 'C:/fw/Driver/dshot/Src/dshot_dma.c';
+  assert.deepEqual(relatedRoots(anchor, ['C:/other-project']), relatedRoots(anchor, ['C:/other-project'], []));
+});
+
 test('D117 related：`../Inc/...` 与同目录文件名都放行（报错那条正是前者）', () => {
   const roots = relatedRoots('C:/fw/Driver/dshot/Src/dshot_dma.c', ['C:/other-project']);
   const policy: ContextFetchPolicy = listPolicy('related', roots, [

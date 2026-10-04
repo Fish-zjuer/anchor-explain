@@ -16,6 +16,7 @@ import { formatChord } from '../sidebar/keybindingResolve.ts';
 import type { ChordId, ResolvedChords } from '../sidebar/keybindingResolve.ts';
 import { STATE_WORD } from '../protocol.ts';
 import type { WalkthroughState } from '../protocol.ts';
+import { HANDOFF_PROMPT } from '../external/handoffParse.ts';
 
 export type StartActionId =
   | 'capture'
@@ -30,12 +31,14 @@ export type StartActionId =
   | 'selectRegion'
   | 'replayLast'
   | 'reExplain'
+  | 'loadHandoff'
+  | 'reopenHandoff'
   | 'goto';
 
-export type StartGroupId = 'start' | 'segments' | 'line2' | 'session';
+export type StartGroupId = 'start' | 'handoff' | 'segments' | 'line2' | 'session';
 
 /** 前置条件。缺了就不给点，并且**说清缺什么** —— 灰按钮不说理由是最气人的一种 UI。 */
-export type StartRequirement = 'provider' | 'peer' | 'session' | 'queue' | 'lastRun';
+export type StartRequirement = 'provider' | 'peer' | 'session' | 'queue' | 'lastRun' | 'handoff';
 
 export interface StartActionSpec {
   readonly id: StartActionId;
@@ -51,13 +54,14 @@ export interface StartActionSpec {
 
 export const START_GROUP_TITLES: Record<StartGroupId, string> = {
   start: '开始',
+  handoff: '外部 Agent 改的地方',
   segments: '多段选择（队列）',
   line2: '线2（PDF）',
   session: '这次讲解',
 };
 
 /** 组在面板上的固定顺序。`start` 在最上面 —— 门厅第一眼要看到的是"从哪儿开始"。 */
-const GROUP_ORDER: readonly StartGroupId[] = ['start', 'segments', 'line2', 'session'];
+const GROUP_ORDER: readonly StartGroupId[] = ['start', 'handoff', 'segments', 'line2', 'session'];
 
 /**
  * 面板上的全部动作。
@@ -87,6 +91,42 @@ export const START_ACTIONS: readonly StartActionSpec[] = [
     title: '配置模型端点',
     detail: '三个输入框：provider id、baseUrl、模型名 —— 直接写进设置，写完就能用',
     command: 'anchorExplain.configure',
+  },
+  {
+    /*
+     * D130：**外部 Agent 的位置交接**（用户要的"投币机"）。
+     *
+     * @anchor 为什么它是**一条动作**而不是像 `askFocus` 那样弹一个输入框：
+     *         用户明确说"开始界面放一个输入框，然后添加一个按钮，类似投币机的逻辑"——
+     *         也就是输入框**常驻在面板上**，投什么由他决定，按下去才动。
+     *         而 `anchorExplain.capture` 那条路（选中 → 点按钮）是"投币机"之外的常规路径，
+     *         两条并列摆着，用户按场合挑。
+     *
+     *         它**不需要 provider**（生成临时文件不联网、不花 token），
+     *         所以不像 `capture` 那样有前置条件 —— 没配 API Key 也能用，
+     *         只是点下去之后不能立刻讲（那一步才需要 provider）。
+     */
+    id: 'loadHandoff',
+    group: 'handoff',
+    title: '我粘的位置 → 生成临时文件',
+    detail: '把外部 Agent 给的位置清单粘进上面的框（也可以把那个文件拖进来），点这里把涉及的代码列成一份临时文件',
+    command: 'anchorExplain.loadHandoff',
+  },
+  {
+    /*
+     * "再呼出"（用户原话：「这个文件是我们的一个按钮可以再次呼出（防止讲解切换文件丢掉路径）」）。
+     *
+     * @anchor 为什么非有不可：临时文档是**固定标签**，但用户还是可能手滑关掉它，
+     *         或者被别的操作顶走。没有这颗按钮，他就要**重新粘一遍** ——
+     *         而粘贴的内容可能已经不在剪贴板里了（他当时是从 Agent 的对话里复制的）。
+     *         有它，草稿与内容都还在宿主手里，一键拿回来。
+     */
+    id: 'reopenHandoff',
+    group: 'handoff',
+    title: '重新打开临时文件',
+    detail: '讲解跳到别的文件之后，临时文件被顶掉了 —— 点这里把它拿回来（内容还在）',
+    command: 'anchorExplain.reopenHandoff',
+    requires: 'handoff',
   },
   {
     id: 'setApiKey',
@@ -237,6 +277,22 @@ export interface StartModel {
    * 客户端每次收到模型就应用一次，所以系数变了不需要专门的推送通道。
    */
   readonly fontScale: number;
+  /**
+   * 【D130】输入框里的草稿。面板每次重画都从这里回填 ——
+   * 不然面板一刷新（"现在"那一栏变了就会刷新），用户粘进去的字**全没了**。
+   */
+  readonly handoffDraft: string;
+  /**
+   * 【D130】给外部 Agent 抄的那段要求（`handoffParse.ts` 的 `HANDOFF_PROMPT`）。
+   *
+   * @anchor 为什么让**模型**带着它上一趟而不是写死在客户端脚本里：那段文字要与
+   *         `parseHandoff` 认的形状**始终一致** —— 写死两处，改一处忘一处就会出现
+   *         "面板教对方写一种、解析器只认另一种"，而表现是"用户照做了却解析不出"。
+   *         从同一个常量来，就不可能分家。
+   *
+   * **可选**：同 `fontScale` 那条理由（缺了就按 `HANDOFF_PROMPT` 的当前值填）。
+   */
+  readonly handoffPrompt?: string;
   readonly sections: StartSection[];
   readonly status: StartStatusItem[];
 }
@@ -280,6 +336,27 @@ export interface StartModelInput {
    */
   readonly hasLastRun: boolean;
   /**
+   * 【D130】位置交接：**输入框里的草稿**（用户粘进去的那段位置清单）。
+   *
+   * @anchor 为什么要**由宿主**把它传回来，而不是让 webview 自己记着：
+   *         `startClientScript.ts` 的 `render()` 每次都 `root.textContent = ''` ——
+   *         面板一重画（比如"现在"那一栏变了），输入框里的字就**全没了**。
+   *         用户的输入必须活在**面板之外**（与侧边栏的 `askDrafts` 同一条套路，D126）。
+   *
+   * **可选**：与 `fontScale` 同一条理由 —— 这份输入是纯函数的入参，
+   * 缺了它按"没有草稿"走，不该让既有调用点（含测试）全跟着改。
+   */
+  readonly handoffDraft?: string;
+  /**
+   * 【D130】已经有一份临时文件了（内容还在宿主手里）。
+   * `false` = 「重新打开临时文件」那颗按钮灰掉（还没有东西可打开）。
+   *
+   * **可选**，同上：缺了按 `false` 走（那是默认的"还没生成过"）。
+   */
+  readonly hasHandoff?: boolean;
+  /** 【D130】那份临时文件里有多长 / 涉及几个文件 —— 显示在状态栏那一行。可选，缺了当没有。 */
+  readonly handoffSummary?: string | null;
+  /**
    * 正在进行的阶段（D64），例如"正在请求模型…"。有值就压过会话那一行 ——
    * **模型在背后跑的时候，屏幕上必须有东西在动**，否则用户会以为没反应而再点一次。
    */
@@ -302,6 +379,8 @@ const REQUIREMENT_REASON: Record<StartRequirement, string> = {
   // D83：还没有任何存档时的理由。同样要**指出下一步按哪颗按钮**（D61）——
   // 用户看的正是"这两颗灰按钮"，而解药就在同一个面板的第一组里。
   lastRun: '还没有讲过任何一段 —— 先用「讲解选中的代码」讲一次，之后就能重放或重新讲',
+  // D130：还没有生成过临时文件。出路就在同一组的上一颗按钮。
+  handoff: '还没有生成过临时文件 —— 先把位置粘进上面的框，按「我粘的位置 → 生成临时文件」',
 };
 
 /**
@@ -317,6 +396,8 @@ export function buildStartModel(input: StartModelInput): StartModel {
     session: input.session !== null,
     queue: input.queueSummary !== null,
     lastRun: input.hasLastRun,
+    // 可选字段缺省按"还没有"走 —— 见 `StartModelInput.hasHandoff` 那段注释
+    handoff: input.hasHandoff === true,
   };
 
   const sections: StartSection[] = [];
@@ -368,6 +449,12 @@ export function buildStartModel(input: StartModelInput): StartModel {
       tone: input.queueSummary === null ? 'muted' : 'ok',
     },
     {
+      // D130：那一份临时文件现在是什么样。**空的时候也要指出下一步**（D61 同一条）。
+      label: '临时文件',
+      value: input.handoffSummary ?? '还没有 —— 把位置粘进上面的框，再点「生成临时文件」',
+      tone: input.handoffSummary === null ? 'muted' : 'ok',
+    },
+    {
       label: '讲解',
       value: input.busy
         ? input.busy
@@ -384,10 +471,22 @@ export function buildStartModel(input: StartModelInput): StartModel {
       typeof input.fontScale === 'number' && Number.isFinite(input.fontScale) && input.fontScale > 0
         ? input.fontScale
         : 1,
+    // D130：草稿原样带回去 —— 面板重画之后要把它填回输入框（见 `StartModelInput` 那段注释）。
+    // **夹一下长度**：这条模型每拍都可能被重建并整份推给 webview，
+    // 一个几十 KB 的草稿挂在热路径上不值得（真正的上限判据在 `handoffParse` 那里）。
+    handoffDraft: typeof input.handoffDraft === 'string' ? input.handoffDraft.slice(0, MAX_HANDOFF_DRAFT_CHARS) : '',
+    handoffPrompt: HANDOFF_PROMPT,
     sections,
     status,
   };
 }
+
+/**
+ * 草稿在模型里最多带这么长（D130）。**与 `handoffParse` 的 64KB 上限是两回事**：
+ * 那个判"粘进来的东西能不能处理"，这个判"每拍推给面板的模型能有多大"。
+ * 粘超长内容时用户会看到明确的拒绝（带数字），所以这里悄悄截断不会有信息损失。
+ */
+const MAX_HANDOFF_DRAFT_CHARS = 8 * 1024;
 
 /**
  * 用户解绑（`null`）与空串统一收成 `null`：面板只说"没绑"，不说"绑了个空的"。

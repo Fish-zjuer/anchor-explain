@@ -42,6 +42,8 @@
     "onCommand:anchorExplain.openHistoryFolder",
     "onCommand:anchorExplain.toggleLanguage",
     "onCommand:anchorExplain.pickFetchScope",
+    "onCommand:anchorExplain.loadHandoff",
+    "onCommand:anchorExplain.reopenHandoff",
     "onView:anchorExplain.start"
   ],
   "contributes": {
@@ -245,6 +247,16 @@
       {
         "command": "anchorExplain.pickFetchScope",
         "title": "选择这次的取件范围（只影响本次会话）",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.loadHandoff",
+        "title": "从文件读入外部 Agent 的位置（生成临时文件）",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.reopenHandoff",
+        "title": "重新打开那份位置临时文件",
         "category": "Anchor"
       }
     ],

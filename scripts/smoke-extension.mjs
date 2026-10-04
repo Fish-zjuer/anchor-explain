@@ -59,8 +59,74 @@ const progressOptions = [];
 let activeTextEditor;
 let peerInstalled = false;
 
+/** ── D130：临时只读文档那一条链要用的几样 ────────────────────────────────── */
+/** 桩里"磁盘上有"的文件（路径 → 内容）。`workspace.fs.readFile` 按它分流。 */
+const handoffFiles = {};
+/** `registerTextDocumentContentProvider` 注册进去的那些 provider（scheme → provider） */
+const contentProviders = new Map();
+/** `openTextDocument` 开过的临时文档（测例要读它的内容与行数） */
+const openedHandoffDocs = [];
+/** `showTextDocument` 的调用记录（要验 `preview: false` 与"开的是同一份"） */
+const shownDocuments = [];
+/** 桩里的假文档 */
+const makeTextDocument = (uri, text) => {
+  const lines = text.split(/\r?\n/u);
+  return {
+    uri,
+    getText: () => text,
+    lineCount: lines.length,
+    lineAt: (n) => ({ text: lines[n] ?? '' }),
+    positionAt: (offset) => {
+      // 只实现"把偏移换成 line/character"，够 `editor.selection` 那类用法
+      const before = text.slice(0, offset);
+      const parts = before.split(/\r?\n/u);
+      return { line: parts.length - 1, character: (parts.at(-1) ?? '').length };
+    },
+    isClosed: false,
+  };
+};
+
+/** D130：投币之后的状态栏回执（"几段、几个文件"） */
+const statusBarMessages = [];
+
 const vscodeStub = {
   StatusBarAlignment: { Left: 1, Right: 2 },
+  // D130：临时文档的 provider 要用它（`onDidChange` 那一枪）。
+  // 必须**真的能订阅**：`refresh()` 空实现的话，"覆盖之后标签没刷新"
+  // 这类问题在冒烟里完全看不见 —— 而"原地覆盖"正是用户要的行为。
+  EventEmitter: class EventEmitter {
+    constructor() {
+      this.listeners = [];
+    }
+    get event() {
+      return (listener) => {
+        this.listeners.push(listener);
+        return { dispose: () => {} };
+      };
+    }
+    fire(value) {
+      for (const l of this.listeners) l(value);
+    }
+    dispose() {
+      this.listeners = [];
+    }
+  },
+  // D130：`createHandoffDocumentProvider` 用 `Uri.from`，`resolveHandoffPath` 用 `Uri.joinPath`。
+  // 桩要给出**与真 API 同形状**的 uri（有 scheme / path / fsPath）——
+  // 只给 `{fsPath}` 的话，`isHandoffEditor`（判 scheme）会永远为假，
+  // 于是"临时文档里选中 → 走临时文档那条路"这条链在冒烟里根本跑不到。
+  Uri: {
+    from(parts) {
+      return { scheme: parts.scheme, path: parts.path, fsPath: parts.path, toString: () => `${parts.scheme}:${parts.path}` };
+    },
+    file(p) {
+      return { scheme: 'file', path: p, fsPath: p, toString: () => `file:///${p}` };
+    },
+    joinPath(base, ...parts) {
+      const joined = [base.fsPath.replace(/[\\/]+$/u, ''), ...parts].join('/');
+      return { scheme: 'file', path: joined, fsPath: joined, toString: () => `file:///${joined}` };
+    },
+  },
   // 状态栏的 tooltip 是 MarkdownString（D81 起队列那一项也用它）。
   // 桩里缺它的话，`item.tooltip = new vscode.MarkdownString(...)` 那一行会抛 —— 而在
   // `isolated()` 里抛出只留一行日志，屏幕上看就是"状态栏没出来"，又是一个"点了没反应"。
@@ -101,6 +167,16 @@ const vscodeStub = {
       messages.push(msg);
       return Promise.resolve(undefined);
     },
+    /**
+     * D130：投币成功之后弹一句状态栏回执（"几段、几个文件、几条没认出来"）。
+     *
+     * @anchor 桩里必须记下来：这句回执是"少了什么"的**唯一**出口（D67 不静默）。
+     *         空实现的话，"三个文件只读到一个"这类降级会在冒烟里彻底看不见。
+     */
+    setStatusBarMessage(text, timeout) {
+      statusBarMessages.push({ text, timeout });
+      return { dispose() {} };
+    },
     // D78：宿主靠"可见编辑器变了"分辨"预览替换"与"用户主动关标签"。
     // 和上面两条一样，它必须在 **activate 期间**就存在 —— 缺了它 activate 直接抛，
     // 整份扩展根本没装上（这正是这条桩第一次漏掉它时的现象：`extension.cjs` 第 104192 行抛
@@ -136,6 +212,18 @@ const vscodeStub = {
     createOutputChannel(name) {
       return { name, appendLine() {}, append() {}, dispose() {} };
     },
+    /**
+     * D130：打开（或置顶）临时文档。
+     *
+     * @anchor 这里**必须记下 `options.preview`**：默认 `true` 时开的是预览标签，
+     *         而预览标签会被下一份预览顶掉 —— 那正是用户说的"讲解切换文件丢掉路径"
+     *         （D78 踩过同一个坑）。不验这一条的话，把它改回默认值也不会有人发现 ——
+     *         功能看着一切正常，只是标签会莫名其妙消失。
+     */
+    showTextDocument(doc, options) {
+      shownDocuments.push({ doc, options });
+      return Promise.resolve({ document: doc, selection: undefined, setDecorations() {}, revealRange() {} });
+    },
   },
   commands: {
     registerCommand(id, handler) {
@@ -170,9 +258,17 @@ const vscodeStub = {
     },
     // 状态栏会读一次用户的 keybindings.json。这里让它 reject（文件就是不存在），
     // 走的正是"读不到就回退默认键位"那条真实分支。
+    //
+    // D130 起它还要能读**位置清单里提到的源文件** —— 所以按路径分流：
+    // `handoffFiles` 里有的就给内容，没有的照旧 ENOENT。
+    // 这样"读不到的那个文件要进 missing"那条也能在这一层真跑一遍。
     fs: {
-      readFile() {
-        return Promise.reject(new Error('ENOENT: keybindings.json'));
+      readFile(uri) {
+        const p = String(uri?.fsPath ?? uri);
+        if (Object.prototype.hasOwnProperty.call(handoffFiles, p)) {
+          return Promise.resolve(new TextEncoder().encode(handoffFiles[p]));
+        }
+        return Promise.reject(new Error(`ENOENT: ${p}`));
       },
     },
     // staleness 与"编辑器关闭即收工"两条订阅（§4.2）
@@ -185,6 +281,33 @@ const vscodeStub = {
     // S8：开始面板显示"模型"那一行，改设置要让它立刻变
     onDidChangeConfiguration() {
       return { dispose() {} };
+    },
+    // ── D130：临时只读文档 ────────────────────────────────────────────────
+    /**
+     * provider 注册。**把注册进去的那个 provider 留下来**，好让测例自己去读内容 ——
+     * 那才是 VS Code 重画标签时走的那条路（只验 `host.get()` 会漏掉"标签没刷新"）。
+     */
+    registerTextDocumentContentProvider(scheme, provider) {
+      contentProviders.set(scheme, provider);
+      return { dispose: () => contentProviders.delete(scheme) };
+    },
+    /**
+     * `openHandoffDocument` 用它拿文档。
+     *
+     * @anchor 这里要**真的去问 provider**（而不是返回一个假文档对象）：
+     *         "临时文档的内容从 provider 来"这一点正是这一片的技术核心
+     *         （自定义 scheme + 只读，见 D130 第四节）。返回假文档就绕过它了。
+     */
+    openTextDocument(uri) {
+      if (uri?.scheme !== 'file' && contentProviders.has(uri?.scheme)) {
+        const provider = contentProviders.get(uri.scheme);
+        const text = provider.provideTextDocumentContent(uri);
+        const doc = makeTextDocument(uri, text);
+        openedHandoffDocs.push(doc);
+        return Promise.resolve(doc);
+      }
+      // 别的 scheme（`file:` 之类）走"文件不存在" —— 与本冒烟其余部分的口径一致
+      return Promise.reject(new Error(`ENOENT: ${uri?.fsPath ?? uri}`));
     },
   },
   extensions: {
@@ -368,10 +491,107 @@ await waitFor(() => posted.length > 0);
 const startModel = posted.at(-1)?.model;
 check(posted.at(-1)?.type === 'start:model' && startModel !== undefined, '握手后宿主推了一份开始面板模型');
 check(
-  startModel?.status?.length === 5,
-  '模型里有五条状态（模型 / 线2 / 上次捕获 / 多段队列 / 讲解）',
+  startModel?.status?.length === 6,
+  '模型里有六条状态（模型 / 线2 / 上次捕获 / 多段队列 / 临时文件 / 讲解）',
   startModel?.status?.map((item) => item.label).join(' / ') ?? '(无)',
 );
+// D130：刚装好、还没粘过位置时，那一行要说清**怎么才有**（不是留空、也不是"无"）
+const handoffRow = startModel?.status?.find((item) => item.label === '临时文件');
+check(handoffRow !== undefined, '多了一行「临时文件」（D130）');
+check(
+  (handoffRow?.value ?? '').includes('生成临时文件'),
+  '还没粘过位置时，那一行指出下一步（说清那颗按钮叫什么）',
+  handoffRow?.value ?? '(无这行)',
+);
+
+// ── D130：投币 → 临时只读文档 → 二次选择 ────────────────────────────────────
+//
+// 这一段的重量在于：它跑的是**产物**，也就是说面板消息 → 守卫 → 宿主 → provider
+// 整条链都是真的（只有 `vscode` 是桩）。上面 `smoke-handoff.mjs` 验的是算法与 provider 本身，
+// 这里验的是**接线**：守卫认不认这条消息、宿主的 handler 挂没挂上、命令注册了没。
+{
+  // 夹具：两个文件放在"不同的目录"（D130 第六节要验的正是"多目录"与"扩到函数"）
+  const FA = 'C:/repo/fw/App/Src/main.c';
+  const FB = 'C:/repo/fw/Driver/dshot/Src/dshot_dma.c';
+  handoffFiles[FA] = 'int main(void) {\n    init_clock();\n    run();\n    return 0;\n}\n';
+  handoffFiles[FB] = 'void dshot_send(void) {\n    DMA->CR |= 1;\n}\n';
+
+  const payload = [
+    JSON.stringify({ filePath: FA, lineStart: 2, lineEnd: 2 }),
+    JSON.stringify({ filePath: FB, lineStart: 2, lineEnd: 2 }),
+  ].join('\n');
+
+  // ① 投币（面板那条消息）
+  receiveFromPanel?.({ type: 'start:handoff', text: payload });
+  await waitFor(() => contentProviders.has('anchor-handoff'));
+
+  const schemeOk = contentProviders.has('anchor-handoff');
+  check(schemeOk, '投币之后注册了 `anchor-handoff` 这个 scheme 的 provider（临时文档的载体）');
+
+  // ② 文档内容与来源表一致（这一片最大的风险点）
+  const doc = openedHandoffDocs.at(-1);
+  const text = doc?.getText() ?? '';
+  check(doc !== undefined, '临时文档被打开了（不是只记在内存里）');
+  check(text.includes('main.c') && text.includes('dshot_dma.c'), '两个源文件都出现在文档里');
+  check(text.includes('='.repeat(72)), '两个文件之间有 ASCII 粗分割线（用户要的"粗分割线"）');
+  // 扩到函数：输入给的是第 2 行（函数体里那一行），扩完应该包住整个函数
+  check(
+    text.includes('int main(void) {') && text.includes('return 0;'),
+    '「精准到行」被扩成了完整函数块（main 的头与尾都在）',
+    text.split('\n').slice(0, 8).join('⏎'),
+  );
+
+  // ③ 标签是**固定标签**，不是预览标签（否则会被下一份预览顶掉 —— 即"丢掉路径"）
+  const lastShown = shownDocuments.at(-1);
+  check(
+    lastShown?.options?.preview === false,
+    '打开临时文档时传了 preview: false（默认的预览标签会被顶掉）',
+    JSON.stringify(lastShown?.options ?? null),
+  );
+
+  // ④ 面板拿到回执（摘要进了状态行）
+  receiveFromPanel?.({ type: 'start:ready' });
+  await waitFor(() => (posted.at(-1)?.model?.status ?? []).some((i) => i.label === '临时文件' && i.value.includes('文件')));
+  const afterRow = (posted.at(-1)?.model?.status ?? []).find((i) => i.label === '临时文件');
+  check(
+    typeof afterRow?.value === 'string' && afterRow.value.includes('文件'),
+    '状态行回执说得出"几个文件里的几段"（不静默：用户要知道少了什么）',
+    afterRow?.value ?? '(无)',
+  );
+
+  // ⑤ 再呼出：开关那个按钮走的是**同一个 provider**（不重新生成）
+  const beforeReopen = openedHandoffDocs.length;
+  receiveFromPanel?.({ type: 'start:run', id: 'reopenHandoff' });
+  await waitFor(() => openedHandoffDocs.length > beforeReopen || shownDocuments.length > 0);
+  const reopenedDoc = openedHandoffDocs.at(-1);
+  check(
+    reopenedDoc?.uri?.scheme === 'anchor-handoff',
+    '「重新打开」开的是临时文档那一份（不是去重新生成）',
+    reopenedDoc?.uri?.scheme ?? '(无)',
+  );
+  check(
+    (reopenedDoc?.getText() ?? '') === text,
+    '重新打开之后内容没变（"原本那个"）',
+  );
+
+  // ⑥ 覆盖：下一次投币原地换内容，且标签刷新（用户说「原地覆盖」）
+  let refreshed = 0;
+  contentProviders.get('anchor-handoff').onDidChange(() => {
+    refreshed += 1;
+  });
+  receiveFromPanel?.({ type: 'start:handoff', text: JSON.stringify({ filePath: FB, lineStart: 1, lineEnd: 1 }) });
+  await waitFor(() => refreshed > 0);
+  check(refreshed > 0, '第二次投币触发了 provider 的刷新（标签上是新内容）', `通知 ${refreshed} 次`);
+  const overwritten = contentProviders.get('anchor-handoff').provideTextDocumentContent({ scheme: 'anchor-handoff', path: 'handoff' });
+  check(!overwritten.includes('main.c'), '覆盖之后旧内容不在了（是真的换了，不是追加）');
+
+  // ⑦ 空文本与坏 JSON 不炸（用户按了空框 / 对方输出乱码）
+  const beforeEmpty = openedHandoffDocs.length;
+  receiveFromPanel?.({ type: 'start:handoff', text: '   ' });
+  receiveFromPanel?.({ type: 'start:handoff', text: '这不是 JSON，随便一句'}); 
+  check(openedHandoffDocs.length === beforeEmpty, '空文本与认不出的文本都没开新文档（守卫拦住了）');
+}
+
 // 队列空着时那两颗按钮是灰的，而**状态行要说清下一步去哪**（D61）——
 // 面板上多出来的一整组按钮如果只会变灰、不会指路，用户照样卡住。
 const queueRow = startModel?.status?.find((item) => item.label === '多段队列');

@@ -5,7 +5,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_ASK_CHARS, STATE_WORD, isAnchorLike, parseSidebarMessage, parseStartMessage } from '../src/protocol.ts';
+import {
+  MAX_ASK_CHARS,
+  MAX_HANDOFF_TEXT_CHARS,
+  STATE_WORD,
+  isAnchorLike,
+  parseSidebarMessage,
+  parseStartMessage,
+} from '../src/protocol.ts';
 
 test('isAnchorLike：合法的代码锚点放行', () => {
   assert.equal(
@@ -143,6 +150,57 @@ test('parseStartMessage：**只查形状，不查 id 认不认识**（成员资�
     type: 'start:run',
     id: '并不是我们的动作',
   });
+});
+
+test('parseStartMessage：`start:handoff` 的两端去空白，空的一律丢（D130）', () => {
+  // 去空白是因为用户从终端/网页复制时前后带空格或换行是常态，
+  // 而**空文本必须丢**：那是误触（在空框里按了按钮），不该让宿主跑一次读文件。
+  assert.deepEqual(parseStartMessage({ type: 'start:handoff', text: '  {"filePath":"a.c"} \n' }), {
+    type: 'start:handoff',
+    text: '{"filePath":"a.c"}',
+  });
+
+  for (const text of ['', '   ', '\n\t ', null, undefined, 7, {}, []]) {
+    assert.equal(parseStartMessage({ type: 'start:handoff', text }), null, JSON.stringify(text));
+  }
+});
+
+test('parseStartMessage：`start:handoffDraft` **不去空白也不丢空**（D130）', () => {
+  // 这一条是它与 `start:handoff` 的分界线，值得单独钉住：
+  // 草稿是"用户此刻框里有什么"，**正在打一个空行**是合法状态，
+  // 清空输入框也是合法动作（宿主据此把草稿记得为空）。
+  // 若有人顺手把去空白抄过来，用户打字打到换行时草稿就会被悄悄改掉。
+  assert.deepEqual(parseStartMessage({ type: 'start:handoffDraft', text: '  {"a":1}\n\n' }), {
+    type: 'start:handoffDraft',
+    text: '  {"a":1}\n\n',
+  });
+  assert.deepEqual(parseStartMessage({ type: 'start:handoffDraft', text: '' }), {
+    type: 'start:handoffDraft',
+    text: '',
+  });
+  assert.deepEqual(parseStartMessage({ type: 'start:handoffDraft', text: '   ' }), {
+    type: 'start:handoffDraft',
+    text: '   ',
+  });
+
+  for (const text of [null, undefined, 7, {}, []]) {
+    assert.equal(parseStartMessage({ type: 'start:handoffDraft', text }), null, JSON.stringify(text));
+  }
+});
+
+test('parseStartMessage：两条 handoff 消息都**夹断而不拒**（D130）', () => {
+  // 夹而不是拒：用户粘一大段是完全正当的用法（外部 Agent 输出又长又啰嗦），
+  // 整条丢掉等于让他对着一个没反应的按钮发呆。
+  // 真正的业务上限在 `buildHandoff` 的 64KB 那里，它会说一句带数字的人话。
+  const long = 'x'.repeat(MAX_HANDOFF_TEXT_CHARS + 5000);
+
+  const coin = parseStartMessage({ type: 'start:handoff', text: long });
+  assert.equal(coin?.type, 'start:handoff');
+  assert.equal(coin?.text.length, MAX_HANDOFF_TEXT_CHARS);
+
+  const draft = parseStartMessage({ type: 'start:handoffDraft', text: long });
+  assert.equal(draft?.type, 'start:handoffDraft');
+  assert.equal(draft?.text.length, MAX_HANDOFF_TEXT_CHARS);
 });
 
 test('STATE_WORD 是 WalkthroughState 的满射（加状态时漏了词会在这里红）', () => {

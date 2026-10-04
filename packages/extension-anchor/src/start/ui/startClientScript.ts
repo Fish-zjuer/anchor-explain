@@ -45,6 +45,47 @@ export const START_CLIENT_SCRIPT = `
     return box;
   }
 
+  /**
+   * D130：位置交接那一格的**输入框**（用户要的"投币机"）。
+   *
+   * 三条实情决定了它长这样：
+   *   1. 必须是 textarea 而不是 input —— 位置清单是**多行**的
+   *   2. **草稿由 model 带回来**（model.handoffDraft）：render() 每次都把 root 清空，
+   *      不从这里回填，用户粘进去的字每重画一次就没一次
+   *   3. 拖拽要在**这里**拦：dragover 必须 preventDefault，否则浏览器不认这次 drop
+   *      （这是 HTML5 拖放的规矩，不是我们的选择）
+   */
+  function renderHandoffBox(model, action) {
+    var box = el('div', 'handoff');
+
+    var label = el('div', 'handoff-label', '把外部 Agent 给的位置粘在这里（也可以把那个文件拖进来）');
+    box.appendChild(label);
+
+    var area = el('textarea', 'handoff-input');
+    area.setAttribute('data-handoff', 'draft');
+    area.setAttribute('rows', '4');
+    area.setAttribute('spellcheck', 'false');
+    area.placeholder =
+      '{"filePath": "src/main.c", "lineStart": 120, "lineEnd": 168}\\n{"filePath": "include/util.h", "lineStart": 3, "lineEnd": 40}';
+    // 回填草稿（**放在 value 而不是 textContent** —— textarea 的初值走 value）
+    area.value = typeof model.handoffDraft === 'string' ? model.handoffDraft : '';
+    box.appendChild(area);
+
+    var hint = el('div', 'handoff-hint', '外部 Agent 那边可以照着这句要求它输出：');
+    box.appendChild(hint);
+    var code = el('code', 'handoff-prompt', model.handoffPrompt);
+    box.appendChild(code);
+
+    var row = el('div', 'handoff-row');
+    var run = el('button', 'run', '生成临时文件');
+    run.setAttribute('data-action', action.id);
+    run.disabled = !action.enabled;
+    row.appendChild(run);
+    box.appendChild(row);
+
+    return box;
+  }
+
   function renderSection(section, extraClass) {
     var box = el('section', 'section' + (extraClass ? ' ' + extraClass : ''));
     box.appendChild(el('h2', null, section.title));
@@ -81,7 +122,14 @@ export const START_CLIENT_SCRIPT = `
       var section = model.sections[i];
       var box = renderSection(section);
       for (var j = 0; j < section.actions.length; j += 1) {
-        box.appendChild(renderAction(section.actions[j]));
+        var action = section.actions[j];
+        // D130：位置交接那一组里，「生成临时文件」那颗按钮**不长成普通按钮** ——
+        // 它跟一个输入框是一体的（投币机）。其余动作照旧。
+        if (action.id === 'loadHandoff') {
+          box.appendChild(renderHandoffBox(model, action));
+        } else {
+          box.appendChild(renderAction(action));
+        }
       }
       root.appendChild(box);
     }
@@ -102,16 +150,76 @@ export const START_CLIENT_SCRIPT = `
     var node = event.target;
     while (node && node !== document.body) {
       if (node.getAttribute && node.getAttribute('data-action') && !node.disabled) {
-        vscode.postMessage({ type: 'start:run', id: node.getAttribute('data-action') });
+        var actionId = node.getAttribute('data-action');
+        // D130：「生成临时文件」走**另一条消息** —— 它要带上输入框里的内容。
+        // 其余动作仍然只回传 id（§5.5 那条约定照旧管着它们）。
+        if (actionId === 'loadHandoff') {
+          var box = document.querySelector('[data-handoff="draft"]');
+          vscode.postMessage({ type: 'start:handoff', text: box && box.value ? box.value : '' });
+          return;
+        }
+        vscode.postMessage({ type: 'start:run', id: actionId });
         return;
       }
       node = node.parentNode;
     }
   });
 
+  /**
+   * D130：把文件**拖进输入框**。
+   *
+   * 两件事必须做对，否则拖上去毫无反应：
+   *   1. dragover 要 preventDefault() —— HTML5 拖放的规矩，不拦就没有 drop
+   *   2. 读文件用 File.text()，而**拿不到路径**（浏览器/webview 的安全约定）——
+   *      所以拖进来的只有**内容**，这与"点选文件"（宿主侧 showOpenDialog，有路径）
+   *      不是冗余，而是两种场合。
+   */
+  document.addEventListener('dragover', function (event) {
+    if (!event.target || !event.target.getAttribute) return;
+    if (event.target.getAttribute('data-handoff') !== 'draft') return;
+    event.preventDefault();
+  });
+
+  document.addEventListener('drop', function (event) {
+    var node = event.target;
+    if (!node || !node.getAttribute || node.getAttribute('data-handoff') !== 'draft') return;
+    event.preventDefault();
+    var files = event.dataTransfer ? event.dataTransfer.files : null;
+    if (!files || files.length === 0) return;
+    var file = files[0];
+    // 主动拦大小：几百 KB 塞进 DOM 会把面板卡死，不如当场说清楚
+    if (file.size > 256 * 1024) {
+      node.value = '';
+      node.placeholder = '这个文件太大了（' + Math.round(file.size / 1024) + 'KB）—— 位置清单一般只有几行';
+      return;
+    }
+    file.text().then(function (text) {
+      node.value = text;
+      node.placeholder = '已从 ' + file.name + ' 读入 —— 再点下面的「生成临时文件」';
+    });
+  });
+
   window.addEventListener('message', function (event) {
     var message = event.data;
     if (message && message.type === 'start:model') render(message.model);
+  });
+
+  /**
+   * D130：输入框里打字/粘贴时把草稿**立刻告诉宿主**（走同一条 start:handoff 消息，
+   * 但宿主那一侧只在"点了生成"时才真的去解析）。
+   *
+   * @anchor 为什么打一个字就发一条：面板**随时会被重画**（会话换拍、状态变化都会刷新），
+   *         而重画是 root.textContent = '' —— 那一刻 DOM 里的字就没了。
+   *         宿主手里必须**始终**有一份最新的草稿，重画时才能原样填回来。
+   *         与侧边栏 askDrafts 那条（D126）是同一个套路，只是多跨了一道 webview 边界。
+   *
+   *         不担心"打一个字发一条消息会累"：这是一次字符串拷贝，用户打字的速度下毫无压力；
+   *         而丢掉草稿是**用户已经明确抱怨过**的那类问题（"给了很多的提示词，没了"）。
+   */
+  document.addEventListener('input', function (event) {
+    var node = event.target;
+    if (!node || !node.getAttribute || node.getAttribute('data-handoff') !== 'draft') return;
+    vscode.postMessage({ type: 'start:handoffDraft', text: node.value == null ? '' : String(node.value) });
   });
 
   // 握手：宿主收到 ready 才发第一份模型（面板可能比宿主晚很多才被打开）
