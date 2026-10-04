@@ -41,8 +41,26 @@ export interface HandoffDoc {
   readonly files: readonly string[];
 }
 
-/** 跨文件/跨段之间的分割线宽度。72 是常用终端宽度的 80 减去两侧余量。 */
-const BAR_WIDTH = 72;
+/**
+ * 跨文件/跨段之间那条分割线的宽度与行数。
+ *
+ * @anchor 为什么是"三行 + 100 宽"（D133，用户实测反馈"分割线不够显眼"）：
+ *         一行 72 个 `=` 在一屏代码里太容易和别的东西混起来 —— 它跟某些语言的长注释线、
+ *         跟 `====` 那类分隔写法长得像，滚过去就找不到了。用户的原话是"弄个三行吧，
+ *         再稍微长一点"。
+ *
+ *         三行是**没有任何内容含义的冗余行** —— 它们存在的唯一目的就是"扎眼"，
+ *         所以不承载信息（字面全是同一个符号），也就不怕被误读。
+ *         宽度取 100：比常见终端的 80 宽出一截，横着看能明显溢出正文的边界。
+ *
+ *         ⚠ 行数变了要同步改的只有这一处常量 —— **三行都走同一个 `BAR_LINES` 循环**，
+ *         且每一行都必须 `push` 进来源表（标 `filler`），少一行就会让映射错位。
+ */
+const BAR_WIDTH = 100;
+const BAR_LINES = 3;
+
+/** 分割线的字面（全 `=`，没有信息）—— 抽出来是为了三行严格一致。 */
+const BAR_TEXT = '='.repeat(BAR_WIDTH);
 
 /** 段首标注的两种形状（扩成功了 / 没扩成功）。**不在标注里加装饰**，它要被用户读、也要被映射认。 */
 function headerOf(seg: HandoffSegment): string {
@@ -72,7 +90,10 @@ export function buildHandoffDoc(segments: readonly HandoffSegment[]): HandoffDoc
   segments.forEach((seg, i) => {
     if (!files.includes(seg.filePath)) files.push(seg.filePath);
     if (i > 0) {
-      push('='.repeat(BAR_WIDTH), { kind: 'filler', label: '分割线' });
+      // D133：三行（用户要"三行 + 稍长"）—— 每一行都单独进来源表，缺一行映射就错位。
+      for (let n = 0; n < BAR_LINES; n += 1) {
+        push(BAR_TEXT, { kind: 'filler', label: '分割线' });
+      }
       push('', { kind: 'filler', label: '空行' });
     }
     push(headerOf(seg), { kind: 'filler', label: '段首标注' });

@@ -48,35 +48,50 @@ const SEGMENTS: HandoffSegment[] = [
  *   4: b        → main.c:11
  *   5: c        → main.c:12
  *   6: ==== 分割线
- *   7: (空)
- *   8: // src/main.c  第 50-51 行
+ *   7: ==== 分割线
+ *   8: ==== 分割线
  *   9: (空)
- *  10: x        → main.c:50
- *  11: y        → main.c:51
- *  12: ==== 分割线
- *  13: (空)
- *  14: // include/util.h  第 3-4 行
- *  15: (空)
- *  16: p        → util.h:3
- *  17: q        → util.h:4
+ *  10: // src/main.c  第 50-51 行
+ *  11: (空)
+ *  12: x        → main.c:50
+ *  13: y        → main.c:51
+ *  14: ==== 分割线
+ *  15: ==== 分割线
+ *  16: ==== 分割线
+ *  17: (空)
+ *  18: // include/util.h  第 3-4 行
+ *  19: (空)
+ *  20: p        → util.h:3
+ *  21: q        → util.h:4
  */
 
 test('拼装：段首标注 + 空行 + 分割线 + 正文，行数与来源表一一对应', () => {
   const doc = buildHandoffDoc(SEGMENTS);
-  assert.equal(doc.lines.length, 17);
-  assert.equal(doc.origin.length, 17, '来源表必须与正文等长');
+  assert.equal(doc.lines.length, 21);
+  assert.equal(doc.origin.length, 21, '来源表必须与正文等长');
   assert.equal(doc.lines[0], '// src/main.c  第 10-12 行');
   assert.equal(doc.lines[2], 'a');
   // 第一段的前面没有分割线（第 1-5 行全是"段首标注 + 空行 + 三行正文"）
   assert.ok(!doc.lines.slice(0, 5).some((l) => /^=+$/u.test(l)), '第一段前面不该有分割线');
-  // 段与段之间的是第 6 行
-  assert.match(doc.lines[5]!, /^=+$/u);
+  // 段与段之间的是第 6-8 行（D133：三行）
+  for (const i of [5, 6, 7]) {
+    assert.match(doc.lines[i]!, /^=+$/u, `第 ${i + 1} 行该是分割线`);
+  }
+  assert.ok(!/^=+$/u.test(doc.lines[8]!), '分割线只有三行，第 9 行是空行');
 });
 
-test('拼装：分割线宽度足够"粗"（用户要的 ASCII 粗分割线）', () => {
+test('拼装：分割线够长够粗（D133：三行、100 宽 —— 用户说"不够显眼"）', () => {
   const doc = buildHandoffDoc(SEGMENTS);
-  const bar = doc.lines.find((l) => /^=+$/u.test(l))!;
-  assert.ok(bar.length >= 40, `分割线太短了：${bar.length}`);
+  const bars = doc.lines.filter((l) => /^=+$/u.test(l));
+  // 两处分割线 × 三行
+  assert.equal(bars.length, 6, '两处分割线，每处三行');
+  assert.equal(new Set(bars).size, 1, '三行必须**严格一致**（不一的话看起来像坏了）');
+  assert.ok(bars[0]!.length >= 80, `分割线太短：${bars[0]!.length}（D133 起是 100）`);
+  // 三行都必须在来源表里是 filler —— 少标一行，映射就会把它当代码
+  const barIdx = doc.lines.map((l, i) => (/^=+$/u.test(l) ? i : -1)).filter((i) => i >= 0);
+  for (const i of barIdx) {
+    assert.equal(doc.origin[i]!.kind, 'filler', `第 ${i + 1} 行分割线没被标成 filler`);
+  }
 });
 
 test('拼装：未扩到函数边界的段会在标注里如实写出来', () => {
@@ -112,7 +127,9 @@ test('映射：选单段的一部分', () => {
 
 test('映射：跨过分割线必须断成两段', () => {
   const doc = buildHandoffDoc(SEGMENTS);
-  assert.deepEqual(mapSelection(doc.origin, 3, 10), [
+  // 终点 12 = 第二段正文首行（D133 起分割线三行，行号往后挪）。
+  // 这条测的是"中间夹着三行分割线，映射不许把它当桥连起来"。
+  assert.deepEqual(mapSelection(doc.origin, 3, 12), [
     { filePath: 'src/main.c', lineStart: 10, lineEnd: 12 },
     { filePath: 'src/main.c', lineStart: 50, lineEnd: 50 },
   ]);
@@ -120,7 +137,8 @@ test('映射：跨过分割线必须断成两段', () => {
 
 test('映射：跨两个文件必须断成三段', () => {
   const doc = buildHandoffDoc(SEGMENTS);
-  assert.deepEqual(mapSelection(doc.origin, 3, 17), [
+  // 终点 21 = 第三段正文最后一行（D133 起分割线是三行，整体行号往后挪了）
+  assert.deepEqual(mapSelection(doc.origin, 3, 21), [
     { filePath: 'src/main.c', lineStart: 10, lineEnd: 12 },
     { filePath: 'src/main.c', lineStart: 50, lineEnd: 51 },
     { filePath: 'include/util.h', lineStart: 3, lineEnd: 4 },
@@ -141,7 +159,8 @@ test('映射：选中标注行 + 一行代码 → 只出那一行代码', () => 
 
 test('映射：同一文件两段不相邻 → 必须是两段，不是 10-51', () => {
   const doc = buildHandoffDoc(SEGMENTS);
-  const got = mapSelection(doc.origin, 3, 11);
+  // 终点 13 = 第二段正文最后一行（D133 起分割线三行，行号往后挪）
+  const got = mapSelection(doc.origin, 3, 13);
   assert.equal(got.length, 2);
   assert.deepEqual(got[1], { filePath: 'src/main.c', lineStart: 50, lineEnd: 51 });
 });

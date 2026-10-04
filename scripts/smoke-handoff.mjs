@@ -290,9 +290,16 @@ check(
 );
 
 // ── 3. 分割线：不同文件之间要有可见的分界 ────────────────────────────────────
-check(doc.text.includes('='.repeat(72)), '两个文件之间有 ASCII 粗分割线');
-const separators = lines.filter((l) => l === '='.repeat(72)).length;
-check(separators === segs.length - 1, '分割线数量 = 段数 - 1（不首不尾）', `实际 ${separators}`);
+// D133：用户实测"不够显眼" → 改成三行、100 宽。判据写死这两条，
+// 日后有人把三行改回一行（或把宽度调窄）会在这里红。
+const BAR = '='.repeat(100);
+check(doc.text.includes(BAR), '两个文件之间有 ASCII 粗分割线（100 宽）');
+const barLines = lines.filter((l) => l === BAR).length;
+check(
+  barLines === (segs.length - 1) * 3,
+  '分割线行数 = （段数 - 1）× 3（D133 起是每个分界三行，不首不尾）',
+  `实际 ${barLines} 行`,
+);
 
 // ── 4. 每段的标注行写着**源文件**路径与行号 ──────────────────────────────────
 check(
