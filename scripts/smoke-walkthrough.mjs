@@ -87,6 +87,8 @@ const statusItems = [];
 const quickPicks = [];
 const outputLines = [];
 const fetchCalls = [];
+/** S13：仅扩展输出目录的虚拟文件，源文件仍从真实磁盘读，禁止误写源文件。 */
+const artifactFiles = new Map();
 let applyEditCalls = 0;
 let receiveFromWebview;
 let onCloseDocument;
@@ -284,7 +286,8 @@ globalThis.fetch = (url, init) => {
   return Promise.resolve({
     ok: true,
     status: 200,
-    text: () => Promise.resolve(JSON.stringify({ choices: [{ message: cannedCompletion(body) }] })),
+    text: () => Promise.resolve(JSON.stringify({ choices: [{ message: cannedCompletion(body) }],
+      ...(['handoff-queue','archive-followup'].includes(fetchMode) ? {usage:{prompt_tokens:100,completion_tokens:20,prompt_cache_hit_tokens:80}} : {}) })),
   });
 };
 
@@ -384,7 +387,8 @@ const vscodeStub = {
   OverviewRulerLane: { Left: 1, Center: 2, Right: 4, Full: 7 },
   TextEditorRevealType: { Default: 0, InCenter: 1, InCenterIfOutsideViewport: 2, AtTop: 3 },
   ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2 },
-  Uri: { file: (p) => ({ scheme: 'file', fsPath: p }) },
+  Uri: { file: (p) => ({ scheme: 'file', fsPath: p }),
+    joinPath:(base,...parts)=>({scheme:base.scheme ?? 'file',fsPath:path.join(base.fsPath,...parts)}) },
   EventEmitter: class { event = () => ({dispose(){}}); fire(){} dispose(){} },
 
   window: {
@@ -477,6 +481,7 @@ const vscodeStub = {
             return Promise.resolve(true);
           },
           onDidReceiveMessage(cb) {
+            panel.webview.receive = cb;
             receiveFromWebview = cb;
             return { dispose() {} };
           },
@@ -570,13 +575,21 @@ const vscodeStub = {
       return { dispose() {} };
     },
     fs: {
-      readFile: (uri) => Promise.resolve(readFileSync(uri.fsPath)),
+      readFile: (uri) => Promise.resolve(artifactFiles.get(uri.fsPath) ?? readFileSync(uri.fsPath)),
+      createDirectory: async () => {},
+      writeFile: async (uri,bytes) => {artifactFiles.set(uri.fsPath,new Uint8Array(bytes));},
+      rename: async (from,to) => {if(!artifactFiles.has(from.fsPath))throw new Error('ENOENT');artifactFiles.set(to.fsPath,artifactFiles.get(from.fsPath));artifactFiles.delete(from.fsPath);},
+      delete: async uri => {artifactFiles.delete(uri.fsPath);},
       stat: (uri) => (existsSync(uri.fsPath) ? Promise.resolve(statSync(uri.fsPath)) : Promise.reject(new Error('ENOENT'))),
       // S9a-fix11（D123）：候选池在"工作区盖不住的根"上要**自己去走目录树** —— 桩必须真的走，
       // 否则那条路在冒烟里永远走的是"读不动 → 跳过"分支，而它正是用户实测失败的那条路。
       // `1` = File、`2` = Directory（与 `vscode.FileType` 一致，源码里也是按这两个数判的）。
       readDirectory: (uri) =>
         new Promise((resolve, reject) => {
+          if (path.basename(uri.fsPath) === 'archive') {
+            resolve([...artifactFiles.keys()].filter(p=>path.dirname(p)===uri.fsPath).map(p=>[path.basename(p),1]));
+            return;
+          }
           try {
             resolve(readdirSync(uri.fsPath, { withFileTypes: true }).map((e) => [e.name, e.isDirectory() ? 2 : 1]));
           } catch (err) {
@@ -2273,6 +2286,57 @@ check(
   vscodeStub.window.activeTextEditor = editor;
   vscodeStub.workspace.openTextDocument = oldOpen;
   vscodeStub.workspace.fs.readFile = oldRead;
+}
+
+// ---- S13：完整留档、追问覆盖、无网络重开、删除和清空只作用 archive/ ----
+{
+  await flush();
+  const current = workspaceStateStore.get('anchorExplain.lastRun');
+  const id = current.id;
+  await registered.get('anchorExplain.showHistory')?.();
+  await flush();
+  const history = webviews.find(p=>p.viewType==='anchorExplain.history');
+  const state = () => history.webview.posted.findLast(m=>m.type==='history:list');
+  const settleHistory = async () => {for(let i=0;i<20;i++){await flush();if(state()&&!state().busy)break;}};
+  history.webview.receive({type:'history:ready'});
+  await settleHistory();
+  check(state().entries.some(e=>e.id===id && e.steps===2 && e.usage?.input===100),
+    'S13：历史列表显示本次讲解的完整记录、步数和实际用量');
+  const requestCount = fetchCalls.length;
+  history.webview.receive({type:'history:open',id});
+  await settleHistory();
+  const reopened = webviews.findLast(p=>p.viewType==='anchorExplain.sidebar' && !p.disposed)?.webview.posted.findLast(m=>m.type==='session:update');
+  check(fetchCalls.length===requestCount && reopened?.result?.steps?.length===2,
+    'S13：重新打开历史恢复讲解，没有发模型请求');
+  fetchMode='archive-followup';
+  const lecture = webviews.findLast(p=>p.viewType==='anchorExplain.sidebar' && !p.disposed);
+  const oldSteps=workspaceStateStore.get('anchorExplain.lastRun').result.steps.length;
+  lecture.webview.receive({type:'ui:ask',index:0,question:'补充一下这一步'});
+  for(let i=0;i<30 && workspaceStateStore.get('anchorExplain.lastRun').result.steps.length===oldSteps;i++)await flush();
+  await flush();
+  const afterAsk=workspaceStateStore.get('anchorExplain.lastRun');
+  check(afterAsk.id===id && afterAsk.savedAt===current.savedAt && afterAsk.result.steps.length===oldSteps+1,
+    'S13：追问改写同一个 ID，原时间保留，没有新增留档');
+  check(afterAsk.usage?.input===200 && afterAsk.usage?.output===40,
+    'S13：追问用量累加并持久化，重开后不会丢');
+  const jsonFiles=()=>[...artifactFiles.keys()].filter(p=>path.basename(path.dirname(p))==='archive' && p.endsWith('.json'));
+  const beforeDelete=jsonFiles().length;
+  warningAnswer=undefined;
+  history.webview.receive({type:'history:delete',id});
+  await settleHistory();
+  check(jsonFiles().length===beforeDelete,'S13：取消删除时完整记录保持原样');
+  warningAnswer='删除';
+  history.webview.receive({type:'history:delete',id});
+  await settleHistory();
+  check(jsonFiles().length===beforeDelete-1 && !workspaceStateStore.has('anchorExplain.lastRun'),
+    'S13：确认删除只删选中记录，同时清掉该记录的最近重放指针');
+  const mdFiles=[...artifactFiles.keys()].filter(p=>p.endsWith('.md'));
+  warningAnswer='清空';
+  history.webview.receive({type:'history:clear'});
+  await settleHistory();
+  check(jsonFiles().length===0 && state().entries.length===0,'S13：确认清空后完整历史列表为空');
+  check(mdFiles.length>0 && mdFiles.every(p=>artifactFiles.has(p)), 'S13：清空完整历史后旧 Markdown 文件仍全部存在');
+  warningAnswer=undefined;
 }
 
 // ---- 收尾 -----------------------------------------------------------------

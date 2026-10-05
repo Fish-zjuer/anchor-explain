@@ -41,6 +41,7 @@
     "onCommand:anchorExplain.fontReset",
     "onCommand:anchorExplain.exportLast",
     "onCommand:anchorExplain.openHistoryFolder",
+    "onCommand:anchorExplain.showHistory",
     "onCommand:anchorExplain.toggleLanguage",
     "onCommand:anchorExplain.pickFetchScope",
     "onCommand:anchorExplain.loadHandoff",
@@ -238,6 +239,11 @@
       {
         "command": "anchorExplain.exportLast",
         "title": "导出上次讲解为 Markdown",
+        "category": "Anchor"
+      },
+      {
+        "command": "anchorExplain.showHistory",
+        "title": "讲解历史（重新打开、删除或清空）",
         "category": "Anchor"
       },
       {

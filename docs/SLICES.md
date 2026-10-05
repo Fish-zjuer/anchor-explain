@@ -1810,3 +1810,25 @@ CSS 谁负责钉住"。`scrollIntoView` 那句一个字没动（它自己会找�
 
 **结果**：507 条扩展单测、类型与内联脚本检查通过；构建、五组冒烟全绿。
 完整队列链路的请求、源定位、两道校验和成功留档均已自动验证。实际端点实测随最终安装进行。
+
+## S13 完整历史留档与历史面板（2026-10-05，已完成，tag slice-S13）
+
+**目标**：扩展私有 archive/ 一次讲解一份完整 JSON；追问原 ID 覆盖；历史列表按时间倒序，
+显示标题/时间/步数/用量，支持本地重新打开、单条删、清空。保留旧 Markdown history/ 及入口。
+
+**范围**：新增 `session/archive.ts`（有序存储、摘要、消息守卫）、`sidebar/HistoryPanel.ts`（历史列表）、
+`sidebar/ui/historyHtml.ts`（可独立执行验证的 UI）、
+对应测试；修改 `session/lastRun.ts`、`commands.ts`、`protocol.ts`、`sidebar/SidebarPanel.ts`、
+`sidebar/ui/clientScript.ts`、`start/startModel.ts`、`package.json`、对应测试与冒烟脚本、包 README，
+以及分发用户版 `README.dist.md`，
+同步 STATE/SLICES/DECISIONS/CONTRACTS。扩展输出契约与用户模型配置不动。
+
+**验收**：跨重启、多次讲解及追问覆盖；旧上次讲解平滑导入；用量/语言重放；无网络重开；
+损坏档跳过可见提示；删除/清空仅作用 archive/，不删 Markdown history/；路径遍历被守卫拒绝；
+异步写入与删除严格排序，写入失败不破坏旧档；命令/侧栏/开始面板接线一致；全量检查与最终实测。
+
+**回退点**：`slice-S14-fix1`。本轮用户已授权本片，无需另问是否继续。
+
+**结果**：全仓 654 测、全部类型检查、内联脚本检查与五组冒烟通过。真窗口历史列表、旧最近完整档导入已验证，
+完整链路冒烟覆盖不发网络重开、追问原 ID 覆盖/用量累计、取消删、确认删、清空与旧 Markdown 保留。
+安装包已生成并正式安装，源码构建与安装入口 SHA-256 一致。真实端点样例验收单独等待内容/目的地授权。

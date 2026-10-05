@@ -152,6 +152,7 @@ export type SidebarToHost =
    */
   | { type: 'ui:export' }
   | { type: 'ui:openHistory' }
+  | { type: 'ui:showHistory' }
   /**
    * 【D126 新增】追问。`index` = 被追问的那一步（面板上"当前块"的下标），
    * `question` = 用户敲进去的那句话。
@@ -322,6 +323,7 @@ export function parseSidebarMessage(raw: unknown): SidebarToHost | null {
     case 'ui:fontSmaller':
     case 'ui:export':
     case 'ui:openHistory':
+    case 'ui:showHistory':
       return { type: raw.type };
     case 'ui:goto':
     case 'ui:revealStep': {

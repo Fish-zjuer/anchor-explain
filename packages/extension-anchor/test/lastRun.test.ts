@@ -65,6 +65,21 @@ test('D83：存了再读，逐字回来（重放要的就是"一模一样"）', 
   assert.deepEqual(back.anchor, saved.anchor);
 });
 
+test('S13：可选 ID/更新时间/用量往返，旧档仍可读', () => {
+  const enriched = run({id:'run-123',updatedAt:200,usage:{input:120,output:50},language:'en'});
+  const back=readLastRun(toStoredRun(enriched))!;
+  assert.equal(back.id,'run-123'); assert.equal(back.updatedAt,200);
+  assert.deepEqual(back.usage,{input:120,output:50});
+  assert.equal(readLastRun(toStoredRun(run()))?.id,undefined);
+});
+
+test('S13：坏 ID/负数用量不进入历史文件名或用量展示', () => {
+  const raw=toStoredRun(run()) as Record<string,unknown>;
+  raw.id='../outside'; raw.usage={input:-10,output:15};
+  const back=readLastRun(raw)!;
+  assert.equal(back.id,undefined); assert.deepEqual(back.usage,{output:15});
+});
+
 test('D83：版本对不上的存档一律丢掉（宁可说"读不出来"，也不拿旧形状去渲染）', () => {
   const stored = toStoredRun(run()) as Record<string, unknown>;
   assert.equal(readLastRun({ ...stored, version: 0 }), undefined);

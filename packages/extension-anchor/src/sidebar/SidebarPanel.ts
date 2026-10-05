@@ -34,6 +34,8 @@ export interface SidebarHandlers {
   onExport(): void;
   /** D89：打开讲解历史文件夹 */
   onOpenHistory(): void;
+  /** S13：打开完整留档的历史面板。 */
+  onHistoryPanel(): void;
   /** D126：对第 `index` 步追问一句（面板上的输入框 + 那颗按钮） */
   onAsk(index: number, question: string): void;
 }
@@ -57,8 +59,8 @@ export class SidebarPanel {
    */
   readonly #sidebarStyle: SidebarStyle;
   /**
-   * 本次讲解累计的 token 用量（D120）。**只活在内存里**：不落盘、不进讲解历史、
-   * 不进 `workspaceState`。存一份的理由与 `#fontScale` 相同 —— `ui:ready` 之后要补发，
+   * 本次讲解累计的 token 用量（D120/S13）。这里仅缓存展示值；完整留档由命令层负责。
+   * 存一份的理由与 `#fontScale` 相同 —— `ui:ready` 之后要补发，
    * 面板重建（折叠再展开）时不至于把那行数字丢掉。
    */
   #usage: TokenUsage | null = null;
@@ -139,6 +141,9 @@ export class SidebarPanel {
           break;
         case 'ui:openHistory':
           this.#handlers.onOpenHistory();
+          break;
+        case 'ui:showHistory':
+          this.#handlers.onHistoryPanel();
           break;
         case 'ui:ask':
           this.#handlers.onAsk(msg.index, msg.question);

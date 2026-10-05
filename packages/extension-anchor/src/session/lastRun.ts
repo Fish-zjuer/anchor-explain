@@ -20,8 +20,13 @@ import { isCodeLocation, isPDFLocation } from '@anchor/core';
 import type { Anchor, ExplanationResult, Location, SubHighlight, WalkthroughStep } from '@anchor/core';
 import { isAnchorLike } from '../protocol.ts';
 import type { ExplainLanguage } from '../prompts/index.ts';
+import type { TokenUsage } from '../orchestrator/providers/types.ts';
 
 export interface LastRun {
+  /** S13：旧档可没有 ID；导入完整历史时分配，追问保持同一个。 */
+  readonly id?: string;
+  readonly updatedAt?: number;
+  readonly usage?: TokenUsage;
   readonly result: ExplanationResult;
   readonly anchor: Anchor;
   /** 存下来的时刻（`Date.now()`）。只为"这是什么时候讲的"这句话，不参与任何判据。 */
@@ -41,6 +46,20 @@ export interface LastRun {
  * 而真正的原因是我们换了个 key。要改形状就靠 `readLastRun` 的版本判断（见下）。
  */
 export const LAST_RUN_KEY = 'anchorExplain.lastRun';
+
+export function isRunId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(value);
+}
+
+function storedUsage(value: unknown): TokenUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const usage: TokenUsage = {};
+  for (const key of ['input', 'output', 'cachedInput', 'uncachedInput'] as const) {
+    const n = value[key];
+    if (typeof n === 'number' && Number.isSafeInteger(n) && n >= 0) usage[key] = n;
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
 
 /**
  * 存档的形状版本。**加进存档里、并在读的时候对不上就丢掉**（而不是尽力兼容）。
@@ -145,6 +164,9 @@ export function readLastRun(raw: unknown): LastRun | undefined {
   const savedAt = typeof raw.savedAt === 'number' && Number.isFinite(raw.savedAt) ? raw.savedAt : 0;
 
   return {
+    ...(isRunId(raw.id) ? { id: raw.id } : {}),
+    ...(typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) && raw.updatedAt >= 0 ? { updatedAt: raw.updatedAt } : {}),
+    ...(storedUsage(raw.usage) ? { usage: storedUsage(raw.usage) } : {}),
     anchor: raw.anchor,
     result: {
       steps,
@@ -154,7 +176,7 @@ export function readLastRun(raw: unknown): LastRun | undefined {
     },
     savedAt,
     // D97：旧存档没有这个字段 → undefined → 导出按中文处理（可选字段，不升版本号）
-    language: raw.language === 'en' ? 'en' : undefined,
+    language: raw.language === 'en' ? 'en' : raw.language === 'zh' ? 'zh' : undefined,
   };
 }
 
@@ -165,6 +187,9 @@ export function toStoredRun(run: LastRun): unknown {
     savedAt: run.savedAt,
     anchor: run.anchor,
     result: run.result,
+    ...(run.id !== undefined ? { id: run.id } : {}),
+    ...(run.updatedAt !== undefined ? { updatedAt: run.updatedAt } : {}),
+    ...(run.usage !== undefined ? { usage: run.usage } : {}),
     ...(run.language !== undefined ? { language: run.language } : {}),
   };
 }

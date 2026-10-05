@@ -542,6 +542,11 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     exportBtn.title = L.titleExport;
     row.appendChild(exportBtn);
 
+    var panelBtn = mk("button", null, L === STRINGS.en ? "History" : "讲解历史");
+    panelBtn.setAttribute("data-act", "showHistory");
+    panelBtn.title = L === STRINGS.en ? "Reopen or manage saved explanations" : "重新打开、删除或清空完整讲解留档";
+    row.appendChild(panelBtn);
+
     var historyBtn = mk("button", null, L.historyBtn);
     historyBtn.setAttribute("data-act", "openHistory");
     historyBtn.title = L.titleHistory;
@@ -687,6 +692,7 @@ export const SIDEBAR_CLIENT_SCRIPT = `
     else if (act === "fontSmaller") vscode.postMessage({ type: "ui:fontSmaller" });
     else if (act === "export") vscode.postMessage({ type: "ui:export" });
     else if (act === "openHistory") vscode.postMessage({ type: "ui:openHistory" });
+    else if (act === "showHistory") vscode.postMessage({ type: "ui:showHistory" });
     // 追问（D126）：内容取**草稿**那一份 —— 它由下面的 input 监听器实时更新，
     // 所以与输入框里的字是同一份（而不是"再去 DOM 里捞一次"，webview 里那更需要 querySelector）
     else if (act === "ask") submitAsk(index, askDrafts[index]);

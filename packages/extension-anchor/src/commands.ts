@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import {
   AnchorError,
@@ -80,6 +81,8 @@ import { describeFetched } from './orchestrator/validateContextRequest.ts';
 import { isAnchorLike } from './protocol.ts';
 import { LAST_RUN_KEY, readLastRun, toStoredRun } from './session/lastRun.ts';
 import type { LastRun } from './session/lastRun.ts';
+import { createArchiveStore } from './session/archive.ts';
+import { HistoryPanel } from './sidebar/HistoryPanel.ts';
 import { LAST_FOCUS_KEY, readLastFocus } from './session/lastFocus.ts';
 import { CodeWalkthroughPlayer } from './playback/CodeWalkthroughPlayer.ts';
 import { WalkthroughSession } from './playback/WalkthroughSession.ts';
@@ -352,6 +355,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   let player: CodeWalkthroughPlayer | undefined;
   let sidebar: SidebarPanel | undefined;
+  let sidebarLanguage: ExplainLanguage | undefined;
+  let playbackLanguage: ExplainLanguage | undefined;
   let start: StartViewProvider | undefined;
   let session: WalkthroughSession | undefined;
   /** 当前会话的锚点文件（D69）。`session:update` 带着它，面板据此决定要不要标文件名。 */
@@ -557,22 +562,33 @@ export function registerCommands(context: vscode.ExtensionContext): void {
      * 追问会调用它来把"补进队列的那几步"并进存档（用户的选择：一次讲解 = 一份留档，
      * 追问**改写**它），但 history 文件夹那一份是**按时间戳命名**的 ——
      * 再写一次只会多出一个几乎相同的文件，而旧的那份仍然缺着补充讲解。
-     * 该由谁承担"留档"，是 ⑩ 那一片的事；在那之前，权威版本是这里的存档（重放读的就是它）。
+     * S13 的完整 JSON 同 ID 覆盖；旧 Markdown 保留为首次讲解的导出副本。
      */
     opts: { autoSave?: boolean } = {},
   ): void {
     // 语言跟着这一份存档走（D97）：英文讲解导出的历史文件不该顶着中文标题
-    const run: LastRun = { result, anchor, savedAt: Date.now(), language: languageOf() };
+    const previous = opts.autoSave === false ? lastRunOf() : undefined;
+    const now = Date.now();
+    const run: LastRun = { result, anchor, id: previous?.id ?? randomUUID(),
+      savedAt: previous?.savedAt ?? now, updatedAt: now, language: previous?.language ?? playbackLanguage ?? languageOf(),
+      ...(usageThisRun ? { usage: { ...usageThisRun } } : {}) };
     lastRun = run;
     lastRunLoaded = true;
     try {
-      void context.workspaceState.update(LAST_RUN_KEY, toStoredRun(run));
+      void Promise.resolve(context.workspaceState.update(LAST_RUN_KEY, toStoredRun(run)))
+        .catch(err => note(`上次讲解没能持久保存：${userFacing(err)}`));
     } catch (err) {
       note(`上次讲解没能存下来（${describeError(err)}）—— 这一次仍然能重放，只是重启之后会丢`);
     }
     // D89：同一份存档**自动**落一份 Markdown 进历史文件夹（扩展私有目录，不进工作区）。
     // 异步、失败只进日志 —— 存历史是"多给一份"的事，没有资格拖住或弄坏讲解本身。
     if (opts.autoSave !== false) void autoSaveRun(run);
+    void archive.save(run).then(refreshHistory).catch(err => {
+      const message = `完整历史没能存下来：${userFacing(err)}。当前讲解仍可重放。`;
+      note(message);
+      historyPanel?.setError(message);
+      void vscode.window.showWarningMessage(`Anchor：${message}`);
+    });
     refreshStart();
   }
 
@@ -680,6 +696,111 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     } else {
       void vscode.window.showWarningMessage(`Anchor：没能打开历史文件夹，路径是 ${dir.fsPath}`);
     }
+  }
+
+  // @anchor S13：完整 JSON 历史与旧 Markdown history/ 分开，所有写/删都串行。
+  let historyPanel: HistoryPanel | undefined;
+  let damagedArchives = 0;
+  const archiveDir = (): vscode.Uri => vscode.Uri.joinPath(context.globalStorageUri, 'archive');
+  const archive = createArchiveStore({
+    async list() {
+      try { return (await vscode.workspace.fs.readDirectory(archiveDir())).map(([name]) => name); }
+      catch (err) {
+        const code = (err as {code?:string}).code;
+        if (code === 'FileNotFound' || code === 'ENOENT') return [];
+        throw err;
+      }
+    },
+    async read(name) { return new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(archiveDir(), name))); },
+    async writeAtomic(name, text) {
+      const dir = archiveDir();
+      await vscode.workspace.fs.createDirectory(dir);
+      const temp = vscode.Uri.joinPath(dir, `${name}.tmp`);
+      try {
+        await vscode.workspace.fs.writeFile(temp, new TextEncoder().encode(text));
+        await vscode.workspace.fs.rename(temp, vscode.Uri.joinPath(dir, name), { overwrite: true });
+      } catch (err) {
+        try { await vscode.workspace.fs.delete(temp); } catch { /* 旧 JSON 不受失败影响。 */ }
+        throw err;
+      }
+    },
+    async remove(name) { await vscode.workspace.fs.delete(vscode.Uri.joinPath(archiveDir(), name)); },
+  }, (name, reason) => { damagedArchives++; note(`历史记录 ${name} 无法读取：${reason}`); });
+
+  async function refreshHistory(): Promise<void> {
+    if (!historyPanel || historyPanel.disposed) return;
+    damagedArchives = 0;
+    const entries = await archive.list();
+    historyPanel.setEntries(entries, damagedArchives > 0 ? `${damagedArchives} 份损坏或无法读取的记录已跳过；其余记录仍可使用。` : '重新打开使用已有讲解，不再请求模型。', damagedArchives > 0);
+  }
+
+  async function importLastRun(): Promise<void> {
+    const previous = lastRunOf();
+    if (!previous || previous.id) return;
+    const id = `legacy-${createHash('sha256').update(JSON.stringify(toStoredRun(previous))).digest('hex').slice(0, 32)}`;
+    const existing = (await archive.list()).some(entry => entry.id === id);
+    const run: LastRun = existing ? await archive.read(id) : { ...previous, id, updatedAt: previous.savedAt, language: previous.language ?? 'zh' };
+    if (!existing) await archive.save(run);
+    if (lastRun !== previous) return;
+    lastRun = run;
+    await context.workspaceState.update(LAST_RUN_KEY, toStoredRun(run));
+  }
+
+  async function openArchived(id: string): Promise<void> {
+    if (running || asking) throw new Error('当前模型请求还在进行，请结束后再打开历史讲解。');
+    const run = await archive.read(id);
+    stop();
+    generation += 1;
+    lastRun = run;
+    lastRunLoaded = true;
+    usageThisRun = run.usage;
+    playbackLanguage = run.language ?? 'zh';
+    await context.workspaceState.update(LAST_RUN_KEY, toStoredRun(run));
+    sidebar?.setUsage(run.usage ?? null);
+    startSession(run.result, run.anchor);
+    refreshStart();
+    note(`打开历史讲解：${id}（没有请求模型）`);
+  }
+
+  async function forgetLastArchive(ids?: readonly string[]): Promise<void> {
+    const run = lastRunOf();
+    if (!run?.id || (ids && !ids.includes(run.id))) return;
+    stop();
+    lastRun = undefined;
+    lastRunLoaded = true;
+    usageThisRun = undefined;
+    sidebar?.setUsage(null);
+    await context.workspaceState.update(LAST_RUN_KEY, undefined);
+    refreshStart();
+  }
+
+  async function showHistory(): Promise<void> {
+    if (!historyPanel || historyPanel.disposed) {
+      historyPanel = new HistoryPanel({
+        onRefresh: refreshHistory,
+        onOpen: openArchived,
+        async onDelete(id) {
+          const run = await archive.read(id);
+          const answer = await vscode.window.showWarningMessage(`删除讲解「${run.result.title || run.anchor.sourceName}」？Markdown 文件夹中的文件会保留。`, {modal:true}, '删除');
+          if (answer !== '删除') return;
+          await archive.remove(id);
+          await forgetLastArchive([id]);
+          await refreshHistory();
+        },
+        async onClear() {
+          const answer = await vscode.window.showWarningMessage('清空所有完整讲解留档？Markdown 文件夹中的文件会保留。', {modal:true}, '清空');
+          if (answer !== '清空') return;
+          await archive.clear();
+          await forgetLastArchive();
+          await refreshHistory();
+        },
+        onFolder: openHistoryFolder,
+      });
+      context.subscriptions.push(historyPanel);
+    }
+    historyPanel.reveal();
+    try { await importLastRun(); await refreshHistory(); }
+    catch (err) { historyPanel.setError(`历史读取失败：${userFacing(err)}`); note(`历史读取失败：${userFacing(err)}`); }
   }
 
   // ───────────────────────────────────────────────────────────
@@ -1168,6 +1289,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     onFontLarger: () => changeFontScale('larger'),
     onFontSmaller: () => changeFontScale('smaller'),
     onExport: () => void exportLast(),
+    onHistoryPanel: () => void showHistory(),
     onOpenHistory: () => void openHistoryFolder(),
     // D126：追问。面板只回传"哪一步 + 问什么"，能问不能问由宿主判（§5.5 同构）
     onAsk: (index, question) => void askFollowUp(index, question),
@@ -1219,11 +1341,14 @@ export function registerCommands(context: vscode.ExtensionContext): void {
   }
 
   function sidebarOf(): SidebarPanel {
+    const language = playbackLanguage ?? languageOf();
+    if (sidebar && !sidebar.disposed && sidebarLanguage !== language) sidebar.dispose();
     if (!sidebar || sidebar.disposed) {
       // 把用户实际键位一并交给面板：webview 里的按键到不了工作台，得它自己派发（D47）。
       // 字号系数同理内联（D89）：建面板那一刻的系数就是初值，之后的变更走消息。
       // 语言同理内联（D97）：面板文案（按钮/徽章/取件日志）跟着讲解语言走。
-      sidebar = SidebarPanel.create(handlers, status.chords(), fontScaleOf(), languageOf(), sidebarStyleOf());
+      sidebar = SidebarPanel.create(handlers, status.chords(), fontScaleOf(), language, sidebarStyleOf());
+      sidebarLanguage = language;
       // token 那一行（D120）：**取件与模型调用都发生在建面板之前**（用户是在开始面板上按的按钮，
       // 面板是结果出来才建的），所以这里要把已经记下的那份补进去，否则新建的面板永远是空的。
       // 面板重建（折叠再展开）同理 —— `SidebarPanel` 自己也存一份并在 `ui:ready` 时补发。
@@ -1335,6 +1460,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     // 追问的底子也跟着走（D126）：留着一个上一轮的锚点，
     // 下一轮（可能是不相干的文件、甚至是 PDF）的追问就会拿旧锚点的 sourceName 去讲新东西
     sessionAnchor = undefined;
+    playbackLanguage = undefined;
     pendingAnchorClose = false;
     setActive(false);
     setContextKey('anchorExplain.sessionOpen', false);
@@ -1757,7 +1883,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const provider = read.provider;
     if (!provider) throw new AnchorError('PROVIDER_ERROR', describeConfig(read));
     // 本次会话的临时档位（D119）：只覆盖**范围**这一个字段，其余照旧
-    const cfg = scopeOverride === undefined ? read : { ...read, fetchScope: scopeOverride };
+    const baseCfg = scopeOverride === undefined ? read : { ...read, fetchScope: scopeOverride };
+    const cfg = opts.followUp !== undefined && playbackLanguage ? { ...baseCfg, language: playbackLanguage } : baseCfg;
 
     // 取件边界与清单**一起**算（S9a-fix10）：两者必须同源，分两处建迟早各说各话。
     // 扫描失败「降级但不静默」—— 清单没了跨文件取件仍在（`any` 档模型可以自己写路径），
@@ -1887,6 +2014,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   async function runExplain(anchor: Anchor): Promise<void> {
     stop();
+    playbackLanguage = languageOf();
     const gen = (generation += 1);
     fetchedThisRun = [];
     traceThisRun = [];
@@ -2060,6 +2188,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         });
       }
 
+
+      if (session !== live) return; // 历史删除/切换或退出后，旧追问不能复活旧档。
       if (!live.insertStepsAfter(index, verdict.result.steps)) {
         // 模型给了空 steps（校验通常已经拦掉，这里是第二道）：如实说，不改队列
         throw new AnchorError('SCHEMA_VIOLATION', '这一次没有产出一条可以插入的补充讲解。');
@@ -2132,6 +2262,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
     note('重放上次讲解（没有请求模型）');
+    usageThisRun = run.usage;
+    playbackLanguage = run.language ?? 'zh';
+    sidebar?.setUsage(run.usage ?? null);
     startSession(run.result, run.anchor);
     void vscode.window.setStatusBarMessage('Anchor：正在重放上次那份讲解 —— 从第 1 步开始', 2500);
   }
@@ -2925,6 +3058,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('anchorExplain.fontReset', () => changeFontScale('reset')),
     vscode.commands.registerCommand('anchorExplain.exportLast', () => void exportLast()),
     vscode.commands.registerCommand('anchorExplain.openHistoryFolder', () => void openHistoryFolder()),
+    vscode.commands.registerCommand('anchorExplain.showHistory', () => void showHistory()),
     // D97：讲解语言一键切换（中文 ↔ English）
     vscode.commands.registerCommand('anchorExplain.toggleLanguage', () => toggleLanguage()),
     // D119：让用户自己给"这一次"定取件范围（只影响本次会话）

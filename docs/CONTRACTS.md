@@ -1739,3 +1739,21 @@ AssistantTurn 新增 finishReason?: string；OpenAICompatibleOptions 新增
 onResponse?: (response: {model: string; status: number; raw: string}) => void；OrchestratorDeps 新增
 onDiagnostic?: (message: string) => void。思考字段回传规则不变，只有正文能进入讲解校验。
 修复轮工具调用走既有取件闸门和预算，最多一次格式修复，不再将工具轮空正文当 EMPTY_COMPLETION。
+
+### D138 完整历史留档与面板（S13，2026-10-05）
+
+session/lastRun.ts：LastRun 新增可选 id:string、updatedAt:number、usage:TokenUsage；version=1 兼容旧记录。
+isRunId(unknown): value is string 限定安全文件名字符；readLastRun 丢弃非法 ID 与用量字段。
+
+session/archive.ts：ArchiveIO.list/read/writeAtomic/remove；createArchiveStore(io,onInvalid?) 返回
+save/run、read/id、list/摘要、remove/id、clear、settled，所有操作有序。
+ArchiveSummary = id/title/sourceName/savedAt/updatedAt/steps/language/usage?。
+parseHistoryMessage(unknown) 只接受 history:ready/refresh/folder/clear 或 open/delete + 安全 ID。
+
+sidebar/HistoryPanel.ts：HistoryHandlers.onRefresh/onOpen/onDelete/onClear/onFolder，全部 Promise<void>；
+setEntries(entries,note?,hasDamaged?)、setError(message)、reveal/dispose；ui/historyHtml.ts 只内联常量 UI。
+新增 ui:showHistory 与 SidebarHandlers.onHistoryPanel；新增 StartActionId.showHistory 与
+命令 anchorExplain.showHistory。旧 ui:openHistory/anchorExplain.openHistoryFolder 仍只开 Markdown 文件夹。
+
+存储语义：首次 savedAt 保留，追问覆写同一个 id；JSON 在 globalStorage/archive/，旧 history/ 不受清理影响。
+旧最近完整档导入，重开纯本地，语言和用量随档恢复；模型配置保持不变。

@@ -499,3 +499,12 @@ pnpm smoke:chain      # 单独的链路冒烟
 src/external/queueSegments.ts 是源片段快照与跨文件锚点的共用入口。临时文件的队列立即映射回源坐标；
 模型已收到的源文件无需重复取件才可引用。修复轮工具调用可继续；输出日志保留原始响应与校验问题。
 命令 Anchor: 自检模型端点 输出真实响应，但最小请求成功不代表整份队列请求成功。
+
+### 完整历史（S13，D138）
+
+- src/session/archive.ts：有序存储、列表摘要、安全 ID 和历史面板消息守卫。
+- src/sidebar/HistoryPanel.ts：历史宿主和动作接线；src/sidebar/ui/historyHtml.ts：列表 DOM 和常量 HTML。
+- src/session/lastRun.ts：ID/首次时间/更新时间/语言/用量兼容旧档。
+
+Anchor: 讲解历史、开始面板和讲解页按钮均进入同一面板。一次讲解一份 JSON，追问改写，
+重开不请求模型，可单条删/清空。记录在扩展私有 archive/；旧 Markdown history/ 与其命令保留。

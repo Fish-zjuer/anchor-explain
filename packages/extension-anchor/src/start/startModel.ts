@@ -30,6 +30,7 @@ export type StartActionId =
   | 'openPdf'
   | 'selectRegion'
   | 'replayLast'
+  | 'showHistory'
   | 'reExplain'
   | 'loadHandoff'
   | 'reopenHandoff'
@@ -74,6 +75,11 @@ const GROUP_ORDER: readonly StartGroupId[] = ['start', 'handoff', 'segments', 'l
  *         唯一不属于"调用命令"的动作是 `goto`（它需要开会话游标）——它调的也是命令。
  */
 export const START_ACTIONS: readonly StartActionSpec[] = [
+  {
+    id: 'showHistory', group: 'session', title: '讲解历史',
+    detail: '查看完整留档，重新打开以前的讲解，或删除、清空历史',
+    command: 'anchorExplain.showHistory',
+  },
   {
     id: 'capture',
     group: 'start',
