@@ -18,6 +18,8 @@ import { AnchorError } from '@anchor/core';
 import type { AssistantTurn, ChatMessage, ChatProvider, ChatRequest, TokenUsage, ToolCall } from './types.ts';
 
 export interface OpenAICompatibleOptions {
+  /** 原始响应诊断。不包含请求头/密钥；由命令层决定本地日志落点。 */
+  onResponse?: (response: { model: string; status: number; raw: string }) => void;
   baseUrl: string;
   apiKey?: string;
   extraHeaders?: Record<string, string>;
@@ -150,6 +152,7 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): C
       }
 
       const text = await res.text();
+      opts.onResponse?.({ model: req.model, status: res.status, raw: text });
       if (!res.ok) {
         throw new AnchorError('PROVIDER_ERROR', `模型端点返回 ${res.status}：${snippet(text)}`);
       }
@@ -161,7 +164,7 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): C
         throw new AnchorError('PROVIDER_ERROR', `模型端点返回的不是 JSON：${snippet(text)}`);
       }
 
-      const choices = (payload as { choices?: unknown }).choices;
+      const choices = payload !== null && typeof payload === 'object' ? (payload as { choices?: unknown }).choices : undefined;
       const first = Array.isArray(choices) ? (choices[0] as Record<string, unknown> | undefined) : undefined;
       const message = first?.message as Record<string, unknown> | undefined;
       if (!message) {
@@ -175,6 +178,7 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatibleOptions): C
        */
       const reasoning = message['reasoning_content'];
       return {
+        ...(typeof first?.finish_reason === 'string' ? { finishReason: first.finish_reason } : {}),
         content: typeof message.content === 'string' ? message.content : '',
         toolCalls: readToolCalls(message.tool_calls),
         ...(typeof reasoning === 'string' && reasoning !== '' ? { reasoningContent: reasoning } : {}),
@@ -245,7 +249,7 @@ function probeVerdict(content: unknown, reasoning: unknown): string {
     );
   }
   if (contentEmpty) {
-    return '端点确实回了空 content。换个模型名试试；若它本来就是"只要工具、不说话"的一轮，那是正常的。';
+    return '这次最小请求没有读到正文，请结合 finish_reason 和原始响应定位。';
   }
-  return '这一次端点**正常返回了正文** —— 说明之前那次是偶发（限流/抖动），直接重试即可。';
+  return '这次最小请求正常返回了正文。它不带工具和队列上下文，不能据此判断此前失败是否偶发。';
 }

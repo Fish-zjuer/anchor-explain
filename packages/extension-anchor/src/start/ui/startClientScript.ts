@@ -208,7 +208,10 @@ export const START_CLIENT_SCRIPT = `
     }
     file.text().then(function (text) {
       node.value = text;
+      vscode.postMessage({ type: 'start:handoffDraft', text: text });
       node.placeholder = '已从 ' + file.name + ' 读入 —— 再点下面的「生成临时文件」';
+    }).catch(function () {
+      node.placeholder = '读不了这个文件，请用「从文件读入位置清单」重试';
     });
   });
 

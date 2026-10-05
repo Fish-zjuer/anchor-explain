@@ -321,7 +321,7 @@ test('D135 自检：正文在 reasoning_content 里 → 指出是思考模式，
   assert.match(text, /"我先想了想。"/, '把端点原样回的东西摆出来');
 });
 
-test('D135 自检：端点正常回正文 → 结论是"偶发，直接重试"（不是"你配错了"）', async () => {
+test('D137 自检：最小请求成功不能断定队列失败是偶发', async () => {
   const { describeEndpointProbe } = await import('../src/orchestrator/providers/openAICompatible.ts');
   const text = describeEndpointProbe({
     choices: [{ finish_reason: 'stop', message: { content: '端点正常。' } }],
@@ -329,7 +329,19 @@ test('D135 自检：端点正常回正文 → 结论是"偶发，直接重试"�
 
   assert.match(text, /正常返回了正文/);
   assert.match(text, /偶发/);
+  assert.match(text, /不能据此判断/);
   assert.doesNotMatch(text, /thinking/, '正常时不该教人去关思考模式 —— 那是没事找事');
+});
+
+test('D137：原始诊断保留响应与 finish_reason，不暴露请求鉴权头', async () => {
+  const raw = JSON.stringify({choices:[{finish_reason:'length',message:{content:'',reasoning_content:'thinking'}}]});
+  const {impl} = fakeFetch({text:raw});
+  const diagnostics: unknown[] = [];
+  const reply = await createOpenAICompatibleProvider({baseUrl:'https://x',apiKey:'sk-private',fetchImpl:impl,
+    onResponse:r => diagnostics.push(r)}).chat({model:'m',messages});
+  assert.equal(reply.finishReason, 'length');
+  assert.deepEqual(diagnostics, [{model:'m',status:200,raw}]);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /sk-private/);
 });
 
 test('D135 自检：连 choices[0].message 都没有 → 说"baseUrl 指的不是对话端点"', async () => {

@@ -72,7 +72,7 @@ import { buildCandidateFiles, includeNamesIn } from './relatedFiles.ts';
 import { scanCodeFiles } from './vscode/relatedFiles.ts';
 import { createOrchestrator } from './orchestrator/Orchestrator.ts';
 import { createModelRouter } from './orchestrator/ModelRouter.ts';
-import { createOpenAICompatibleProvider } from './orchestrator/providers/openAICompatible.ts';
+import { createOpenAICompatibleProvider, describeEndpointProbe } from './orchestrator/providers/openAICompatible.ts';
 import { addUsage } from './orchestrator/providers/types.ts';
 import type { TokenUsage } from './orchestrator/providers/types.ts';
 import { describeIssues, validateExplanation } from './orchestrator/validateExplanation.ts';
@@ -92,7 +92,8 @@ import { buildStartModel, findStartAction } from './start/startModel.ts';
 import type { StartModel } from './start/startModel.ts';
 import { buildHandoff, HandoffError } from './external/handoffBuild.ts';
 // D132：提示词本体在宿主手里 —— 面板只说"复制"，由这里取常量写剪贴板。
-import { HANDOFF_PROMPT } from './external/handoffParse.ts';
+import { HANDOFF_PROMPT, parseHandoff } from './external/handoffParse.ts';
+import { readSourceSegments, snapshotHandoffSelection, sourceSegmentsAnchor } from './external/queueSegments.ts';
 import {
   buildHandoffDoc,
   describeMapped,
@@ -442,6 +443,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    *         中间隔着任意长的时间；每一步都要能单独失败、单独撤销。
    */
   let segmentQueue: AnchorSegment[] = [];
+  /** 队列的选择来源。临时文档可映射出多个源文件，不能按第一个源文件判换文档。 */
+  let queueOrigin: string | undefined;
 
   // ───────────────────────────────────────────────────────────
   // 外部 Agent 的位置交接（D130）
@@ -759,11 +762,46 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
 
+    const resolvedPaths = new Map<string, string>();
+    const unresolved: string[] = [];
+    for (const { filePath } of parseHandoff(raw).ranges) {
+      if (resolvedPaths.has(filePath)) continue;
+      let resolved = resolveHandoffPath(filePath);
+      if (!filePath.startsWith('/') && !/^[A-Za-z]:[/\\]/u.test(filePath)) {
+        let found = false;
+        for (const folder of vscode.workspace.workspaceFolders ?? []) {
+          const candidate = vscode.Uri.joinPath(folder.uri, filePath);
+          try {
+            await vscode.workspace.fs.stat(candidate);
+            resolved = candidate.fsPath;
+            found = true;
+            break;
+          } catch { /* 检查下一个工作区根；不猜外部仓库的位置。 */ }
+        }
+        if (!found) unresolved.push(filePath);
+      }
+      resolvedPaths.set(filePath, resolved);
+    }
+    const paths = [...resolvedPaths.values()];
+    const roots = vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()) ?? [];
+    const external = paths.filter(p => {
+      const normalized = p.replace(/\\/g, '/').toLowerCase();
+      return roots.length === 0 || !roots.some(root => normalized === root || normalized.startsWith(`${root}/`));
+    });
+    if (external.length > 0 || unresolved.length > 0) {
+      const picked = await vscode.window.showWarningMessage(
+        unresolved.length > 0
+          ? `Anchor：工作区里找不到相对路径 ${unresolved[0]}。请取消并改用源文件的绝对路径；继续会按当前工作区解析，读不到的文件会明确列出。`
+          : `Anchor：位置清单包含工作区外的文件（${external[0]}${external.length > 1 ? ` 等 ${external.length} 处` : ''}）。继续生成后，取件仍按当前范围执行。`,
+        '继续生成', '取消',
+      );
+      if (picked !== '继续生成') return;
+    }
     let built: Awaited<ReturnType<typeof buildHandoff>>;
     try {
       built = await buildHandoff(raw, {
         readText: readHandoffFile,
-        resolvePath: resolveHandoffPath,
+        resolvePath: path => resolvedPaths.get(path) ?? resolveHandoffPath(path),
       });
     } catch (err) {
       // `HandoffError` 自己带的是一句写好的人话；别的错误走通用的那层
@@ -923,41 +961,13 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     ranges: { filePath: string; lineStart: number; lineEnd: number }[],
     focus: string | undefined,
   ): Promise<void> {
-    const segments: AnchorSegment[] = [];
-    for (const r of ranges) {
-      let text: string;
-      try {
-        text = await readHandoffFile(r.filePath);
-      } catch (err) {
-        void vscode.window.showErrorMessage(`Anchor：读不了 ${r.filePath} —— ${userFacing(err)}`);
-        return;
-      }
-      const lines = text.split(/\r?\n/);
-      const body = lines.slice(r.lineStart - 1, r.lineEnd).join('\n');
-      segments.push({ filePath: r.filePath, lineStart: r.lineStart, lineEnd: r.lineEnd, text: body });
+    let anchor: Anchor;
+    try {
+      anchor = sourceSegmentsAnchor(await readSourceSegments(ranges, readHandoffFile), focus);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
+      return;
     }
-
-    // 用 core 那**唯一一个**比较器排序（与队列那条同一处，D80 的教训：
-    // "第 1 段"这句话在三处出现，不共用一个排序就会各排各的）
-    const sorted = [...segments].sort(compareSegments);
-    const first = sorted[0]!;
-
-    // 多段合成一个锚点：`location` 是各段的并集外框，`segments` 说清"就是这几块"
-    // （D80 / D98 的契约，一行不改地复用）
-    const anchor: Anchor = {
-      sourceType: 'code',
-      sourceId: first.filePath,
-      sourceName: basenameOf(first.filePath),
-      location: {
-        filePath: first.filePath,
-        lineStart: Math.min(...sorted.map((s) => s.lineStart)),
-        lineEnd: Math.max(...sorted.map((s) => s.lineEnd)),
-      },
-      extractedText: sorted.map((s) => s.text).join('\n\n'),
-      ...(focus !== undefined ? { focus } : {}),
-      // 多段必须带 segments（否则模型会把并集外框中间的代码也一起讲）
-      ...(sorted.length > 1 ? { segments: sorted.map((s) => ({ filePath: s.filePath, lineStart: s.lineStart, lineEnd: s.lineEnd })) } : {}),
-    };
 
     lastCapture = { anchor, scope: 'selection' };
     refreshStart();
@@ -1813,6 +1823,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         apiKey: provider.apiKey,
         extraHeaders: provider.extraHeaders,
         extraBody: provider.extraBody,
+        onResponse: ({ status, raw }) => note(`端点原始响应（HTTP ${status}）：${raw.slice(0, 16000)}${raw.length > 16000 ? '（截到 16000 字）' : ''}`),
       }),
       routeModel: createModelRouter({
         tier1Model: provider.tier1Model,
@@ -1845,6 +1856,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       },
       followUp: opts.followUp,
       logger: loggerOf(),
+      onDiagnostic: note,
     });
   }
 
@@ -1959,6 +1971,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
           status.hide();
           setActive(false);
           setContextKey('anchorExplain.sessionOpen', false);
+          note(`讲解失败：${isAnchorError(err) ? err.code : 'ERROR'}；${userFacing(err)}`);
           void vscode.window.showErrorMessage(`Anchor：${userFacing(err)}`);
         } finally {
           onPhase = undefined;
@@ -2279,8 +2292,25 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    */
   async function addSegment(): Promise<void> {
     try {
-      const seg = await snapshotSelection();
+      const editor = vscode.window.activeTextEditor;
+      const handoff = editor !== undefined && isHandoffEditor(editor);
+      let additions: AnchorSegment[];
+      if (handoff) {
+        if (!handoffDoc) throw new Error('临时文件的来源表已失效，请重新生成临时文件。');
+        if (editor.selection.isEmpty) additions = [];
+        else additions = await snapshotHandoffSelection(handoffDoc,
+          Math.min(editor.selection.start.line, editor.selection.end.line) + 1,
+          Math.max(editor.selection.start.line, editor.selection.end.line) + 1, readHandoffFile);
+      } else {
+        const picked = await snapshotSelection();
+        additions = picked ? [picked] : [];
+      }
+      const seg = additions[0];
       if (!seg) {
+        if (handoff && !editor.selection.isEmpty) {
+          void vscode.window.showWarningMessage('Anchor：选中的是标注行或分割线，请在代码行上选一段。');
+          return;
+        }
         void vscode.window.showWarningMessage('Anchor：先在编辑器里选中一段，再按「加入选择队列」。');
         return;
       }
@@ -2293,7 +2323,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
        * 一个空招待弄清楚，一个混着两个文件的队列则会在最后一步突然报错，
        * 那时他已经选了四五段，损失太大。**早点说清楚比晚点报错好**。
        */
-      if (segmentQueue.length > 0 && !samePath(segmentQueue[0]!.filePath, seg.filePath)) {
+      const origin = handoff ? `${HANDOFF_SCHEME}:handoff` : seg.filePath;
+      if (segmentQueue.length > 0 && !samePath(queueOrigin ?? segmentQueue[0]!.filePath, origin)) {
         const keep = await vscode.window.showQuickPick(
           [
             { label: '清空，只讲新文件里的这段', description: '刚才那几段会被丢掉', value: 'reset' },
@@ -2307,7 +2338,8 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
       // 同一段重复加入：老实加进去，而不是悄悄去重 ——
       // 用户按了两次就是按了两次，替他"聪明地"丢掉一次反而让他怀疑队列没生效。
-      segmentQueue.push(seg);
+      queueOrigin = origin;
+      segmentQueue.push(...additions);
 
       // 加完**当场按行号排**（D80）：用户选的顺序常常是"想到哪选到哪"，
       // 而"第 1 段"这句话会在三处出现（队列那一行、可以点掉的那个列表、发给模型时标的号）。
@@ -2319,7 +2351,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       // 回执要说三件事（D81）：**进了**、**现在共几段**、**接下来会发生什么**。
       // 只写"已加入第 2 段"是不够的 —— 用户此刻真正想知道的是"我攒的这些最后会怎样"。
       void vscode.window.setStatusBarMessage(
-        `Anchor：已加入第 ${seg.lineStart}-${seg.lineEnd} 行 —— 队列里现在有 ${segmentQueue.length} 段（讲的时候会合成一份）`,
+        handoff
+          ? `Anchor：已加入 ${additions.length} 段源代码（${describeMapped(additions)}）—— 队列里现在有 ${segmentQueue.length} 段`
+          : `Anchor：已加入第 ${seg.lineStart}-${seg.lineEnd} 行 —— 队列里现在有 ${segmentQueue.length} 段（讲的时候会合成一份）`,
         4000,
       );
     } catch (err) {
@@ -2348,8 +2382,9 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    *         那一刻他会怀疑整个队列是坏的（而真正错的可能只是措辞）。
    */
   function queueLines(): { label: string; description: string; index: number }[] {
+    const multiFile = new Set(segmentQueue.map(s => s.filePath)).size > 1;
     return segmentQueue.map((seg, i) => ({
-      label: `第 ${i + 1} 段：第 ${seg.lineStart}-${seg.lineEnd} 行`,
+      label: `第 ${i + 1} 段：${multiFile ? `${basenameOf(seg.filePath)} ` : ''}第 ${seg.lineStart}-${seg.lineEnd} 行`,
       description: firstLineOf(seg.text),
       index: i,
     }));
@@ -2379,6 +2414,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   function clearSegments(): void {
     segmentQueue = [];
+    queueOrigin = undefined;
     syncQueue();
     refreshStart();
   }
@@ -2414,6 +2450,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const first = segmentQueue[0]!;
     // 取不到指纹（文件被删/无权限）就退化成路径 —— 与 `CodeAdapter.capture` 同一条立场
     const hash = await editorPort.documentTextHash(first.filePath);
+    if (queueOrigin?.startsWith(`${HANDOFF_SCHEME}:`)) return sourceSegmentsAnchor(segmentQueue, focus, hash ?? first.filePath);
     return mergeSegments(segmentQueue, {
       sourceId: hash ?? first.filePath,
       sourceName: basenameOf(first.filePath),
@@ -2429,6 +2466,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
    */
   function describeQueue(): string | null {
     if (segmentQueue.length === 0) return null;
+    if (new Set(segmentQueue.map(s => s.filePath)).size > 1) return `${segmentQueue.length} 段（${describeMapped(segmentQueue)}）`;
     const name = basenameOf(segmentQueue[0]!.filePath);
     const lines = describeSegments(segmentQueue);
     return `${segmentQueue.length} 段（${name} 第 ${lines} 行）`;
@@ -2798,6 +2836,14 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       apiKey: provider.apiKey,
       extraHeaders: provider.extraHeaders,
       extraBody: provider.extraBody,
+      onResponse: ({ status, raw }) => {
+        channel.appendLine(`HTTP ${status}`);
+        try {
+          const payload: unknown = JSON.parse(raw);
+          if (payload && typeof payload === 'object' && !Array.isArray(payload)) channel.appendLine(describeEndpointProbe(payload as Record<string, unknown>));
+        } catch { /* 错误正文可能不是 JSON，下面仍给原文。 */ }
+        channel.appendLine(`原始响应：${raw}`);
+      },
     });
 
     try {
@@ -2812,7 +2858,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
       channel.appendLine('');
       channel.appendLine(
         reply.content.trim() !== ''
-          ? '✅ 正常：端点回了正文。之前那次「没说话」是偶发，直接重试。'
+          ? '✅ 本次最小请求正常返回正文。队列、取件与修复轮仍需看对应讲解日志。'
           : reply.reasoningContent !== undefined
             ? '⚠ 正文缺失：端点只回了思考内容。这是**思考模式**的行为 —— 见下面「怎么办」。'
             : '⚠ 正文缺失：端点确实回了个空的 content，且没有思考内容可用。',

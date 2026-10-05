@@ -1782,3 +1782,31 @@ CSS 谁负责钉住"。`scrollIntoView` 那句一个字没动（它自己会找�
 - **同一文件两段不相邻不许合并**（10-12 与 50-51 必须是两段，不是 10-51）
 
 把这段算法先跑通再谈 UI —— 因为映射一旦错位，**不会报错，只会讲错东西**。
+
+## S14-fix1 临时文件多段队列 + 空输出与修复轮闭环（2026-10-05，已完成）
+
+用户已授权「完全解决问题，然后做未完成的历史功能」，两片依次推进，无需中间再次确认。
+
+**目标**：临时文件加入队列时立即映射为源文件片段；跨源文件队列仍合成一份讲解；
+修复回答时不把工具调用误判为空；失败、自检均保留可定位的响应和校验证据。
+普通单文件队列、输出校验与取件权限沿用既有规则。
+
+**范围**：`commands.ts`、`external/queueSegments.ts`（新增纯函数）、
+`orchestrator/Orchestrator.ts`、`orchestrator/providers/{types,openAICompatible}.ts`、
+`start/ui/startClientScript.ts`、对应单测、新队列单测、`scripts/smoke-walkthrough.mjs`、
+`scripts/smoke-extension.mjs`、包 README 与 STATE/SLICES/DECISIONS/CONTRACTS。
+补充：两道校验共用 `validateExplanation.ts` 必须允许用户已提供的源段文件，
+同步 `prompts/{index,en}.ts` 与对应回归测试，不能靠重复取件解锁用户已经提供的内容。
+端到端又暴露 JSON Windows 路径未解码：修 `external/handoffParse.ts` 与对应测试。
+位置交接跨工作区提示与拖拽草稿同步一并补齐。
+
+**验收**：临时多选跨文件/跨 filler 的源坐标与实际请求一致；普通队列仍保留换文件确认；
+修复轮请求工具后最终有合法讲解；首轮空/修复轮空文案区分；响应 diagnostics 与自检能看到
+`finish_reason`；拖入草稿 survives 重画；全部类型检查、单测、构建、五组冒烟。
+
+**回退点**：当前 HEAD `090383e`（D136）。只回退本片文件，保留上轮复测记录。
+
+**后续已授权**：S13 完整留档与历史面板，待本片验证后实施；旧 `history/` 保留。
+
+**结果**：507 条扩展单测、类型与内联脚本检查通过；构建、五组冒烟全绿。
+完整队列链路的请求、源定位、两道校验和成功留档均已自动验证。实际端点实测随最终安装进行。

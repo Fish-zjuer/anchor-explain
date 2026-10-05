@@ -43,6 +43,8 @@ export interface ToolCall {
 }
 
 export interface AssistantTurn {
+  /** 端点结束原因：用于区分长度截断与正常结束。 */
+  finishReason?: string;
   /** 模型这一轮的自然语言部分；只要了工具、没说话时是空串 */
   content: string;
   toolCalls: readonly ToolCall[];

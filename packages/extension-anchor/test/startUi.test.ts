@@ -13,6 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderStartHtml } from '../src/start/ui/startHtml.ts';
 import { START_CLIENT_SCRIPT } from '../src/start/ui/startClientScript.ts';
+import { runInNewContext } from 'node:vm';
 import { START_STYLES } from '../src/start/ui/startStyles.ts';
 import { SIDEBAR_CLIENT_SCRIPT } from '../src/sidebar/ui/clientScript.ts';
 import { SIDEBAR_STYLES } from '../src/sidebar/ui/styles.ts';
@@ -105,6 +106,23 @@ test('D130：草稿会回填，且发送的是**两条不同的消息**（打字
   // 合成一条的后果在 `protocol.ts` 那段注释里写着 —— 打字也能触发读文件。
   assert.ok(START_CLIENT_SCRIPT.includes('start:handoffDraft'), '缺草稿那条消息');
   assert.ok(START_CLIENT_SCRIPT.includes('start:handoff'), '缺投币那条消息');
+});
+
+test('D137：真正执行 drop 事件后，草稿会同步宿主，重画不会丢', async () => {
+  const handlers = new Map<string, (event: unknown) => void>();
+  const posted: Record<string, unknown>[] = [];
+  runInNewContext(START_CLIENT_SCRIPT, {
+    acquireVsCodeApi: () => ({ postMessage: (m: Record<string, unknown>) => posted.push(m) }),
+    document: {getElementById: () => ({}), addEventListener: (name: string, cb: (e: unknown) => void) => handlers.set(name, cb)},
+    window: {addEventListener() {}},
+  });
+  let prevented = false;
+  const node = {value:'',placeholder:'',getAttribute:()=> 'draft'};
+  handlers.get('drop')!({target:node,preventDefault:()=>{prevented=true;},dataTransfer:{files:[{size:20,name:'positions.txt',text:async()=>'{"filePath":"a.c"}'}]}});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(prevented, true);
+  assert.equal(node.value, '{"filePath":"a.c"}');
+  assert.ok(posted.some(m => m.type === 'start:handoffDraft' && m.text === node.value));
 });
 
 test('D130：提示词（给外部 Agent 的那段）在面板上可见', () => {

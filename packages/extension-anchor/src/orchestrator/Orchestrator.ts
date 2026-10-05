@@ -117,9 +117,10 @@ const MAX_EMPTY_RETRIES = 1;
  *         的人有意义，对一个只想让插件跑起来的用户毫无意义 ——
  *         D134 之前它是这句话的全部内容，用户看到的就是"$：AI 返回了空内容"。
  */
-function emptyCompletionMessage(): string {
+function emptyCompletionMessage(repair = false, finishReason?: string): string {
   return (
-    '模型连续两次都没有返回任何内容（不是"讲错了"，是"没说话"）。' +
+    (repair ? '模型在修复输出格式时没有返回正文（首轮曾返回非空内容）。' : '模型连续两次都没有返回任何内容。') +
+    (finishReason === 'length' ? '端点报告输出达到长度上限，请检查 extraBody 中的输出 token 限额。' : '') +
     '先用命令「Anchor: 自检模型端点」看端点到底回了什么 —— ' +
     '若它回的是空 `content` 而正文在别的字段里（例如思考模式的 `reasoning_content`），' +
     '那就是端点与我们的读法不一致，自检会把这件事指出来；' +
@@ -224,6 +225,8 @@ export interface OrchestratorDeps {
    * 且它应当**边跑边更新**（讲解要跑几十秒，用户盯着面板时就能看见在涨）。
    */
   onUsage?: (total: TokenUsage) => void;
+  /** 本次候答、修复与响应元数据的诊断落点；不包含鉴权头。 */
+  onDiagnostic?: (message: string) => void;
   /**
    * 这一次是**追问**（D126）。给了它，两处 prompt 都会转成"只回答这一问"的口径
    * （见 `prompts/index.ts` 的 `FOLLOW_UP_SYSTEM_SECTION` 与 `followUpSection`）。
@@ -286,6 +289,7 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
         ...(deps.temperature !== undefined ? { temperature: deps.temperature } : {}),
       })
       .then((turn) => {
+        deps.onDiagnostic?.(`模型响应：${model}，正文 ${turn.content.length} 字，思考 ${turn.reasoningContent?.length ?? 0} 字，工具 ${turn.toolCalls.length}，finish_reason=${turn.finishReason ?? '未提供'}`);
         if (turn.usage !== undefined) {
           usageTotal = usageTotal === undefined ? turn.usage : addUsage(usageTotal, turn.usage);
           deps.onUsage?.(usageTotal);
@@ -310,7 +314,8 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
      * 它同时决定三处文本：system 的取件规则、输出契约里 `filePath` 的口径、**repair 那一轮**
      * —— 三处必须同口径，否则模型被判失败后拿到的修复提示会把它往反方向推（D67）。
      */
-    const crossFile = (deps.fetchPolicy?.scope ?? 'off') !== 'off';
+    const crossFile = (deps.fetchPolicy?.scope ?? 'off') !== 'off' ||
+      (anchor.sourceType === 'code' && new Set((anchor.segments ?? []).filter(isCodeLocation).map(s => s.filePath)).size > 1);
     const messages: ChatMessage[] = [
       {
         role: 'system',
@@ -377,68 +382,6 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
      */
     function isBlank(candidate: string): boolean {
       return candidate.trim() === '';
-    }
-
-    /** §3.3 闸门 + 规则 5 的一次修复重试 */
-    async function validateOrRepair(
-      model: string,
-      candidate: string,
-      reasoning?: string,
-    ): Promise<ExplanationResult> {
-      const first = validateExplanation(candidate, anchor, outline, {
-        allowedPaths: fetchedPaths(fetched),
-      });
-      if (first.ok) return first.result;
-
-      /**
-       * D134：第一轮就是空的 → **不重试，直接如实报"空输出"**。
-       *
-       * 报错分三种：闸门真正读得出的问题（`$` 之类）现在只在"有东西可读"时出现；
-       * 空输出单独一条码，让用户一眼能分辨"模型没搭理我"与"模型答错了"。
-       */
-      if (isBlank(candidate)) throw new AnchorError('EMPTY_COMPLETION', emptyCompletionMessage(), {
-        model,
-        issues: first.issues,
-      });
-
-      const repaired = await say(model, [
-        ...messages,
-        {
-          role: 'assistant',
-          content: candidate,
-          // D135：这一轮的思维链也得带上 —— 下面这次 `say` 是**同一个对话的延续**，
-          // 少带一轮 DeepSeek 就 400（修复轮本来是为了救场，反而更早地炸掉）。
-          ...(reasoning !== undefined ? { reasoningContent: reasoning } : {}),
-        },
-        {
-          role: 'user',
-          content: buildRepairPrompt(candidate, describeIssues(first.issues), {
-            language: deps.language,
-            crossFile,
-            sourceType: anchor.sourceType === 'pdf' ? 'pdf' : 'code',
-          }),
-        },
-      ]);
-
-      // 修复那一轮如果又要工具，直接按"仍不合规"处理：§3.3 只给一次重试机会，
-      // 而这里要的是一份能渲染的 JSON，不是再来一轮取件。
-      const second = validateExplanation(repaired.content, anchor, outline, {
-        allowedPaths: fetchedPaths(fetched),
-      });
-      if (second.ok) return second.result;
-
-      // D134：修复轮也吐空 —— 同样要说"空"，而不是把它混进"校验没过"
-      if (isBlank(repaired.content)) throw new AnchorError('EMPTY_COMPLETION', emptyCompletionMessage(), {
-        model,
-        issues: second.issues,
-        firstIssues: first.issues,
-      });
-
-      throw new AnchorError(
-        'SCHEMA_VIOLATION',
-        `AI 输出未通过校验（重试一次后仍失败）：${describeIssues(second.issues)}`,
-        { issues: second.issues },
-      );
     }
 
     /** 处理单次 `fetch_context`。**永远返回一段文本**，绝不抛（§3.2 的"拒绝不抛错"；
@@ -580,6 +523,8 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
 
     /** 已经用掉几次"空输出重发"（D135）。见 `MAX_EMPTY_RETRIES` */
     let emptyRetriesUsed = 0;
+    let repairUsed = false;
+    let repairModel: string | undefined;
 
     for (let turn = 1; turn <= turnLimit; turn += 1) {
       const choice = deps.routeModel({
@@ -589,7 +534,8 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
         wantsImage: Boolean(anchor.capturedImage),
       });
 
-      const reply = await say(choice.model, messages);
+      const model = repairModel ?? choice.model;
+      const reply = await say(model, messages);
 
       /**
        * 「既没说话、也没请求工具」——一次**真正的空输出**（D135）。
@@ -606,7 +552,7 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
        *         偶发的一次就够；每次都空说明是配置层的问题（模型名、端点、思考模式），
        *         再试一百次也是同样结果 —— 那时候**报错比重试有用**。
        */
-      if (reply.toolCalls.length === 0 && reply.content.trim() === '' && emptyRetriesUsed < MAX_EMPTY_RETRIES) {
+      if (!repairUsed && reply.toolCalls.length === 0 && reply.content.trim() === '' && emptyRetriesUsed < MAX_EMPTY_RETRIES) {
         emptyRetriesUsed += 1;
         logger.record({
           at: now(),
@@ -619,8 +565,24 @@ export function createOrchestrator(deps: OrchestratorDeps): ExplainProvider {
         continue;
       }
 
-      // 不要工具 ⇒ 这就是候答，交给输出闸门
-      if (reply.toolCalls.length === 0) return await validateOrRepair(choice.model, reply.content, reply.reasoningContent);
+      // @anchor 修复也在同一个有界循环里：工具调用先兑现，只有正文才进校验。
+      if (reply.toolCalls.length === 0) {
+        if (isBlank(reply.content)) throw new AnchorError('EMPTY_COMPLETION', emptyCompletionMessage(repairUsed, reply.finishReason), {
+          model, phase: repairUsed ? 'repair' : 'answer', finishReason: reply.finishReason ?? null,
+        });
+        const verdict = validateExplanation(reply.content, anchor, outline, { allowedPaths: fetchedPaths(fetched) });
+        if (verdict.ok) return verdict.result;
+        deps.onDiagnostic?.(`输出未通过校验（${repairUsed ? '修复轮' : '首轮'}）：${describeIssues(verdict.issues)}；候答：${reply.content.slice(0, 4000)}`);
+        if (repairUsed) throw new AnchorError('SCHEMA_VIOLATION', `AI 输出未通过校验（重试一次后仍失败）：${describeIssues(verdict.issues)}`, { issues: verdict.issues });
+        messages.push({ role: 'assistant', content: reply.content,
+          ...(reply.reasoningContent !== undefined ? { reasoningContent: reply.reasoningContent } : {}) },
+          { role: 'user', content: buildRepairPrompt(reply.content, describeIssues(verdict.issues), {
+            language: deps.language, crossFile, sourceType: anchor.sourceType === 'pdf' ? 'pdf' : 'code',
+          }) });
+        repairUsed = true;
+        repairModel = model;
+        continue;
+      }
 
       // 把这一轮助手消息（含工具调用）记进对话，否则紧随其后的 tool 结果没有归属。
       // `reasoningContent` 必须一起带上（D135）：DeepSeek 在带 `tools` 的请求里要求

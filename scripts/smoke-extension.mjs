@@ -521,6 +521,14 @@ check(
     JSON.stringify({ filePath: FB, lineStart: 2, lineEnd: 2 }),
   ].join('\n');
 
+  // 跨工作区先允许用户取消；取消不能生成或覆盖现有临时文件。
+  warningAnswer = '取消';
+  const beforeCancel = openedHandoffDocs.length;
+  receiveFromPanel?.({ type: 'start:handoff', text: payload });
+  await waitFor(() => messages.some(m => String(m).includes('工作区外')));
+  check(openedHandoffDocs.length === beforeCancel, '跨工作区取消后不生成临时文档');
+  warningAnswer = '继续生成';
+
   // ① 投币（面板那条消息）
   receiveFromPanel?.({ type: 'start:handoff', text: payload });
   await waitFor(() => contentProviders.has('anchor-handoff'));

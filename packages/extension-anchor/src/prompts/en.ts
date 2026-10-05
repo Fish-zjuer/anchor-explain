@@ -61,7 +61,7 @@ export function explainOutputContractEn(crossFile: boolean): string {
     '- `summary` is non-empty; `confidence` is a number between 0 and 1.',
     '- `steps` has at least one entry; every step has a non-empty `text`.',
     crossFile
-      ? '- Every `location.filePath` must be something **you actually had this run**: the anchor file, ' +
+      ? '- Every `location.filePath` must be something **you actually had this run**: the anchor file, any source file in the user-selected anchor segments, ' +
         'or a file you **read** with the fetch tool (quote the path exactly as you requested it, do not rewrite it). ' +
         'A file you never read, appearing in a location, fails the whole explanation.\n' +
         '- **If a step is really about something in another file** (how a macro is defined, what a struct ' +

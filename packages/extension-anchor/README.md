@@ -493,3 +493,9 @@ pnpm smoke:chain      # 单独的链路冒烟
   加动作 = `src/start/startModel.ts` 的 `START_ACTIONS` 加一行 + `package.json` 里声明那条命令；
   漏了声明会有单测红（那条锁会去查**所属扩展**的 `contributes.commands`）。
   面板的 webview **只回传动作 id**，能执行什么由宿主查表决定 —— 别改成"面板指定命令"
+
+### 2026-10-05：临时文档队列修补（D137）
+
+src/external/queueSegments.ts 是源片段快照与跨文件锚点的共用入口。临时文件的队列立即映射回源坐标；
+模型已收到的源文件无需重复取件才可引用。修复轮工具调用可继续；输出日志保留原始响应与校验问题。
+命令 Anchor: 自检模型端点 输出真实响应，但最小请求成功不代表整份队列请求成功。

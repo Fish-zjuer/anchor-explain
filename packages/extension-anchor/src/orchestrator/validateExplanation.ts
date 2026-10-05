@@ -23,6 +23,7 @@ import {
   isPDFLocation,
   isValidBBox,
   joinPath,
+  segmentsOf,
 } from '@anchor/core';
 import type {
   Anchor,
@@ -209,6 +210,7 @@ function checkLocation(
     const filePath = resolveAgainstAnchor(anchorFile, loc.filePath);
     const allowed =
       samePath(filePath, anchorFile) ||
+      (segmentsOf(anchor) ?? []).some(s => isCodeLocation(s) && samePath(s.filePath, filePath)) ||
       allowedPaths.some(
         (p) =>
           // 两种写法都收：模型照抄它取件时写的那个字符串（相对对相对），

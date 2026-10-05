@@ -259,6 +259,10 @@ const FOLLOW_UP_EXPLANATION_JSON = JSON.stringify({
 
 /** 假端点：只看"对话里有没有 tool 结果"来决定回哪一轮，因此无状态、可重入 */
 function cannedCompletion(body) {
+  if (fetchMode === 'handoff-queue') return { content: JSON.stringify({summary:'两个源文件',confidence:0.9,steps:[
+    {location:{filePath:MAIN_C,lineStart:40,lineEnd:42},text:'主文件片段',highlights:[]},
+    {location:{filePath:path.join(FIXTURES,'ring_buffer.h'),lineStart:1,lineEnd:2},text:'用户已提供的头文件',highlights:[]},
+  ]}) };
   const seen = (body.messages ?? []).map((m) => m.role);
   if (fetchMode === 'always-fetch') return toolCallTurn();
   // D126：追问那一轮的 user prompt 里有「这是对第 N 步的追问」—— **必须先认它**。
@@ -381,6 +385,7 @@ const vscodeStub = {
   TextEditorRevealType: { Default: 0, InCenter: 1, InCenterIfOutsideViewport: 2, AtTop: 3 },
   ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2 },
   Uri: { file: (p) => ({ scheme: 'file', fsPath: p }) },
+  EventEmitter: class { event = () => ({dispose(){}}); fire(){} dispose(){} },
 
   window: {
     // D64：讲解进度挂在通知上（状态栏可能被用户关掉）。桩把每次 report 记下来，测例断言它
@@ -2209,6 +2214,66 @@ check(
   'D126：留档被追问**改写**（下次「重放上次讲解」放出来的就是含补充的那一版）',
   `${storedAfterAsk?.result?.steps?.length}`,
 );
+
+// ---- D137：真实命令，从临时文档攒两段源代码，走完整 provider + 两道闸门 ----
+{
+  await registered.get('anchorExplain.stop')?.();
+  await registered.get('anchorExplain.clearSegments')?.();
+  const providers = new Map();
+  vscodeStub.Uri.from = ({scheme,path:uriPath}) => ({scheme,path:uriPath,fsPath:uriPath});
+  vscodeStub.Uri.joinPath = (base,...parts) => ({scheme:base.scheme ?? 'file',fsPath:path.join(base.fsPath,...parts)});
+  vscodeStub.workspace.registerTextDocumentContentProvider = (scheme,provider) => {providers.set(scheme,provider);return {dispose(){}};};
+  const oldOpen = vscodeStub.workspace.openTextDocument;
+  let handoffUri;
+  vscodeStub.workspace.openTextDocument = uri => {
+    if (uri.scheme !== 'anchor-handoff') return oldOpen(uri);
+    handoffUri = uri;
+    return Promise.resolve({uri,getText:()=>providers.get(uri.scheme).provideTextDocumentContent(uri)});
+  };
+  workspaceFoldersValue = [{uri:{fsPath:FIXTURES},name:'fixtures',index:0}];
+  const header = path.join(FIXTURES,'ring_buffer.h');
+  const handoffPayload = [
+    {filePath:MAIN_C,lineStart:40,lineEnd:48},{filePath:header,lineStart:1,lineEnd:5},
+  ].map(r=>JSON.stringify(r)).join('\n');
+  const oldRead = vscodeStub.workspace.fs.readFile;
+  vscodeStub.workspace.fs.readFile = uri => uri.fsPath === '/positions.json'
+    ? Promise.resolve(new TextEncoder().encode(handoffPayload)) : oldRead(uri);
+  vscodeStub.window.showOpenDialog = async () => [{scheme:'file',fsPath:'/positions.json'}];
+  await registered.get('anchorExplain.loadHandoff')?.();
+  for (let i=0; i<20 && !handoffUri; i++) await flush();
+  if (!handoffUri) throw new Error(`临时文档没生成：${JSON.stringify(messages.slice(-3))}`);
+  const uri = handoffUri;
+  const htext = providers.get(uri.scheme)?.provideTextDocumentContent(uri) ?? '';
+  const hlines = htext.split('\n');
+  let pickStart = hlines.indexOf(sourceLines[39]);
+  let pickEnd = hlines.indexOf(sourceLines[47],pickStart);
+  check(pickStart >= 0 && pickEnd >= pickStart, 'D137：临时文件中找到第一段真实代码');
+  const virtualEditor = {document:{uri,getText:()=>htext,lineCount:hlines.length},get selection(){return {start:{line:pickStart,character:0},end:{line:pickEnd,character:0},isEmpty:false};}};
+  vscodeStub.window.activeTextEditor = virtualEditor;
+  await registered.get('anchorExplain.addSegment')?.();
+  const headerLabel = hlines.findIndex(l=>l.startsWith('// ') && l.includes(header));
+  pickStart = headerLabel + 2;
+  pickEnd = pickStart + 1;
+  await registered.get('anchorExplain.addSegment')?.();
+  fetchMode = 'handoff-queue';
+  focusAnswer = '把这两个源文件按一份讲解';
+  fetchCalls.length = 0;
+  const errorsBefore = messages.filter(m=>m[0]==='error').length;
+  await registered.get('anchorExplain.explainSegments')?.();
+  const saved = workspaceStateStore.get('anchorExplain.lastRun');
+  check(saved?.result?.steps?.length === 2 && messages.filter(m=>m[0]==='error').length === errorsBefore,
+    'D137：临时跨文件队列经过两道闸门成功留档，其他源文件不必重复取件');
+  check(saved?.anchor?.segments?.every(s=>s.filePath !== '/handoff') && saved?.anchor?.segments?.some(s=>s.filePath===header),
+    'D137：最终锚点是源文件路径与源行号，不是 handoff 坐标');
+  const sent = fetchCalls[0]?.body?.messages?.[1]?.content ?? '';
+  check(sent.includes(header) && sent.includes('第 40-48 行') && !sent.includes('文件路径：/handoff'),
+    'D137：实际请求带两份源定位与原文');
+  await registered.get('anchorExplain.stop')?.();
+  await registered.get('anchorExplain.clearSegments')?.();
+  vscodeStub.window.activeTextEditor = editor;
+  vscodeStub.workspace.openTextDocument = oldOpen;
+  vscodeStub.workspace.fs.readFile = oldRead;
+}
 
 // ---- 收尾 -----------------------------------------------------------------
 Module._load = originalLoad;

@@ -46,7 +46,12 @@ function pickString(text: string, key: string): string | undefined {
   // "filePath" : "xxx"  /  filePath: "xxx"  /  'filePath': 'xxx'
   const re = new RegExp(`["']?${key}["']?\\s*[:=]\\s*["']([^"']+)["']`, 'u');
   const m = re.exec(text);
-  return m?.[1];
+  const value = m?.[1];
+  // @anchor 真 JSON 的 Windows 路径含双反斜杠，必须解码；宽松输入仍按原文保留。
+  if (value !== undefined && (value.includes('\\\\') || /\\u[0-9a-fA-F]{4}/u.test(value))) {
+    try { return JSON.parse(`"${value}"`) as string; } catch { /* 非标准位置写法继续容错。 */ }
+  }
+  return value;
 }
 
 /** 从一行里抠出 `"key": 数字`。 */

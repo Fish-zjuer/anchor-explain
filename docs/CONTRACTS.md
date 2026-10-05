@@ -1727,3 +1727,15 @@ BlockStreamPanel.show(state, handlers, { fontScale, language }) / setState / rev
 （否则文档指纹会静默变成空串的 sha1）；② 命令不带参数时**不能猜"当前打开的 PDF"** ——
 线2 是 custom editor，宿主拿不到它的路径，只能让用户挑一份（`pickPdfFile`）。
 
+
+### D137 临时文件队列与响应诊断补充（2026-10-05）
+
+external/queueSegments.ts：readSourceSegments(ranges, readText)、snapshotHandoffSelection(doc, start, end, readText)
+返回包含源路径/源行号/源原文的 AnchorSegment[]；sourceSegmentsAnchor(segments, focus?, sourceId?) 合成跨文件 Anchor。
+普通文件队列继续使用 core.mergeSegments 的单文件口径；临时文件队列按选择来源识别，可有多个源文件。
+§3.3 的允许文件集合补正为「锚点主文件 ∪ 用户已提供的各段源文件 ∪ 真取过件的文件」，两道闸门同源。
+
+AssistantTurn 新增 finishReason?: string；OpenAICompatibleOptions 新增
+onResponse?: (response: {model: string; status: number; raw: string}) => void；OrchestratorDeps 新增
+onDiagnostic?: (message: string) => void。思考字段回传规则不变，只有正文能进入讲解校验。
+修复轮工具调用走既有取件闸门和预算，最多一次格式修复，不再将工具轮空正文当 EMPTY_COMPLETION。

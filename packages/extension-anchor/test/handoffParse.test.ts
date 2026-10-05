@@ -172,3 +172,9 @@ test('给外部 Agent 的短 prompt 里有格式、有行号说明，且足够�
 test('大小上限是一个明确的数字', () => {
   assert.equal(MAX_HANDOFF_CHARS, 64 * 1024);
 });
+test('D137：JSON.stringify 输出的 Windows/UNC 路径解码为真实路径', () => {
+  for (const filePath of ['C:\\repo\\src\\main.c', '\\\\server\\share\\main.c']) {
+    const parsed = parseHandoff(JSON.stringify({filePath,lineStart:2,lineEnd:3}));
+    assert.equal(parsed.ranges[0]?.filePath, filePath);
+  }
+});

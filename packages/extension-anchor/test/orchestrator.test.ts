@@ -1174,3 +1174,36 @@ test('D135：修复轮也要带上那一轮的思维链（同一个对话的延�
   const assistant = (repair?.messages ?? []).find((m) => m.role === 'assistant');
   assert.equal(assistant?.reasoningContent, '我先这样组织一下。', '修复轮是同一对话的延续，思维链不能丢');
 });
+
+test('D137：修复轮请求工具后继续产出讲解，不把空 content 误报为没说话', async () => {
+  const h = harness([
+    {content:'B', toolCalls:[], reasoningContent:'先检查用户的额外要求'},
+    toolTurnWithReasoning({request_type:'file',start:1,end:5,reason:'查看定义'}, '需要看定义', 'repair-tool'),
+    {content:validJson(),toolCalls:[]},
+  ]);
+  assert.equal((await h.run()).steps.length, 1);
+  assert.equal(h.fetches.length, 1);
+  const last = h.requests[2]!.messages;
+  assert.ok(last.some(m => m.role === 'tool' && m.toolCallId === 'repair-tool'));
+  assert.ok(last.some(m => m.reasoningContent === '需要看定义'));
+});
+
+test('D137：首轮非空、修复轮空时不宣称连续两次空', async () => {
+  const h = harness([{content:'B',toolCalls:[]},{content:'',toolCalls:[],finishReason:'length'}]);
+  await assert.rejects(h.run(), (err: unknown) => {
+    assert.equal((err as AnchorError).code, 'EMPTY_COMPLETION');
+    assert.match((err as Error).message, /修复输出格式/);
+    assert.match((err as Error).message, /长度上限/);
+    assert.doesNotMatch((err as Error).message, /连续两次/);
+    return true;
+  });
+});
+
+test('D137：用户已提供的第二个源文件不需要重复取件才能引用', async () => {
+  const other = 'C:/repo/other.h';
+  const h = harness([{content:validJson({steps:[{location:{filePath:other,lineStart:200,lineEnd:202},text:'头文件中的定义',highlights:[]}]}),toolCalls:[]}]);
+  const result = await h.run(anchorWith({segments:[{filePath:FILE,lineStart:40,lineEnd:48},{filePath:other,lineStart:200,lineEnd:202}]}));
+  assert.equal(result.steps.length, 1);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.fetches.length, 0);
+});
