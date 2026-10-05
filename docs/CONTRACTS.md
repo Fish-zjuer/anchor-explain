@@ -1757,3 +1757,10 @@ setEntries(entries,note?,hasDamaged?)、setError(message)、reveal/dispose；ui/
 
 存储语义：首次 savedAt 保留，追问覆写同一个 id；JSON 在 globalStorage/archive/，旧 history/ 不受清理影响。
 旧最近完整档导入，重开纯本地，语言和用量随档恢复；模型配置保持不变。
+
+**D137/D138 当前入口行号索引**（2026-10-05）：
+- `src/session/lastRun.ts:25` LastRun；`:50` isRunId；`:144` readLastRun；`:184` toStoredRun。
+- `src/session/archive.ts:6` ArchiveIO；`:14` ArchiveSummary；`:25` HistoryMessage；`:29` parseHistoryMessage；`:45` createArchiveStore。
+- `src/sidebar/HistoryPanel.ts:8` HistoryHandlers；`:16` HistoryPanel；`src/sidebar/ui/historyHtml.ts:2` historyHtml。
+- `src/protocol.ts:155` ui:showHistory；`src/sidebar/SidebarPanel.ts:38` onHistoryPanel；`src/start/startModel.ts:21` StartActionId。
+- `src/orchestrator/providers/types.ts:47` finishReason；`providers/openAICompatible.ts:22` onResponse；`Orchestrator.ts:229` onDiagnostic。
