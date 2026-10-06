@@ -4469,3 +4469,5 @@ v0.1.2 对外列位置交接、步骤追问、完整历史、两处可切换布�
 Git 直连失败，单次命令沿用已有系统代理 127.0.0.1:7890；没有修改用户的代理设置。
 附件：anchor-explain-0.1.2.vsix 3,675,439 字节（SHA-256 3fa88fed9f0d07b0fdddb8ed5fc5a02907a56214a6bb75ca55b5f422dacdaca7）；
 anchor-pdf-0.1.2.vsix 4,843,026 字节（SHA-256 bed70b21626361e421643284afa4198330afa1ab14ae79e776041c72daa0906b）。
+已发布：https://github.com/Fish-zjuer/anchor-explain/releases/tag/v0.1.2（latest，非草稿/非预发布）。
+远端 v0.1.2 指向 59e8419b82a69257d60f37d4c35bf5067579c55c，公告和两附件大小/摘要均与本地一致。

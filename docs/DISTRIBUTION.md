@@ -23,6 +23,14 @@ release/anchor-pdf-0.1.2.vsix       线2：PDF 视图
 版本号在两个扩展各自的 `package.json` 里（现在是 `0.1.2`）。**发新版前先改版本号**，
 `.vsix` 的文件名与 manifest 里的版本都从那里来。改完跑一遍 `pnpm check` 再打包。
 
+v0.1.2 已于 2026-10-06 发布：[发行页](https://github.com/Fish-zjuer/anchor-explain/releases/tag/v0.1.2)。
+代码标签指向 `59e8419b82a69257d60f37d4c35bf5067579c55c`；两附件已核对远端大小及 SHA-256 与本地一致：
+
+| 文件 | 字节数 | SHA-256 |
+|---|---:|---|
+| anchor-explain-0.1.2.vsix | 3,675,439 | 3fa88fed9f0d07b0fdddb8ed5fc5a02907a56214a6bb75ca55b5f422dacdaca7 |
+| anchor-pdf-0.1.2.vsix | 4,843,026 | bed70b21626361e421643284afa4198330afa1ab14ae79e776041c72daa0906b |
+
 ## 2. 打包脚本自带四道校验（`scripts/package-vsix.mjs`）
 
 打包不是"跑完 vsce 就算数"。脚本会把打好的 `.vsix` **读回来**，逐项核四件事，
