@@ -274,7 +274,11 @@ export interface StartStatusItem {
   readonly tone: StartTone;
 }
 
+export type StartLayout = 'adaptive' | 'compact' | 'classic';
+
 export interface StartModel {
+  /** 开始界面布局。只影响渲染，同一批动作、状态与草稿共享。 */
+  readonly layout: StartLayout;
   /** 面板顶部那句「随时按 X 打开这里」用的键；没绑就是 null */
   readonly openChord: string | null;
   /**
@@ -304,6 +308,8 @@ export interface StartModel {
 }
 
 export interface StartModelInput {
+  /** 配置值作为外部输入校验；缺省/无效值均回退到 adaptive。 */
+  readonly layout?: unknown;
   /** 用户实际绑定（`statusBar.chords()` 的同一份） */
   readonly chords: ResolvedChords;
   /**
@@ -472,6 +478,7 @@ export function buildStartModel(input: StartModelInput): StartModel {
   ];
 
   return {
+    layout: input.layout === 'compact' || input.layout === 'classic' ? input.layout : 'adaptive',
     openChord: formatOf(input.chords, 'showStart'),
     fontScale:
       typeof input.fontScale === 'number' && Number.isFinite(input.fontScale) && input.fontScale > 0

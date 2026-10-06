@@ -15,6 +15,8 @@ import { renderStartHtml } from '../src/start/ui/startHtml.ts';
 import { START_CLIENT_SCRIPT } from '../src/start/ui/startClientScript.ts';
 import { runInNewContext } from 'node:vm';
 import { START_STYLES } from '../src/start/ui/startStyles.ts';
+import { buildStartModel } from '../src/start/startModel.ts';
+import { defaultChords } from '../src/sidebar/keybindingResolve.ts';
 import { SIDEBAR_CLIENT_SCRIPT } from '../src/sidebar/ui/clientScript.ts';
 import { SIDEBAR_STYLES } from '../src/sidebar/ui/styles.ts';
 
@@ -125,11 +127,91 @@ test('D137：真正执行 drop 事件后，草稿会同步宿主，重画不会�
   assert.ok(posted.some(m => m.type === 'start:handoffDraft' && m.text === node.value));
 });
 
-test('S15：提示词通过复制按钮的悬停提示查看，仍可经宿主复制', () => {
+test('S15-fix1：按钮有短名称，详细提示词仍通过悬停查看并经宿主复制', () => {
   assert.ok(START_CLIENT_SCRIPT.includes('handoffPrompt'), '悬停提示应使用宿主提供的提示词');
   assert.ok(START_CLIENT_SCRIPT.includes("setAttribute('title', description)"), '图标按钮缺悬停提示');
   assert.ok(START_CLIENT_SCRIPT.includes("setAttribute('aria-label', description)"), '图标按钮缺可访问名称');
+  assert.ok(START_CLIENT_SCRIPT.includes("'button-label'"), '图标旁缺简短名称');
   assert.ok(START_CLIENT_SCRIPT.includes('start:copyPrompt'), '提示词应仍能复制给外部 Agent');
+});
+
+class StartTestNode {
+  className = '';
+  value = '';
+  disabled = false;
+  placeholder = '';
+  parentNode: StartTestNode | null = null;
+  children: StartTestNode[] = [];
+  attributes = new Map<string, string>();
+  private text = '';
+  readonly tag: string;
+  constructor(tag: string) { this.tag = tag; }
+  set textContent(value: string) { this.text = value; this.children = []; }
+  get textContent(): string { return this.text + this.children.map(node => node.textContent).join(''); }
+  appendChild(node: StartTestNode) { node.parentNode = this; this.children.push(node); return node; }
+  setAttribute(name: string, value: string) { this.attributes.set(name, String(value)); }
+  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
+}
+
+test('三种开始布局真实渲染和互切：动作接线相同，草稿保留，不可用动作被拦', () => {
+  const root = new StartTestNode('div');
+  const body = new StartTestNode('body');
+  body.appendChild(root);
+  const flatten = (node: StartTestNode): StartTestNode[] => [node, ...node.children.flatMap(flatten)];
+  const documentHandlers = new Map<string, (event: unknown) => void>();
+  const windowHandlers = new Map<string, (event: unknown) => void>();
+  const posted: Record<string, unknown>[] = [];
+  const document = {
+    body, documentElement: {style: {setProperty() {}}},
+    getElementById: () => root,
+    createElement: (tag: string) => new StartTestNode(tag),
+    createElementNS: (_ns: string, tag: string) => new StartTestNode(tag),
+    querySelector: () => flatten(root).find(node => node.getAttribute('data-handoff') === 'draft'),
+    addEventListener: (name: string, handler: (event: unknown) => void) => documentHandlers.set(name, handler),
+  };
+  runInNewContext(START_CLIENT_SCRIPT, {
+    document, window: {addEventListener: (name: string, handler: (event: unknown) => void) => windowHandlers.set(name, handler)},
+    acquireVsCodeApi: () => ({postMessage: (message: Record<string, unknown>) => posted.push(message)}),
+  });
+  let draft = '{"filePath":"test.c","lineStart":1,"lineEnd":4}';
+  for (const layout of ['adaptive', 'classic', 'compact', 'adaptive']) {
+    const model = buildStartModel({layout, chords: defaultChords(false), providerReady: true, providerSummary: 'configured',
+      peerInstalled: false, captureSummary: null, queueSummary: null, queueCount: 0,
+      hasLastRun: true, session: null, handoffDraft: draft});
+    windowHandlers.get('message')!({data: {type: 'start:model', model}});
+    assert.equal(root.className, 'layout-' + layout);
+    const nodes = flatten(root);
+    const actions = nodes.filter(node => node.getAttribute('data-action'));
+    assert.equal(actions.length, 16);
+    const click = (node: StartTestNode) => documentHandlers.get('click')!({target: node});
+    const disabled = actions.find(node => node.getAttribute('data-action') === 'openPdf')!;
+    const before = posted.length;
+    click(disabled);
+    assert.equal(posted.length, before, layout + ' 不可用动作应被拦住');
+    const capture = actions.find(node => node.getAttribute('data-action') === 'capture')!;
+    click(capture.children[0]?.children[0] ?? capture);
+    assert.equal(posted.at(-1)?.id, 'capture');
+    const copy = nodes.find(node => node.getAttribute('data-copy-prompt'))!;
+    click(copy);
+    assert.equal(posted.at(-1)?.type, 'start:copyPrompt');
+    const area = document.querySelector()!;
+    assert.equal(area.value, draft, '切换布局不应丢位置草稿');
+    draft += '\n';
+    area.value = draft;
+    documentHandlers.get('input')!({target: area});
+    assert.equal(posted.at(-1)?.type, 'start:handoffDraft');
+    assert.equal(posted.at(-1)?.text, draft);
+    click(actions.find(node => node.getAttribute('data-action') === 'loadHandoff')!);
+    assert.equal(posted.at(-1)?.type, 'start:handoff');
+    assert.equal(posted.at(-1)?.text, draft);
+    if (layout === 'classic') {
+      assert.ok(root.textContent.includes(model.handoffPrompt!));
+      assert.equal(nodes.filter(node => node.tag === 'h2').length, 6);
+    } else {
+      assert.ok(copy.getAttribute('title')?.includes(model.handoffPrompt!));
+      assert.equal(nodes.filter(node => node.tag === 'h2').length, 0);
+    }
+  }
 });
 
 test('D132：提示词旁边有一颗「复制」按钮，走宿主写剪贴板（不是 navigator.clipboard）', () => {

@@ -40,6 +40,16 @@ function actionOf(model: ReturnType<typeof buildStartModel>, id: string) {
   throw new Error(`面板里没有动作 ${id}`);
 }
 
+test('开始布局：三种布局保留，缺省和无效配置回退 adaptive', () => {
+  assert.equal(buildStartModel(input()).layout, 'adaptive');
+  for (const layout of ['adaptive', 'compact', 'classic']) {
+    const model = buildStartModel(input({layout}));
+    assert.equal(model.layout, layout);
+    assert.deepEqual(model.sections, buildStartModel(input()).sections);
+  }
+  for (const layout of ['invalid', null, 1, {}]) assert.equal(buildStartModel(input({layout})).layout, 'adaptive');
+});
+
 test('耦合锁：每个动作指向的命令都真的被声明过（线2 的要去线2 那份声明里找）', () => {
   // 漏了声明的后果是"点了没反应"：`executeCommand` 抛"命令未找到"，
   // 而用户看到的是一个来自 VS Code 的报错框，找不到是哪个按钮干的。

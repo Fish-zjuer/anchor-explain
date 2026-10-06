@@ -27,7 +27,14 @@ export const START_CLIENT_SCRIPT = `
     return node;
   }
 
-  // @anchor: S15 图标只负责辨认动作；名称、键位、说明由原模型提供给悬停提示和读屏。
+  // @anchor: S15-fix1 图标配短名称；完整名称、键位、说明仍来自模型的悬停提示和读屏。
+  var actionLabels = {
+    capture: '讲解选区', configure: '模型端点', setApiKey: 'API Key', showState: '自检', openSettings: '设置',
+    addSegment: '加一段', explainSegments: '讲队列', clearSegments: '清空队列',
+    openPdf: '打开 PDF', selectRegion: '框选区域',
+    replayLast: '重放', showHistory: '历史', reExplain: '重新讲解', goto: '跳到某步',
+    loadHandoff: '生成', reopenHandoff: '重开', copy: '复制',
+  };
   var iconPaths = {
     capture: 'M7 7L2 12l5 5M17 7l5 5-5 5M14 4l-4 16',
     addSegment: 'M4 4h12v16H4zM7 8h6M7 12h4M19 8v8M16 12h6',
@@ -66,6 +73,7 @@ export const START_CLIENT_SCRIPT = `
     button.setAttribute('title', description);
     button.setAttribute('aria-label', description);
     button.appendChild(icon(name));
+    button.appendChild(el('span', 'button-label', actionLabels[name] || ''));
     return button;
   }
 
@@ -91,18 +99,23 @@ export const START_CLIENT_SCRIPT = `
    *   3. 拖拽要在**这里**拦：dragover 必须 preventDefault，否则浏览器不认这次 drop
    *      （这是 HTML5 拖放的规矩，不是我们的选择）
    */
-  function renderHandoffBox(model, section) {
-    var box = renderSection(section, 'handoff');
+  function handoffInput(model, classic) {
     var area = el('textarea', 'handoff-input');
     area.setAttribute('data-handoff', 'draft');
-    area.setAttribute('rows', '3');
+    area.setAttribute('rows', classic ? '4' : '3');
     area.setAttribute('spellcheck', 'false');
     var inputHint = '粘贴外部 Agent 给的位置，或将位置清单文件拖进来。\\n每行一段：{"filePath":"src/main.c","lineStart":120,"lineEnd":168}';
     area.setAttribute('title', inputHint);
     area.setAttribute('aria-label', inputHint);
     // 回填草稿（**放在 value 而不是 textContent** —— textarea 的初值走 value）
     area.value = typeof model.handoffDraft === 'string' ? model.handoffDraft : '';
-    box.appendChild(area);
+    if (classic) area.placeholder = '{"filePath":"src/main.c","lineStart":120,"lineEnd":168}';
+    return area;
+  }
+
+  function renderHandoffBox(model, section) {
+    var box = renderSection(section, 'handoff');
+    box.appendChild(handoffInput(model, false));
 
     var tools = el('div', 'handoff-tools');
     for (var i = 0; i < section.actions.length; i += 1) tools.appendChild(renderAction(section.actions[i]));
@@ -120,8 +133,80 @@ export const START_CLIENT_SCRIPT = `
     return box;
   }
 
+  // @anchor: 经典卡片复用同一份动作/状态和消息委托，布局切换不派发业务命令。
+  function classicRun(action, label) {
+    var button = el('button', 'classic-run', label || (action.enabled ? '执行' : '不可用'));
+    button.setAttribute('type', 'button');
+    button.setAttribute('data-action', action.id);
+    button.disabled = !action.enabled;
+    return button;
+  }
+
+  function classicAction(action) {
+    var box = el('div', 'classic-action' + (action.enabled ? '' : ' off'));
+    var head = el('div', 'row-head');
+    head.appendChild(el('span', 'title', action.title));
+    if (action.chord) head.appendChild(el('span', 'chord', action.chord));
+    box.appendChild(head);
+    box.appendChild(el('div', 'note', action.note));
+    box.appendChild(classicRun(action));
+    return box;
+  }
+
+  function classicHandoff(model, action) {
+    var box = el('div', 'classic-handoff');
+    box.appendChild(el('div', 'handoff-label', '把外部 Agent 给的位置粘在这里（也可以把那个文件拖进来）'));
+    box.appendChild(handoffInput(model, true));
+    box.appendChild(el('div', 'handoff-hint', '外部 Agent 那边可以照着这句要求它输出：'));
+    box.appendChild(el('code', 'handoff-prompt', model.handoffPrompt));
+    var copy = el('button', 'classic-copy', '复制这句');
+    copy.setAttribute('type', 'button');
+    copy.setAttribute('data-copy-prompt', '1');
+    box.appendChild(copy);
+    var row = el('div', 'handoff-row');
+    row.appendChild(classicRun(action, '生成临时文件'));
+    box.appendChild(row);
+    return box;
+  }
+
+  function classicSection(title) {
+    var box = el('section', 'classic-section');
+    box.appendChild(el('h2', null, title));
+    return box;
+  }
+
+  function renderClassic(model) {
+    var head = el('div', 'head');
+    head.appendChild(el('div', 'brand', 'Anchor'));
+    head.appendChild(el('div', 'sub', model.openChord
+      ? '讲解选中的代码或框选一块 PDF，随时按 ' + model.openChord + ' 回到这里'
+      : '讲解选中的代码或框选一块 PDF；命令面板里搜「Anchor」也能回到这里'));
+    root.appendChild(head);
+    for (var i = 0; i < model.sections.length; i += 1) {
+      var section = model.sections[i];
+      var box = classicSection(section.title);
+      for (var j = 0; j < section.actions.length; j += 1) {
+        var action = section.actions[j];
+        box.appendChild(action.id === 'loadHandoff' ? classicHandoff(model, action) : classicAction(action));
+      }
+      root.appendChild(box);
+    }
+    var status = classicSection('现在');
+    for (var k = 0; k < model.status.length; k += 1) {
+      var item = model.status[k];
+      var line = el('div', 'status-line ' + item.tone);
+      line.appendChild(el('span', 'label', item.label));
+      line.appendChild(el('span', 'value', item.value));
+      status.appendChild(line);
+    }
+    root.appendChild(status);
+  }
+
   function render(model) {
     root.textContent = '';
+    var layout = model.layout === 'classic' || model.layout === 'compact' ? model.layout : 'adaptive';
+    root.className = 'layout-' + layout;
+    document.body.setAttribute('data-start-layout', layout);
 
     // 字号缩放（D89）：与讲解面板同一个系数、同一条 CSS 变量。每次收到模型都应用 ——
     // 系数变化靠宿主推新模型，不需要单独的消息类型。
@@ -134,22 +219,36 @@ export const START_CLIENT_SCRIPT = `
     }
 
     root.setAttribute('aria-label', model.openChord ? 'Anchor 开始界面（' + model.openChord + '）' : 'Anchor 开始界面');
+    if (layout === 'classic') {
+      renderClassic(model);
+      return;
+    }
 
+    var paired = null;
     for (var i = 0; i < model.sections.length; i += 1) {
       var section = model.sections[i];
       if (section.id === 'handoff') {
         root.appendChild(renderHandoffBox(model, section));
         continue;
       }
-      var box = renderSection(section, section.id === 'start' || section.id === 'session' ? 'wide' : '');
+      var box = renderSection(section, section.id);
       for (var j = 0; j < section.actions.length; j += 1) {
         box.appendChild(renderAction(section.actions[j]));
       }
-      root.appendChild(box);
+      if (layout === 'adaptive' && (section.id === 'segments' || section.id === 'line2')) {
+        if (!paired) {
+          paired = el('div', 'paired-sections');
+          root.appendChild(paired);
+        }
+        paired.appendChild(box);
+      } else {
+        root.appendChild(box);
+      }
     }
 
     var status = renderSection({ title: '现在' }, 'status wide');
     var statusIcons = ['configure', 'openPdf', 'capture', 'addSegment', 'reopenHandoff', 'showState'];
+    var statusLabels = ['模型', 'PDF', '捕获', '队列', '临时文件', '讲解'];
     for (var k = 0; k < model.status.length; k += 1) {
       var item = model.status[k];
       var indicator = el('span', 'status-icon ' + item.tone);
@@ -158,6 +257,7 @@ export const START_CLIENT_SCRIPT = `
       indicator.setAttribute('title', item.label + '：' + item.value);
       indicator.setAttribute('aria-label', item.label + '：' + item.value);
       indicator.appendChild(icon(statusIcons[k]));
+      indicator.appendChild(el('span', 'status-label', statusLabels[k] || item.label));
       status.appendChild(indicator);
     }
     root.appendChild(status);

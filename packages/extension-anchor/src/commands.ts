@@ -1606,6 +1606,7 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     const lastLine = lastCapture ? captureSummary(lastCapture.anchor, lastCapture.scope) : null;
 
     return buildStartModel({
+      layout: vscode.workspace.getConfiguration('anchorExplain').get<unknown>('startLayout'),
       chords: status.chords(),
       // D89：开始面板跟随讲解面板的字号系数（模型每拍都会重推，系数变化自然跟过去）
       fontScale: fontScaleOf(),

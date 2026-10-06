@@ -438,6 +438,17 @@
           ],
           "markdownDescription": "讲解语言（D97）。影响**讲解内容链**：prompt 与示范、侧边栏讲解面板的文案、导出的 Markdown。扩展的命令与通知仍跟随 VS Code 界面语言。可用命令 `Anchor: 切换讲解语言` 一键切换，下一次讲解生效。"
         },
+        "anchorExplain.startLayout": {
+          "type": "string",
+          "enum": ["adaptive", "compact", "classic"],
+          "default": "adaptive",
+          "enumDescriptions": [
+            "自适应（默认）：图标＋短名称，按窗口高度分配空间，状态区位于底部。",
+            "紧凑：保留上一版纯图标网格；文字仅悬停显示。",
+            "经典：保留最初的单列文字卡片，显示完整名称、说明、快捷键与状态。"
+          ],
+          "markdownDescription": "开始界面的布局。**立即生效**；三种布局共用按钮功能、位置草稿和当前状态。"
+        },
         "anchorExplain.sidebarStyle": {
           "type": "string",
           "enum": [

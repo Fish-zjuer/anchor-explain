@@ -58,6 +58,7 @@ const progressReports = [];
 const progressOptions = [];
 let activeTextEditor;
 let peerInstalled = false;
+const configurationListeners = new Set();
 
 /** ── D130：临时只读文档那一条链要用的几样 ────────────────────────────────── */
 /** 桩里"磁盘上有"的文件（路径 → 内容）。`workspace.fs.readFile` 按它分流。 */
@@ -279,8 +280,9 @@ const vscodeStub = {
       return { dispose() {} };
     },
     // S8：开始面板显示"模型"那一行，改设置要让它立刻变
-    onDidChangeConfiguration() {
-      return { dispose() {} };
+    onDidChangeConfiguration(handler) {
+      configurationListeners.add(handler);
+      return { dispose() { configurationListeners.delete(handler); } };
     },
     // ── D130：临时只读文档 ────────────────────────────────────────────────
     /**
@@ -490,6 +492,15 @@ receiveFromPanel?.({ type: 'start:ready' });
 await waitFor(() => posted.length > 0);
 const startModel = posted.at(-1)?.model;
 check(posted.at(-1)?.type === 'start:model' && startModel !== undefined, '握手后宿主推了一份开始面板模型');
+check(startModel?.layout === 'adaptive', '开始布局默认 adaptive');
+for (const layout of ['compact', 'classic', 'adaptive']) {
+  const before = posted.length;
+  SETTINGS.startLayout = layout;
+  for (const listener of configurationListeners) listener({affectsConfiguration: (key) => key === 'anchorExplain'});
+  await waitFor(() => posted.length > before);
+  check(posted.at(-1)?.model?.layout === layout, '改开始布局配置立刻推新模型：' + layout);
+}
+delete SETTINGS.startLayout;
 check(
   startModel?.status?.length === 6,
   '模型里有六条状态（模型 / 线2 / 上次捕获 / 多段队列 / 临时文件 / 讲解）',
