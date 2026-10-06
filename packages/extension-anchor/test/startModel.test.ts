@@ -303,9 +303,11 @@ test('D81 队列那一组的标题带上数量（反馈要落在刚点的那颗�
   // 队列那一行状态在面板最下面（要滚动），临时状态栏消息 3 秒就没了。
   // 所以数量挂到**分组标题**上 —— 抬头就看得见，滚都不用滚。
   const empty = buildStartModel(input({ queueSummary: null, queueCount: 0 }));
+  assert.equal(empty.queueCount, 0);
   assert.equal(empty.sections.find((s) => s.id === 'segments')?.title, '多段选择（队列）');
 
   const loaded = buildStartModel(input({ queueSummary: '2 段（main.c 第 21-25 + 40-48 行）', queueCount: 2 }));
+  assert.equal(loaded.queueCount, 2);
   assert.equal(loaded.sections.find((s) => s.id === 'segments')?.title, '多段选择（队列） · 已有 2 段');
 
   // 别的组的标题不受影响（数量只属于队列那一组）

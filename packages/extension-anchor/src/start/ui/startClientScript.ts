@@ -77,12 +77,19 @@ export const START_CLIENT_SCRIPT = `
     return button;
   }
 
-  function renderAction(action) {
+  function renderAction(action, queueCount) {
     var description = action.title;
     if (action.chord) description += '\\n快捷键：' + action.chord;
     if (action.note) description += '\\n' + action.note;
     if (!action.enabled) description += '\\n当前不可用';
+    var count = typeof queueCount === 'number' ? queueCount : 0;
+    if (action.id === 'addSegment') description += '\\n队列：' + count + ' 段';
     var button = iconButton(action.id, description, 'action' + (action.enabled ? '' : ' off'));
+    if (action.id === 'addSegment') {
+      var badge = el('span', 'queue-count', String(count));
+      badge.setAttribute('aria-hidden', 'true');
+      button.appendChild(badge);
+    }
     // 用 aria-disabled 保留键盘焦点：不可用原因也能被读屏获知；点击委托守卫阻止执行。
     button.setAttribute('aria-disabled', String(!action.enabled));
     button.setAttribute('data-action', action.id);
@@ -233,7 +240,7 @@ export const START_CLIENT_SCRIPT = `
       }
       var box = renderSection(section, section.id);
       for (var j = 0; j < section.actions.length; j += 1) {
-        box.appendChild(renderAction(section.actions[j]));
+        box.appendChild(renderAction(section.actions[j], model.queueCount));
       }
       if (layout === 'adaptive' && (section.id === 'segments' || section.id === 'line2')) {
         if (!paired) {

@@ -174,15 +174,25 @@ test('三种开始布局真实渲染和互切：动作接线相同，草稿保�
     acquireVsCodeApi: () => ({postMessage: (message: Record<string, unknown>) => posted.push(message)}),
   });
   let draft = '{"filePath":"test.c","lineStart":1,"lineEnd":4}';
-  for (const layout of ['adaptive', 'classic', 'compact', 'adaptive']) {
+  const cases = ['adaptive', 'classic', 'compact', 'adaptive'].flatMap(layout =>
+    [0, 2, 1, 0].map(queueCount => ({layout, queueCount})));
+  for (const {layout, queueCount} of cases) {
     const model = buildStartModel({layout, chords: defaultChords(false), providerReady: true, providerSummary: 'configured',
-      peerInstalled: false, captureSummary: null, queueSummary: null, queueCount: 0,
+      peerInstalled: false, captureSummary: null, queueSummary: queueCount ? queueCount + ' 段' : null, queueCount,
       hasLastRun: true, session: null, handoffDraft: draft});
     windowHandlers.get('message')!({data: {type: 'start:model', model}});
     assert.equal(root.className, 'layout-' + layout);
     const nodes = flatten(root);
     const actions = nodes.filter(node => node.getAttribute('data-action'));
     assert.equal(actions.length, 16);
+    if (layout !== 'classic') {
+      const badge = nodes.find(node => node.className === 'queue-count');
+      assert.equal(badge?.textContent, String(queueCount), '加入/移除/清空后角标应显示最新段数');
+      const add = actions.find(node => node.getAttribute('data-action') === 'addSegment')!;
+      assert.ok(add.getAttribute('title')?.includes('队列：' + queueCount + ' 段'));
+    } else if (queueCount > 0) {
+      assert.ok(nodes.some(node => node.tag === 'h2' && node.textContent.includes('已有 ' + queueCount + ' 段')));
+    }
     const click = (node: StartTestNode) => documentHandlers.get('click')!({target: node});
     const disabled = actions.find(node => node.getAttribute('data-action') === 'openPdf')!;
     const before = posted.length;

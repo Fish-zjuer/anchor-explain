@@ -279,6 +279,8 @@ export type StartLayout = 'adaptive' | 'compact' | 'classic';
 export interface StartModel {
   /** 开始界面布局。只影响渲染，同一批动作、状态与草稿共享。 */
   readonly layout: StartLayout;
+  /** 队列当前段数；图标布局的常驻角标使用此字段。 */
+  readonly queueCount: number;
   /** 面板顶部那句「随时按 X 打开这里」用的键；没绑就是 null */
   readonly openChord: string | null;
   /**
@@ -478,6 +480,7 @@ export function buildStartModel(input: StartModelInput): StartModel {
   ];
 
   return {
+    queueCount: input.queueCount,
     layout: input.layout === 'compact' || input.layout === 'classic' ? input.layout : 'adaptive',
     openChord: formatOf(input.chords, 'showStart'),
     fontScale:

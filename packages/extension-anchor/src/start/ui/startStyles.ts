@@ -60,6 +60,21 @@ body {
   cursor: pointer;
 }
 .button-label { font-size: 0.9em; line-height: 1.3; text-align: center; overflow-wrap: anywhere; }
+.action[data-action="addSegment"] { position: relative; }
+.queue-count {
+  position: absolute;
+  top: 0.15em;
+  right: 0.2em;
+  min-width: 1.4em;
+  padding: 0.05em 0.3em;
+  border-radius: 0.7em;
+  font-size: 0.8em;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+  background: var(--vscode-badge-background, var(--vscode-editorWidget-background));
+  pointer-events: none;
+}
 .icon-button:hover {
   background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
   border-color: var(--vscode-toolbar-hoverOutline, transparent);

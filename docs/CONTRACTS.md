@@ -959,10 +959,15 @@ S1 落地的行为（`sidebar/statusBar.ts`）：
 
 **S15-fix1 布局选项（D140）**：`StartLayout = 'adaptive' | 'compact' | 'classic'`
 （`packages/extension-anchor/src/start/startModel.ts:277`）；`StartModel.layout: StartLayout`（:281），
-`StartModelInput.layout?: unknown`（:312），`buildStartModel`（:404）校验配置，缺省/非法值回退 adaptive。
+`StartModelInput.layout?: unknown`（:314），`buildStartModel`（:406）校验配置，缺省/非法值回退 adaptive。
 `anchorExplain.startLayout`（`packages/extension-anchor/package.json:441`）默认 adaptive；
 `commands.ts:1609` 在每次快照读取，既有配置订阅立即刷新。三种布局共用动作、状态和 handoffDraft，
 切换不执行任何业务动作，不改消息名/形状。classic 恢复完整文字卡片，compact 保留纯图标，adaptive 使用短名与高度分配。
+
+**S15-fix3 队列计数（D142）**：`StartModel.queueCount: number`
+（`packages/extension-anchor/src/start/startModel.ts:283`）原样传递宿主队列长度，来自既有 `StartModelInput.queueCount`（:341）。
+adaptive / compact 在 addSegment 按钮显示常驻数字角标，title/aria-label 给「队列：N 段」；
+classic 保留原分组标题计数。角标绝对定位，队列变化通过既有快照刷新，不新增消息。
 
 **四条不许改回去的约定**：
 1. **`start:run` 只带 id**。webview 是不可信输入；若它能指定"执行哪个命令"，它就能执行任意命令。
@@ -1277,7 +1282,7 @@ function createContextRequestLogger(opts?: {
 | `packages/extension-anchor/src/session/lastFocus.ts` | **D121 新增**。上一次那句额外提示词的存与读（`workspaceState`，**按工作区隔离**、不进 settings）。用户在输入框里会看到它被**预填**，直接回车就是用它的原话 | `LAST_FOCUS_KEY`:21 `coerceStoredFocus`:24 `readLastFocus`:29 |
 | `packages/extension-anchor/src/orchestrator/providers/types.ts` | **S3 落地，D120 加 `TokenUsage` / `addUsage`**。LLM 调用面的最小抽象；`AssistantTurn.usage` 是**可选**的 —— 端点给什么就记什么，不给就 `undefined`（不猜、不补 0） | `AssistantTurn`:27 `TokenUsage`:48 `addUsage`:60 |
 | `packages/extension-anchor/src/describe.ts` | **S8 新增**。「说给用户听的一句话」的唯一格式化处：`Anchor: 显示状态` 与开始面板共用，两处不许各写一份 | `captureSummary`:22 |
-| `packages/extension-anchor/src/start/startModel.ts` | **S8 新增**。开始面板的内容模型：动作表（**每个动作只指向一条已声明的命令**）+ 状态→面板的纯映射。零 vscode 依赖；D140 追加三种布局配置校验 | `StartActionSpec`:44 `START_ACTIONS`:77 `findStartAction`:249 `StartLayout`:277 `StartModel`:279 `StartModelInput`:310 `buildStartModel`:404 |
+| `packages/extension-anchor/src/start/startModel.ts` | **S8 新增**。开始面板的内容模型：动作表（**每个动作只指向一条已声明的命令**）+ 状态→面板的纯映射。零 vscode 依赖；D140 追加三种布局配置校验，D142 追加计数输出 | `StartActionSpec`:44 `START_ACTIONS`:77 `findStartAction`:249 `StartLayout`:277 `StartModel`:279 `StartModelInput`:312 `buildStartModel`:406 |
 | `packages/extension-anchor/src/start/StartViewProvider.ts` | **S8 新增**。活动栏里「开始」视图的宿主侧：握手 / 推模型 / 收 `start:run` / 转给命令层。**视图没被打开过就是空操作** | `StartViewHandlers`:23 `StartViewProvider`:30 |
 | `packages/extension-anchor/src/start/ui/start{Styles,ClientScript,Html}.ts` | **S8 新增**。开始面板的 webview 资源，同样全部内联；客户端脚本**只渲染与派发** | `START_STYLES`:10 `START_CLIENT_SCRIPT`:18 `renderStartHtml`:15 |
 | `packages/extension-anchor/assets/anchor.svg` | **S8 新增**。活动栏那个固定按钮的图标（24×24）。路径写错时 VS Code 只是不显示，所以 `smoke` 会去查文件在不在 | — |
