@@ -27,22 +27,58 @@ export const START_CLIENT_SCRIPT = `
     return node;
   }
 
+  // @anchor: S15 图标只负责辨认动作；名称、键位、说明由原模型提供给悬停提示和读屏。
+  var iconPaths = {
+    capture: 'M7 7L2 12l5 5M17 7l5 5-5 5M14 4l-4 16',
+    addSegment: 'M4 4h12v16H4zM7 8h6M7 12h4M19 8v8M16 12h6',
+    explainSegments: 'M3 4h11M3 8h11M3 12h7M3 16h7M15 11l7 5-7 5z',
+    clearSegments: 'M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7',
+    configure: 'M7 3v5M17 3v5M5 8h14v3a7 7 0 01-14 0zM12 18v4',
+    openSettings: 'M10 2h4l1 4 4-1 2 4-3 3 3 3-2 4-4-1-1 4h-4l-1-4-4 1-2-4 3-3-3-3 2-4 4 1zM15 12a3 3 0 11-6 0 3 3 0 016 0',
+    setApiKey: 'M14 8a5 5 0 11-10 0 5 5 0 0110 0zM12 12l9 9M17 17l3-3M19 19l3-3',
+    showState: 'M3 3h18v18H3zM5 13h4l2-5 3 9 2-4h3',
+    openPdf: 'M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8M8 19h5',
+    selectRegion: 'M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5M8 8h8v8H8z',
+    replayLast: 'M8 5l-6 6 6 6M3 11h11a6 6 0 010 12M13 5l8 5-8 5z',
+    showHistory: 'M3 3v5h5M3 8a9 9 0 119 13M12 7v5l4 2',
+    reExplain: 'M3 9a9 9 0 0116-5l2 3M21 2v5h-5M21 15a9 9 0 01-16 5l-2-3M3 22v-5h5',
+    loadHandoff: 'M5 2h9l5 5v5M14 2v6h5M5 2v20h7M13 17h9M18 13l4 4-4 4',
+    reopenHandoff: 'M5 2h9l5 5v5M14 2v6h5M5 2v20h7M22 17h-9M17 13l-4 4 4 4',
+    goto: 'M3 12h15M12 6l6 6-6 6M21 3v18',
+    copy: 'M9 9h12v12H9zM15 9V3H3v12h6',
+    info: 'M12 3a9 9 0 110 18 9 9 0 010-18M12 11v6M12 7v1',
+  };
+
+  function icon(name) {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', iconPaths[name] || iconPaths.info);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function iconButton(name, description, className) {
+    var button = el('button', 'icon-button' + (className ? ' ' + className : ''));
+    button.setAttribute('type', 'button');
+    button.setAttribute('title', description);
+    button.setAttribute('aria-label', description);
+    button.appendChild(icon(name));
+    return button;
+  }
+
   function renderAction(action) {
-    var box = el('div', 'action' + (action.enabled ? '' : ' off'));
-
-    var head = el('div', 'row-head');
-    head.appendChild(el('span', 'title', action.title));
-    if (action.chord) head.appendChild(el('span', 'chord', action.chord));
-    box.appendChild(head);
-
-    box.appendChild(el('div', 'note', action.note));
-
-    var button = el('button', 'run', action.enabled ? '执行' : '不可用');
-    button.disabled = !action.enabled;
+    var description = action.title;
+    if (action.chord) description += '\\n快捷键：' + action.chord;
+    if (action.note) description += '\\n' + action.note;
+    if (!action.enabled) description += '\\n当前不可用';
+    var button = iconButton(action.id, description, 'action' + (action.enabled ? '' : ' off'));
+    // 用 aria-disabled 保留键盘焦点：不可用原因也能被读屏获知；点击委托守卫阻止执行。
+    button.setAttribute('aria-disabled', String(!action.enabled));
     button.setAttribute('data-action', action.id);
-    box.appendChild(button);
-
-    return box;
+    return button;
   }
 
   /**
@@ -55,46 +91,32 @@ export const START_CLIENT_SCRIPT = `
    *   3. 拖拽要在**这里**拦：dragover 必须 preventDefault，否则浏览器不认这次 drop
    *      （这是 HTML5 拖放的规矩，不是我们的选择）
    */
-  function renderHandoffBox(model, action) {
-    var box = el('div', 'handoff');
-
-    var label = el('div', 'handoff-label', '把外部 Agent 给的位置粘在这里（也可以把那个文件拖进来）');
-    box.appendChild(label);
-
+  function renderHandoffBox(model, section) {
+    var box = renderSection(section, 'handoff');
     var area = el('textarea', 'handoff-input');
     area.setAttribute('data-handoff', 'draft');
-    area.setAttribute('rows', '4');
+    area.setAttribute('rows', '3');
     area.setAttribute('spellcheck', 'false');
-    area.placeholder =
-      '{"filePath": "src/main.c", "lineStart": 120, "lineEnd": 168}\\n{"filePath": "include/util.h", "lineStart": 3, "lineEnd": 40}';
+    var inputHint = '粘贴外部 Agent 给的位置，或将位置清单文件拖进来。\\n每行一段：{"filePath":"src/main.c","lineStart":120,"lineEnd":168}';
+    area.setAttribute('title', inputHint);
+    area.setAttribute('aria-label', inputHint);
     // 回填草稿（**放在 value 而不是 textContent** —— textarea 的初值走 value）
     area.value = typeof model.handoffDraft === 'string' ? model.handoffDraft : '';
     box.appendChild(area);
 
-    var hint = el('div', 'handoff-hint', '外部 Agent 那边可以照着这句要求它输出：');
-    box.appendChild(hint);
-    var code = el('code', 'handoff-prompt', model.handoffPrompt);
-    box.appendChild(code);
-
+    var tools = el('div', 'handoff-tools');
+    for (var i = 0; i < section.actions.length; i += 1) tools.appendChild(renderAction(section.actions[i]));
     // D132：复制提示词。走宿主写剪贴板（理由见 protocol.ts 里 start:copyPrompt 那段）。
-    var copy = el('button', 'handoff-copy', '复制这句');
+    var copy = iconButton('copy', '复制给外部 Agent 的提示词\\n' + (model.handoffPrompt || ''), 'handoff-copy');
     copy.setAttribute('data-copy-prompt', '1');
-    copy.setAttribute('type', 'button');
-    box.appendChild(copy);
-
-    var row = el('div', 'handoff-row');
-    var run = el('button', 'run', '生成临时文件');
-    run.setAttribute('data-action', action.id);
-    run.disabled = !action.enabled;
-    row.appendChild(run);
-    box.appendChild(row);
-
+    tools.appendChild(copy);
+    box.appendChild(tools);
     return box;
   }
 
   function renderSection(section, extraClass) {
     var box = el('section', 'section' + (extraClass ? ' ' + extraClass : ''));
-    box.appendChild(el('h2', null, section.title));
+    box.setAttribute('aria-label', section.title);
     return box;
   }
 
@@ -111,42 +133,32 @@ export const START_CLIENT_SCRIPT = `
       }
     }
 
-    var head = el('div', 'head');
-    head.appendChild(el('div', 'brand', 'Anchor'));
-    head.appendChild(
-      el(
-        'div',
-        'sub',
-        model.openChord
-          ? '讲解选中的代码或框选一块 PDF，随时按 ' + model.openChord + ' 回到这里'
-          : '讲解选中的代码或框选一块 PDF；命令面板里搜「Anchor」也能回到这里',
-      ),
-    );
-    root.appendChild(head);
+    root.setAttribute('aria-label', model.openChord ? 'Anchor 开始界面（' + model.openChord + '）' : 'Anchor 开始界面');
 
     for (var i = 0; i < model.sections.length; i += 1) {
       var section = model.sections[i];
-      var box = renderSection(section);
+      if (section.id === 'handoff') {
+        root.appendChild(renderHandoffBox(model, section));
+        continue;
+      }
+      var box = renderSection(section, section.id === 'start' || section.id === 'session' ? 'wide' : '');
       for (var j = 0; j < section.actions.length; j += 1) {
-        var action = section.actions[j];
-        // D130：位置交接那一组里，「生成临时文件」那颗按钮**不长成普通按钮** ——
-        // 它跟一个输入框是一体的（投币机）。其余动作照旧。
-        if (action.id === 'loadHandoff') {
-          box.appendChild(renderHandoffBox(model, action));
-        } else {
-          box.appendChild(renderAction(action));
-        }
+        box.appendChild(renderAction(section.actions[j]));
       }
       root.appendChild(box);
     }
 
-    var status = renderSection({ title: '现在' }, 'status');
+    var status = renderSection({ title: '现在' }, 'status wide');
+    var statusIcons = ['configure', 'openPdf', 'capture', 'addSegment', 'reopenHandoff', 'showState'];
     for (var k = 0; k < model.status.length; k += 1) {
       var item = model.status[k];
-      var line = el('div', 'status-line ' + item.tone);
-      line.appendChild(el('span', 'label', item.label));
-      line.appendChild(el('span', 'value', item.value));
-      status.appendChild(line);
+      var indicator = el('span', 'status-icon ' + item.tone);
+      indicator.setAttribute('tabindex', '0');
+      indicator.setAttribute('role', 'img');
+      indicator.setAttribute('title', item.label + '：' + item.value);
+      indicator.setAttribute('aria-label', item.label + '：' + item.value);
+      indicator.appendChild(icon(statusIcons[k]));
+      status.appendChild(indicator);
     }
     root.appendChild(status);
   }
@@ -162,7 +174,7 @@ export const START_CLIENT_SCRIPT = `
         vscode.postMessage({ type: 'start:copyPrompt' });
         return;
       }
-      if (node.getAttribute && node.getAttribute('data-action') && !node.disabled) {
+      if (node.getAttribute && node.getAttribute('data-action') && !node.disabled && node.getAttribute('aria-disabled') !== 'true') {
         var actionId = node.getAttribute('data-action');
         // D130：「生成临时文件」走**另一条消息** —— 它要带上输入框里的内容。
         // 其余动作仍然只回传 id（§5.5 那条约定照旧管着它们）。

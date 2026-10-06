@@ -1,144 +1,125 @@
 /**
- * 开始面板的样式。**内联**进 webview（与侧边栏同一个理由，见 `sidebar/ui/styles.ts`）：
- * CSP 取最严的一档（`default-src 'none'`），不加载任何本地/远程样式表，
- * 于是面板不需要 `localResourceRoots`，也不存在"样式文件没打进 .vsix"这类失败面。
- *
- * 颜色一律走 VS Code 的主题变量：面板长在活动栏里，它必须跟着用户的主题走，
- * 写死颜色在浅色主题下就是一块补丁。**这里没有一处固定色值。**
+ * 开始面板的样式，内联进 webview，沿用最严 CSP 和 VS Code 主题变量。
+ * S15：紧凑图标网格；常驻文字交给按钮原生 title / aria-label。
  */
-
 export const START_STYLES = `
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  padding: 12px 12px 24px;
+  padding: 8px;
   color: var(--vscode-foreground);
   font-family: var(--vscode-font-family);
-  /* D89：与讲解面板同一条公式 —— 基准字号乘用户自己的缩放系数。
-     下面原来的固定 px（15/12/11）全部换成 em：这个面板过去在 VS Code 缩放下
-     标题和正文各走各的，现在整块等比例伸缩，结构不再散架。 */
   font-size: calc(var(--vscode-font-size, 13px) * var(--anchor-font-scale, 1));
   line-height: 1.5;
 }
 
-.head { margin-bottom: 16px; }
-.head .brand { font-size: 1.15em; font-weight: 600; letter-spacing: 0.02em; }
-.head .sub { color: var(--vscode-descriptionForeground); font-size: 0.92em; margin-top: 2px; }
-
-.section { margin-bottom: 18px; }
-.section > h2 {
-  margin: 0 0 8px;
-  font-size: 0.85em;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--vscode-descriptionForeground);
+/* @anchor: 分组并排，窄侧栏自动换行；每组内部仍是多列图标。 */
+#root {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8em), 1fr));
+  align-items: start;
+  gap: 0.55em;
 }
 
-.action {
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
+.section {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(2.6em, 1fr));
+  gap: 0.3em;
+  padding: 0.4em;
+  border: 1px solid var(--vscode-panel-border, transparent);
+  border-radius: 5px;
   background: var(--vscode-editorWidget-background, transparent);
 }
+.wide, .handoff { grid-column: 1 / -1; }
 
-.action.off { opacity: 0.6; }
-
-.row-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.row-head .title { font-weight: 600; }
-
-.chord {
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.85em;
-  padding: 1px 5px;
+.icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 2.8em;
+  padding: 0.5em;
+  border: 1px solid transparent;
   border-radius: 4px;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  color: var(--vscode-descriptionForeground);
-  white-space: nowrap;
-}
-
-.note { color: var(--vscode-descriptionForeground); font-size: 0.92em; margin: 4px 0 8px; }
-
-button.run {
-  font-family: inherit;
-  font-size: 0.92em;
-  padding: 3px 10px;
-  border: none;
-  border-radius: 4px;
+  font: inherit;
+  color: var(--vscode-foreground);
+  background: transparent;
   cursor: pointer;
+}
+.icon-button:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  border-color: var(--vscode-toolbar-hoverOutline, transparent);
+}
+.icon-button:active { background: var(--vscode-toolbar-activeBackground, var(--vscode-list-hoverBackground)); }
+.icon-button.off { color: var(--vscode-disabledForeground); cursor: not-allowed; }
+.icon-button:focus-visible, .status-icon:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.action[data-action="capture"], .action[data-action="loadHandoff"] {
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
 }
-button.run:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
-button.run:disabled { cursor: default; opacity: 0.5; }
+.action[data-action="capture"]:hover, .action[data-action="loadHandoff"]:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+.action.off[data-action="capture"], .action.off[data-action="loadHandoff"] { opacity: 0.5; }
 
-.status-line { display: flex; gap: 8px; font-size: 0.92em; padding: 2px 0; }
-.status-line .label { flex: 0 0 62px; color: var(--vscode-descriptionForeground); }
-.status-line .value { flex: 1 1 auto; word-break: break-word; }
-.status-line.ok .value { color: var(--vscode-foreground); }
-.status-line.warn .value { color: var(--vscode-editorWarning-foreground, var(--vscode-foreground)); }
-.status-line.muted .value { color: var(--vscode-descriptionForeground); }
-
-/* ── D130：外部 Agent 的位置交接（"投币机"）────────────────────── */
-
-.handoff {
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-  background: var(--vscode-editorWidget-background, transparent);
+svg {
+  display: block;
+  flex: 0 0 auto;
+  width: 1.5em;
+  height: 1.5em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 
-.handoff-label { font-size: 0.92em; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
-
+.handoff { grid-template-columns: minmax(0, 1fr) 2.8em; }
+.handoff-tools { display: grid; gap: 0.3em; }
 .handoff-input {
   display: block;
   width: 100%;
+  min-width: 0;
+  min-height: 9em;
+  height: 100%;
   resize: vertical;
-  min-height: 4.5em;
-  padding: 6px 8px;
+  padding: 0.45em 0.55em;
   border-radius: 4px;
-  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, transparent));
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
-  /* 输入的是"位置清单"，等宽字体比正文字体好读得多（行号要对齐着看） */
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.9em;
   line-height: 1.4;
 }
 .handoff-input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 
-.handoff-hint { font-size: 0.85em; color: var(--vscode-descriptionForeground); margin: 8px 0 4px; }
-
-.handoff-prompt {
-  display: block;
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 6px 8px;
-  border-radius: 4px;
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.85em;
-  line-height: 1.4;
-  /* 用户要"复制这句去要求对方"，所以它得能被选中 —— 用 user-select 明写出来，
-     否则将来有人给面板加一层"整块不可选"就会连它一起废掉 */
-  user-select: text;
+.status {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border, transparent);
+  border-radius: 0;
+  padding-top: 0.55em;
 }
-
-/* D132：复制提示词。贴在提示词正下方、靠左，与下面那颗主按钮分开一档。 */
-.handoff-copy {
-  margin-top: 4px;
-  padding: 2px 8px;
-  font-size: 0.85em;
-  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.15));
-  border: 1px solid var(--vscode-button-border, transparent);
+.status-icon {
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 2em;
   border-radius: 3px;
-  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  cursor: help;
 }
-.handoff-copy:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.25)); }
-
-.handoff-row { margin-top: 8px; }
+.status-icon svg { width: 1.15em; height: 1.15em; }
+.status-icon.ok { color: var(--vscode-testing-iconPassed, var(--vscode-foreground)); }
+.status-icon.warn { color: var(--vscode-editorWarning-foreground, var(--vscode-foreground)); }
+.status-icon.muted { color: var(--vscode-disabledForeground); }
 `;

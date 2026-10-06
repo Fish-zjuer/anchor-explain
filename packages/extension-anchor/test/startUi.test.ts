@@ -125,12 +125,11 @@ test('D137：真正执行 drop 事件后，草稿会同步宿主，重画不会�
   assert.ok(posted.some(m => m.type === 'start:handoffDraft' && m.text === node.value));
 });
 
-test('D130：提示词（给外部 Agent 的那段）在面板上可见', () => {
-  // 用户要的是"一个足够短的 prompt"，对方拿去就能用。它必须**在面板上显示出来**
-  // 并且**能选中**（`user-select: text`）—— 不然用户没法复制那段提示词给对方。
-  assert.ok(START_CLIENT_SCRIPT.includes('handoffPrompt'), '面板上没显示那段提示词');
-  assert.ok(START_STYLES.includes('handoff-prompt'), '缺提示词的样式');
-  assert.ok(START_STYLES.includes('user-select: text'), '提示词要能选中复制（不然用户没法把它发给对方）');
+test('S15：提示词通过复制按钮的悬停提示查看，仍可经宿主复制', () => {
+  assert.ok(START_CLIENT_SCRIPT.includes('handoffPrompt'), '悬停提示应使用宿主提供的提示词');
+  assert.ok(START_CLIENT_SCRIPT.includes("setAttribute('title', description)"), '图标按钮缺悬停提示');
+  assert.ok(START_CLIENT_SCRIPT.includes("setAttribute('aria-label', description)"), '图标按钮缺可访问名称');
+  assert.ok(START_CLIENT_SCRIPT.includes('start:copyPrompt'), '提示词应仍能复制给外部 Agent');
 });
 
 test('D132：提示词旁边有一颗「复制」按钮，走宿主写剪贴板（不是 navigator.clipboard）', () => {
