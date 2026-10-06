@@ -91,6 +91,7 @@ const fetchCalls = [];
 const artifactFiles = new Map();
 let applyEditCalls = 0;
 let receiveFromWebview;
+let startViewProvider;
 let onCloseDocument;
 /** D78：`onDidChangeVisibleTextEditors` 的订阅者（宿主靠它分辨预览替换 vs 用户关标签） */
 const visibleEditorsCallbacks = [];
@@ -442,10 +443,12 @@ const vscodeStub = {
         };
       });
     },
-    // S8：活动栏里的「开始」视图。这条冒烟跑的是"捕获→讲解→高亮"那条链路，
-    // 面板的宿主侧行为由 `smoke-extension.mjs` 真跑（那边会拿到 provider 并驱动它）。
-    // 这里只需要"注册不炸"——多写一份驱动只会变成两处都要改的重复。
-    registerWebviewViewProvider: () => ({ dispose() {} }),
+    // 开始视图的完整动作由 smoke-extension 驱动；这里只在设置镜像锁前做一次 ready，
+    // 确保 startLayout 这种只属于开始界面的设置也经过真实读取链路。
+    registerWebviewViewProvider(_id, provider) {
+      startViewProvider = provider;
+      return { dispose() {} };
+    },
     createTextEditorDecorationType(options) {
       const type = { options, dispose() {} };
       decorationTypes.push(type);
@@ -2129,6 +2132,20 @@ check(
 
 // D71 镜像锁：package.json 里声明的**每一个** anchorExplain.* 设置，读取侧都必须真的读过一次
 // （声明了不读 = 用户改了设置却什么都不会发生，而屏幕上没有任何迹象 —— style / fetchScope 就这么失效过）
+const startMessages = [];
+let receiveStart;
+startViewProvider?.resolveWebviewView({
+  webview: {
+    cspSource: 'vscode-resource://smoke', html: '',
+    onDidReceiveMessage(callback) { receiveStart = callback; return {dispose() {}}; },
+    postMessage(message) { startMessages.push(message); return Promise.resolve(true); },
+  },
+  onDidDispose() { return {dispose() {}}; },
+});
+receiveStart?.({type: 'start:ready'});
+await flush();
+check(startMessages.some(message => message.type === 'start:model' && message.model?.layout === 'adaptive'),
+  '开始视图握手后读取并下发默认布局');
 const pkg = JSON.parse(readFileSync(path.join(ROOT, 'packages', 'extension-anchor', 'package.json'), 'utf8'));
 const declaredKeys = Object.keys(pkg.contributes?.configuration?.properties ?? {}).filter((k) =>
   k.startsWith('anchorExplain.'),
