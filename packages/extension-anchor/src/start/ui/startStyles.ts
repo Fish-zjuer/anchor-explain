@@ -143,8 +143,7 @@ svg {
 @media (max-height: 1100px) {
   .icon-button { min-height: 3.4em; padding: 0.3em; gap: 0.2em; }
   .icon-button svg { width: 1.3em; height: 1.3em; }
-  .start, .session { grid-template-columns: repeat(auto-fit, minmax(4.2em, 1fr)); }
-  .start .action[data-action="capture"] { grid-column: auto; flex-direction: column; }
+  .session { grid-template-columns: repeat(auto-fit, minmax(4.2em, 1fr)); }
   .paired-sections .section { grid-template-columns: repeat(auto-fit, minmax(3.5em, 1fr)); }
 }
 @media (max-width: 300px) {
